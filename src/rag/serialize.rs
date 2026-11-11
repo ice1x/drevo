@@ -5,7 +5,10 @@
 //! a line built from its text properties) plus the relationships to the nodes
 //! already taken; a node whose block would push the text over the budget is
 //! skipped whole — never cut mid-sentence — and the fill goes on with the
-//! next one.
+//! next one. Markdown has the layout of drevo-py's
+//! `Context.to_text('markdown')`: the nodes taken are written under
+//! `## Seeds` / `## Neighbours` sorted by kind, name and id, and their
+//! relationships under `## Edges` sorted by ends and id.
 //!
 //! ```
 //! use std::collections::BTreeMap;
@@ -26,10 +29,13 @@
 //! let subgraph = Subgraph {
 //!     nodes: vec![RankedNode::seed(Arc::new(anna), 1.0)],
 //!     rels: Vec::new(),
+//!     rel_weights: BTreeMap::new(),
 //!     truncated: false,
 //! };
 //! let out = render(&subgraph, &RenderOptions::default());
-//! assert_eq!(out.text, "## Entities\n- **Anna** (Person): Keeps a journal\n");
+//! let seeds = "## Seeds\n- Anna (kind=Person, id=1): Keeps a journal\n";
+//! let rest = "\n## Neighbours\n- (none)\n\n## Edges\n- (none)\n";
+//! assert_eq!(out.text, format!("{seeds}{rest}"));
 //! assert_eq!(out.node_ids, [1]);
 //! ```
 
@@ -53,8 +59,12 @@ pub(crate) const DEFAULT_MAX_BODY_CHARS: usize = 600;
 /// How a context is written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// `## Entities` with a bullet per node (`- **name** (Label): text`), then
-    /// `## Relations` with a line per relationship (`- (A) -[REL]-> (B)`).
+    /// The layout of drevo-py's `Context.to_text('markdown')`: `## Seeds`
+    /// and `## Neighbours` with a bullet per node
+    /// (`- name (kind=Label, id=7): text`), sorted by kind, name and id, then
+    /// `## Edges` with a line per relationship
+    /// (`- 7 -[REL]-> 9 (id=12, weight=1.0)`), sorted by its ends and id; an
+    /// empty section reads `- (none)`.
     Markdown,
     /// One `|`-separated line per node (`name | Label | text`) followed by
     /// the lines of its relationships (`A | REL | B`) — the fewest tokens.
@@ -132,9 +142,10 @@ pub struct Rendered {
     pub text: String,
     /// The text's size under the options' tokenizer.
     pub tokens: usize,
-    /// The ids of the nodes written, in the order written.
+    /// The ids of the nodes written, in the order they were taken (rank
+    /// order).
     pub node_ids: Vec<u64>,
-    /// The ids of the relationships written, in the order written.
+    /// The ids of the relationships written, in the order they were taken.
     pub rel_ids: Vec<u64>,
     /// How many nodes did not fit the budget.
     pub skipped: usize,
@@ -164,7 +175,12 @@ pub fn render(subgraph: &Subgraph, options: &RenderOptions) -> Rendered {
         }
     }
 
-    let mut text = Text::new(options.format);
+    let mut text = match options.format {
+        Format::Markdown => Writer::Markdown(Markdown::default()),
+        Format::Triples => Writer::Lines(Text::new(false)),
+        Format::Json => Writer::Lines(Text::new(true)),
+    };
+    let weight = |rel: &RelationshipValue| subgraph.rel_weights.get(&rel.id).copied();
     let mut out = Rendered::default();
     let mut taken: HashSet<u64> = HashSet::new();
     let mut written = 0;
@@ -191,25 +207,107 @@ pub fn render(subgraph: &Subgraph, options: &RenderOptions) -> Rendered {
             .unwrap_or_default();
         rels.sort_by_key(|r| r.id);
         let block = node_piece(node, &names, options);
-        let rel_pieces: Vec<String> = rels.iter().map(|r| rel_piece(r, &names, options)).collect();
-        let tokens = text
-            .measure_with(&block, &rel_pieces)
-            .tokens(options.tokenizer);
+        let rel_pieces: Vec<String> = rels
+            .iter()
+            .map(|r| rel_piece(r, weight(r), &names, options))
+            .collect();
+        let tokens = match &mut text {
+            Writer::Lines(text) => text
+                .measure_with(&block, &rel_pieces)
+                .tokens(options.tokenizer),
+            Writer::Markdown(md) => {
+                let key = (
+                    node_kind(node),
+                    names.get(&node.id).cloned().unwrap_or_default(),
+                    node.id,
+                );
+                let edges = rels.iter().map(|r| (r.from_id, r.to_id, r.id));
+                md.insert(
+                    ranked.seed_score.is_some(),
+                    key,
+                    block.clone(),
+                    edges,
+                    rel_pieces.clone(),
+                );
+                let tokens = options.tokenizer.count(&md.text());
+                if tokens > options.token_budget {
+                    md.undo();
+                }
+                tokens
+            }
+        };
         if tokens > options.token_budget {
             out.skipped += 1;
             out.skipped_ids.push(node.id);
             continue;
         }
-        text.push(block, rel_pieces);
+        if let Writer::Lines(text) = &mut text {
+            text.push(block, rel_pieces);
+        }
         taken.insert(node.id);
         out.node_ids.push(node.id);
         out.node_tokens.push(tokens.saturating_sub(written));
         written = tokens;
         out.rel_ids.extend(rels.iter().map(|r| r.id));
     }
-    out.text = text.finish();
+    out.text = match text {
+        Writer::Lines(text) => text.finish(),
+        Writer::Markdown(_) if out.node_ids.is_empty() => String::new(),
+        Writer::Markdown(md) => md.text(),
+    };
     out.tokens = options.tokenizer.count(&out.text);
     out
+}
+
+/// What a node's kind is written as: its labels joined by `:` (its kind
+/// alone when it has one label, as drevo-py writes `Node.kind`).
+fn node_kind(node: &NodeValue) -> String {
+    node.labels.join(":")
+}
+
+/// A float as Python's `repr` writes it (`1.0`, `0.5`, `1e-05`, `1e+16`), so
+/// edge weights read as in drevo-py's `Context.to_text`.
+fn py_float(value: f64) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() {
+            "-0.0"
+        } else {
+            "0.0"
+        }
+        .to_string();
+    }
+    // Shortest round-trip digits and exponent, e.g. `1.5e-7`.
+    let sci = format!("{value:e}");
+    let (mantissa, exp) = sci.split_once('e').unwrap_or((sci.as_str(), "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let negative = mantissa.starts_with('-');
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    let sign = if negative { "-" } else { "" };
+    if (-4..16).contains(&exp) {
+        let point = exp + 1; // digits before the decimal point
+        let body = if point <= 0 {
+            format!("0.{}{digits}", "0".repeat(point.unsigned_abs() as usize))
+        } else {
+            let point = point as usize;
+            if digits.len() <= point {
+                format!("{digits}{}.0", "0".repeat(point - digits.len()))
+            } else {
+                format!("{}.{}", &digits[..point], &digits[point..])
+            }
+        };
+        return format!("{sign}{body}");
+    }
+    let (head, tail) = digits.split_at(1);
+    let mantissa = if tail.is_empty() {
+        head.to_string()
+    } else {
+        format!("{head}.{tail}")
+    };
+    let exp_sign = if exp < 0 { '-' } else { '+' };
+    format!("{sign}{mantissa}e{exp_sign}{:02}", exp.unsigned_abs())
 }
 
 /// `text` cut to at most `max_chars` characters (never inside a UTF-8
@@ -381,10 +479,7 @@ fn node_piece(node: &NodeValue, names: &HashMap<u64, String>, options: &RenderOp
     let mut line = String::new();
     match options.format {
         Format::Markdown => {
-            line.push_str(&format!("- **{name}**"));
-            if !labels.is_empty() {
-                line.push_str(&format!(" ({labels})"));
-            }
+            line.push_str(&format!("- {name} (kind={labels}, id={})", node.id));
             if !rest.is_empty() {
                 line.push_str(&format!(": {}", rest.join(" — ")));
             }
@@ -412,6 +507,7 @@ fn node_piece(node: &NodeValue, names: &HashMap<u64, String>, options: &RenderOp
 /// A relationship's line (or JSON object) in the options' format.
 fn rel_piece(
     rel: &RelationshipValue,
+    weight: Option<f32>,
     names: &HashMap<u64, String>,
     options: &RenderOptions,
 ) -> String {
@@ -439,7 +535,11 @@ fn rel_piece(
     let prov = provenance(&rel.properties, options);
     match options.format {
         Format::Markdown => {
-            let mut line = format!("- ({from}) -[{name}]-> ({to})");
+            let weight = py_float(f64::from(weight.unwrap_or(1.0)));
+            let mut line = format!(
+                "- {} -[{name}]-> {} (id={}, weight={weight})",
+                rel.from_id, rel.to_id, rel.id
+            );
             for p in prov {
                 line.push(' ');
                 line.push_str(&p);
@@ -489,19 +589,26 @@ impl Section {
     }
 }
 
-/// The context being written, measured as it grows.
+/// The context being written: triples / JSON lines measured as they grow,
+/// or markdown sections kept sorted.
+enum Writer {
+    Lines(Text),
+    Markdown(Markdown),
+}
+
+/// A triples or JSON context being written, measured as it grows.
 struct Text {
-    format: Format,
-    /// Node blocks (markdown, JSON) or every line (triples).
+    json: bool,
+    /// Node blocks (JSON) or every line (triples).
     nodes: Section,
-    /// Relationship lines (markdown, JSON).
+    /// Relationship objects (JSON).
     rels: Section,
 }
 
 impl Text {
-    fn new(format: Format) -> Self {
+    fn new(json: bool) -> Self {
         Self {
-            format,
+            json,
             nodes: Section::default(),
             rels: Section::default(),
         }
@@ -509,46 +616,27 @@ impl Text {
 
     /// The separator between pieces of a section.
     fn sep(&self) -> &'static str {
-        match self.format {
-            Format::Json => ",",
-            Format::Markdown | Format::Triples => "\n",
+        if self.json {
+            ","
+        } else {
+            "\n"
         }
     }
 
     /// The measure of the whole text once `block` and `rels` are added.
     fn measure_with(&self, block: &str, rels: &[String]) -> Measure {
         let sep = self.sep();
-        match self.format {
-            Format::Triples => {
-                let lines = self.nodes.measure_with(
-                    std::iter::once(block).chain(rels.iter().map(String::as_str)),
-                    sep,
-                );
-                lines.then(Measure::of("\n"))
-            }
-            Format::Markdown => {
-                let nodes = self.nodes.measure_with([block], sep);
-                let rel_count = self.rels.len() + rels.len();
-                let rels = self.rels.measure_with(rels.iter().map(String::as_str), sep);
-                Self::markdown_measure(nodes, rels, rel_count)
-            }
-            Format::Json => {
-                let nodes = self.nodes.measure_with([block], sep);
-                let rel_count = self.rels.len() + rels.len();
-                let rels = self.rels.measure_with(rels.iter().map(String::as_str), sep);
-                Self::json_measure(nodes, rels, self.nodes.len() + 1, rel_count)
-            }
+        if !self.json {
+            let lines = self.nodes.measure_with(
+                std::iter::once(block).chain(rels.iter().map(String::as_str)),
+                sep,
+            );
+            return lines.then(Measure::of("\n"));
         }
-    }
-
-    fn markdown_measure(nodes: Measure, rels: Measure, rel_count: usize) -> Measure {
-        let m = Measure::of(MD_ENTITIES).then(nodes).then(Measure::of("\n"));
-        if rel_count == 0 {
-            return m;
-        }
-        m.then(Measure::of(MD_RELATIONS))
-            .then(rels)
-            .then(Measure::of("\n"))
+        let nodes = self.nodes.measure_with([block], sep);
+        let rel_count = self.rels.len() + rels.len();
+        let rels = self.rels.measure_with(rels.iter().map(String::as_str), sep);
+        Self::json_measure(nodes, rels, self.nodes.len() + 1, rel_count)
     }
 
     fn json_measure(nodes: Measure, rels: Measure, node_count: usize, rel_count: usize) -> Measure {
@@ -563,9 +651,10 @@ impl Text {
         let sep = self.sep();
         self.nodes.push(block, sep);
         for rel in rels {
-            match self.format {
-                Format::Triples => self.nodes.push(rel, sep),
-                Format::Markdown | Format::Json => self.rels.push(rel, sep),
+            if self.json {
+                self.rels.push(rel, sep);
+            } else {
+                self.nodes.push(rel, sep);
             }
         }
     }
@@ -576,21 +665,109 @@ impl Text {
         }
         let sep = self.sep();
         let nodes = self.nodes.pieces.join(sep);
-        let rels = self.rels.pieces.join(sep);
-        match self.format {
-            Format::Triples => format!("{nodes}\n"),
-            Format::Markdown if self.rels.pieces.is_empty() => format!("{MD_ENTITIES}{nodes}\n"),
-            Format::Markdown => format!("{MD_ENTITIES}{nodes}\n{MD_RELATIONS}{rels}\n"),
-            Format::Json => format!(
-                "{JSON_NODES}{nodes}{JSON_RELS}{rels}{}",
-                json_stats(self.nodes.len(), self.rels.len())
-            ),
+        if !self.json {
+            return format!("{nodes}\n");
         }
+        let rels = self.rels.pieces.join(sep);
+        format!(
+            "{JSON_NODES}{nodes}{JSON_RELS}{rels}{}",
+            json_stats(self.nodes.len(), self.rels.len())
+        )
     }
 }
 
-const MD_ENTITIES: &str = "## Entities\n";
-const MD_RELATIONS: &str = "\n## Relations\n";
+/// How a markdown node line sorts: kind, name, id.
+type NodeKey = (String, String, u64);
+
+/// How a markdown edge line sorts: from id, to id, id.
+type EdgeKey = (u64, u64, u64);
+
+/// A markdown context being written: each section kept sorted, so the text
+/// is the same whatever order the nodes were taken in.
+#[derive(Default)]
+struct Markdown {
+    seeds: Vec<(NodeKey, String)>,
+    neighbours: Vec<(NodeKey, String)>,
+    edges: Vec<(EdgeKey, String)>,
+    /// What the last [`Self::insert`] added, for [`Self::undo`]: whether the
+    /// node is a seed, its key, and the keys of its edges.
+    last: Option<(bool, NodeKey, Vec<EdgeKey>)>,
+}
+
+impl Markdown {
+    /// Add a node line and its edge lines, each in sorted place.
+    fn insert(
+        &mut self,
+        seed: bool,
+        key: NodeKey,
+        line: String,
+        edge_keys: impl Iterator<Item = EdgeKey>,
+        edge_lines: Vec<String>,
+    ) {
+        let section = if seed {
+            &mut self.seeds
+        } else {
+            &mut self.neighbours
+        };
+        let at = section.partition_point(|(k, _)| *k < key);
+        section.insert(at, (key.clone(), line));
+        let mut keys = Vec::new();
+        for (edge, line) in edge_keys.zip(edge_lines) {
+            let at = self.edges.partition_point(|(k, _)| *k < edge);
+            self.edges.insert(at, (edge, line));
+            keys.push(edge);
+        }
+        self.last = Some((seed, key, keys));
+    }
+
+    /// Take back what the last [`Self::insert`] added.
+    fn undo(&mut self) {
+        let Some((seed, key, edges)) = self.last.take() else {
+            return;
+        };
+        let section = if seed {
+            &mut self.seeds
+        } else {
+            &mut self.neighbours
+        };
+        if let Some(at) = section.iter().position(|(k, _)| *k == key) {
+            section.remove(at);
+        }
+        for edge in edges {
+            if let Some(at) = self.edges.iter().position(|(k, _)| *k == edge) {
+                self.edges.remove(at);
+            }
+        }
+    }
+
+    fn text(&self) -> String {
+        let mut out = String::new();
+        let sections: [(&str, Vec<&String>); 3] = [
+            ("## Seeds", self.seeds.iter().map(|(_, l)| l).collect()),
+            (
+                "## Neighbours",
+                self.neighbours.iter().map(|(_, l)| l).collect(),
+            ),
+            ("## Edges", self.edges.iter().map(|(_, l)| l).collect()),
+        ];
+        for (i, (heading, lines)) in sections.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(heading);
+            out.push('\n');
+            if lines.is_empty() {
+                out.push_str("- (none)\n");
+            }
+            for line in lines {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+}
+
 const JSON_NODES: &str = r#"{"nodes":["#;
 const JSON_RELS: &str = r#"],"rels":["#;
 
@@ -740,6 +917,7 @@ mod tests {
                 rel(14, 1, "WROTE", 6, &[]),
             ],
             truncated: false,
+            rel_weights: BTreeMap::from([(13, 0.5)]),
         }
     }
 
@@ -751,20 +929,22 @@ mod tests {
         }
     }
 
-    const MARKDOWN: &str = "## Entities\n\
-- **Anna** (Person): Keeps a CBT journal\n\
-- **Monday entry** (Entry): Felt anxious before the meeting.\n\
-- **I will fail** (Thought) «I will fail at this» (journal-1)\n\
-- **Catastrophizing** (Distortion): Expecting the worst\n\
-- **Boris** (Person)\n\
-- **Пятница** (Entry): Сегодня было тяжело, но я справилась.\n\
+    const MARKDOWN: &str = "## Seeds\n\
+- Anna (kind=Person, id=1): Keeps a CBT journal\n\
 \n\
-## Relations\n\
-- (Anna) -[WROTE]-> (Monday entry)\n\
-- (Monday entry) -[CONTAINS]-> (I will fail)\n\
-- (I will fail) -[IS_A]-> (Catastrophizing) valid 2025-01-01→ «always the worst» (journal-1)\n\
-- (Anna) -[KNOWS]-> (Boris) valid 2024-05-01→2025-02-01\n\
-- (Anna) -[WROTE]-> (Пятница)\n";
+## Neighbours\n\
+- Catastrophizing (kind=Distortion, id=4): Expecting the worst\n\
+- Monday entry (kind=Entry, id=2): Felt anxious before the meeting.\n\
+- Пятница (kind=Entry, id=6): Сегодня было тяжело, но я справилась.\n\
+- Boris (kind=Person, id=5)\n\
+- I will fail (kind=Thought, id=3) «I will fail at this» (journal-1)\n\
+\n\
+## Edges\n\
+- 1 -[WROTE]-> 2 (id=10, weight=1.0)\n\
+- 1 -[KNOWS]-> 5 (id=13, weight=0.5) valid 2024-05-01→2025-02-01\n\
+- 1 -[WROTE]-> 6 (id=14, weight=1.0)\n\
+- 2 -[CONTAINS]-> 3 (id=11, weight=1.0)\n\
+- 3 -[IS_A]-> 4 (id=12, weight=1.0) valid 2025-01-01→ «always the worst» (journal-1)\n";
 
     const TRIPLES: &str = "Anna | Person | Keeps a CBT journal\n\
 Monday entry | Entry | Felt anxious before the meeting.\n\
@@ -803,6 +983,32 @@ Anna | WROTE | Пятница\n";
         assert_eq!(out.rel_ids, [10, 11, 12, 13, 14]);
         assert_eq!(out.skipped, 0);
         assert_eq!(out.tokens, Tokenizer::Approx.count(MARKDOWN));
+    }
+
+    #[test]
+    fn markdown_is_sorted_whatever_the_rank_order() {
+        let mut reversed = journal();
+        let seed = reversed.nodes.remove(0);
+        reversed.nodes.reverse();
+        reversed.nodes.insert(0, seed);
+        let out = render(&reversed, &opts(Format::Markdown));
+        assert_eq!(out.text, MARKDOWN);
+        assert_eq!(out.node_ids, [1, 6, 5, 4, 3, 2], "taken in rank order");
+    }
+
+    #[test]
+    fn weights_are_written_as_python_writes_floats() {
+        assert_eq!(py_float(1.0), "1.0");
+        assert_eq!(py_float(0.5), "0.5");
+        assert_eq!(py_float(f64::from(0.1_f32)), "0.10000000149011612");
+        assert_eq!(py_float(123_456.0), "123456.0");
+        assert_eq!(py_float(0.0001), "0.0001");
+        assert_eq!(py_float(0.00001), "1e-05");
+        assert_eq!(py_float(1.5e-7), "1.5e-07");
+        assert_eq!(py_float(1e16), "1e+16");
+        assert_eq!(py_float(1_234_567_890_123_456.0), "1234567890123456.0");
+        assert_eq!(py_float(-2.5), "-2.5");
+        assert_eq!(py_float(0.0), "0.0");
     }
 
     #[test]
@@ -950,6 +1156,7 @@ Anna | WROTE | Пятница\n";
                 rel(11, 2, "CONTAINS", 3, &[]),
             ],
             truncated: false,
+            rel_weights: BTreeMap::new(),
         };
         let options = RenderOptions {
             max_body_chars: 4,
@@ -1011,6 +1218,7 @@ Anna | WROTE | Пятница\n";
             nodes,
             rels,
             truncated: false,
+            rel_weights: BTreeMap::new(),
         }
     }
 
@@ -1099,6 +1307,7 @@ Anna | WROTE | Пятница\n";
             )],
             rels: Vec::new(),
             truncated: false,
+            rel_weights: BTreeMap::new(),
         };
         let out = render(
             &huge,
@@ -1140,11 +1349,13 @@ Anna | WROTE | Пятница\n";
             )],
             rels: Vec::new(),
             truncated: false,
+            rel_weights: BTreeMap::new(),
         };
         let out = render(&graph, &opts(Format::Markdown));
         assert_eq!(
             out.text,
-            "## Entities\n- **Dose** (Med:Note): true — 20 — a, 1.5\n"
+            "## Seeds\n- Dose (kind=Med:Note, id=9): true — 20 — a, 1.5\n\n\
+             ## Neighbours\n- (none)\n\n## Edges\n- (none)\n"
         );
     }
 

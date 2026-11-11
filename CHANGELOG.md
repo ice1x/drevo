@@ -20,8 +20,8 @@ history and the in-repo issue tracker; format loosely follows
   `mrr`, `tokens`, `durationMs`, `nodeIds`, plus `recallRetrieved` before the
   budget cut. The summary averages per strategy with `p50Ms`/`p95Ms`. Read
   only (no trace is recorded); unresolved expectations, an unknown or
-  unavailable strategy (`'rag-global'`, `'vector'` without an embedder or a
-  `label`) fail with an error naming them. `examples/rag_eval.rs` prints the
+  unavailable strategy (`'rag-global'` without community summaries,
+  `'vector'` without an embedder or a `label`) fail with an error naming them. `examples/rag_eval.rs` prints the
   summary for a store and a JSONL gold set as a markdown table, and
   `benches/rag_retrieve_bench.rs` times each pipeline stage on a GraphML copy
   of real data — numbers in `docs/benchmarks.md` ("Graph-RAG pipeline").
@@ -268,6 +268,100 @@ history and the in-repo issue tracker; format loosely follows
   time, as before.
 
 ### Fixed
+
+- **An ingest item deleted while the model answered it no longer leaves its
+  job `running` forever, and a chunk-id mismatch fails the item with the
+  reason** (issue #806). The scheduler matches the item before writing its
+  extraction, so nothing is written for an item that is gone; its slot is
+  given back and the job finishes once nothing else is left — `cancelled`
+  when it lost items, its counters taken from the items that remain. An item
+  whose chunk is not found after the write (the job's `source_id` differs
+  from its config's `source`) is `dead` with `last_error` "chunk `<id>` not
+  found after ingest: the job's source_id … differs from config.source …"
+  instead of staying `running` with no error. While no extraction endpoint is
+  installed the scheduler sleeps instead of reading the jobs every second;
+  installing one (`POST /config/extract`, `drevo::extract::install`) wakes
+  every database's scheduler and the queued jobs start.
+- **A failing statement that calls a writing procedure leaves nothing
+  behind** (issue #796). In plain auto-commit (no triggers, no
+  authentication) the `drevo.memory.*` writers (`addMessage`,
+  `recordReasoning`, `rememberEntity`, `assertFact`, `retractFact`,
+  `addSource`, `addChunks`), a `drevo.rag.context` that records a trace,
+  and `drevo.rag.pruneTraces` wrote straight to the graph, so a constraint violation or a later failing `CALL` in the
+  same statement left part of their writes. Every statement that calls a
+  writing procedure now runs as one transaction, as plain `CREATE`/`MERGE`
+  statements already did: one WAL record and fsync per statement, nothing
+  kept on failure. A `drevo.rag.context` without `session` or `trace` stays a
+  read.
+
+- **`drevo.community.summarize` writes LLM summaries and runs as a job**
+  (issue #804). `mode: 'llm'` was a stub that always failed, and `'auto'`
+  always wrote extractive summaries: both now ask the chat model of
+  `drevo.extract.*` (`DREVO_EXTRACT_UPSTREAM`, `model` overriding its own)
+  with the community's extractive view, keeping the extractive keywords.
+  `async: true` was refused; it now stores an ingest job with `pipeline:
+  'community'` and yields its `jobId` (a new trailing column, `null` on
+  synchronous rows); the scheduler runs the call with the ingest retries and
+  backoff. The model is never asked during a write: the call plans
+  read-only, asks the model outside any transaction, lock, scheduler gate
+  or statement timeout (each request bounded by `DREVO_EXTRACT_TIMEOUT_MS`),
+  then writes with the answers, so a retried commit does not ask again. A
+  synchronous `mode: 'llm'` over more than `DREVO_COMMUNITY_MAX_LLM_SYNC`
+  (default 20) communities is refused with a pointer to `async: true`, and
+  `'auto'` falls back to extractive there; `'llm'` needs the statement to
+  open with the call. The error without a chat model now says which
+  variable configures one.
+
+- **`drevo.rag.evaluate` runs the `'rag-global'` strategy** (issue #807). It
+  refused it as if community summaries did not exist; it now runs
+  `drevo.rag.context` with `scope: 'global'` and the config's
+  `communityLayer`, scored like the other strategies, so one gold set compares
+  local (`'rag'`) against global retrieval. It joins the default strategies
+  when that layer holds a `:Community`; naming it when the layer has none
+  fails with "run `drevo.community.summarize` first".
+- **A direct `drevo.extract.ingest` call no longer runs the model while
+  holding up other writers, nor asks it again on a retry** (issue #805). A
+  statement opening with the call ran its model calls inside its write, so
+  every other writing statement on the database waited for the whole
+  extraction, and a commit conflict re-ran every model call (up to 8 times).
+  The statement now reads the call's arguments and asks the model first,
+  outside the writers' turn and the statement timeout (the model is bounded
+  by `DREVO_EXTRACT_TIMEOUT_MS`, the write by `DREVO_QUERY_TIMEOUT_MS`), then
+  writes what it found the way an ingest job does. A call that only runs per
+  row (`UNWIND … CALL drevo.extract.ingest(…)`, as in a trigger) still asks
+  during the write, but a retried write reuses the answers.
+- **`drevo.search.hybrid` refuses `weights` that are all zero** (issue #808).
+  `{fts: 0, vector: 0}` scored every node 0 and silently returned no rows; it
+  is now an error, "weights must not all be zero", as for
+  `drevo.pagerank.personalized`. One zero leg is still allowed.
+
+- **`asOf` is parsed as a timestamp** (issue #808). `drevo.graph.expand`,
+  `drevo.memory.factsAt` and `drevo.rag.retrieve` / `drevo.rag.context`
+  compared `asOf` with `valid_from` / `valid_until` as strings, so
+  `'yesterday'` was accepted and `'2024-03-01T02:00:00+02:00'` (00:00 UTC)
+  counted as later than `'2024-03-01T00:30:00Z'`. `asOf` must now be an
+  RFC 3339 timestamp (any offset, fractional seconds) or a date
+  (`'2024-03-01'`, midnight UTC); it is normalised to UTC as `datetime()`
+  writes it, compared as an instant against bounds that parse, and anything
+  else is an error naming `asOf` with an example.
+
+- **A second citation of a cited fact is kept** (issue #808).
+  `drevo.memory.assertFact` with a provenance map on a fact that already
+  cited a passage wrote the new `:Source` / `:Chunk` but dropped the
+  citation, leaving them unreferenced and missing from
+  `drevo.memory.evidence`. The fact keeps its first citation in its own
+  properties; each further one is now
+  `(:Chunk)-[:EVIDENCES {fact_id, quote, offset, length, created_at}]->(subject)`,
+  and `evidence` lists every citing chunk, newest first, once each.
+
+- **`drevo.rag.context` markdown has the layout of drevo-py's
+  `Context.to_text('markdown')`** (issue #808), as #783 promised: `## Seeds`
+  / `## Neighbours` with `- name (kind=Label, id=7)` lines sorted by kind,
+  name and id, and `## Edges` with `- 3 -[REL]-> 4 (id=12, weight=1.0)` lines
+  sorted by ends and id, `- (none)` for an empty section; a node's other text
+  values and provenance follow its line. It was `## Entities` /
+  `## Relations` in rank order. The budget still takes nodes best-ranked
+  first; `triples` and `json` are unchanged. `Subgraph` gains `rel_weights`.
 
 - **An index rebuilt from a snapshot could skip a commit made during the
   rebuild** (issue #770). The label, property, path, text, point and

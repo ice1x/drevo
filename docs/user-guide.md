@@ -272,16 +272,18 @@ itself, in one call:
    ```
 
    ```text
-   ## Entities
-   - **Monday shift** (Entry): Panic before the team meeting, heart racing.
-   - **Mila** (Person): Keeps a mood journal
-   - **Everyone will see I am incompetent** (Thought)
-   - **Mind reading** (Distortion): Assuming what others think
+   ## Seeds
+   - Monday shift (kind=Entry, id=1): Panic before the team meeting, heart racing.
 
-   ## Relations
-   - (Mila) -[WROTE]-> (Monday shift)
-   - (Monday shift) -[CONTAINS]-> (Everyone will see I am incompetent)
-   - (Everyone will see I am incompetent) -[IS_A]-> (Mind reading)
+   ## Neighbours
+   - Mind reading (kind=Distortion, id=4): Assuming what others think
+   - Mila (kind=Person, id=0): Keeps a mood journal
+   - Everyone will see I am incompetent (kind=Thought, id=3)
+
+   ## Edges
+   - 0 -[WROTE]-> 1 (id=0, weight=1.0)
+   - 1 -[CONTAINS]-> 3 (id=1, weight=1.0)
+   - 3 -[IS_A]-> 4 (id=2, weight=1.0)
    ```
 
 3. **Your code writes the prompt.** Put `text` under a heading such as "What the journal says" and
@@ -295,13 +297,15 @@ same nodes as rows with their scores, for when you format the context yourself.
 
 A few knobs change the most:
 
-- **`format`** — `'markdown'` reads well, `'triples'` (`A | REL | B` lines) is the cheapest in
+- **`format`** — `'markdown'` reads well and has the layout of drevo-py's
+  `Context.to_text('markdown')`, `'triples'` (`A | REL | B` lines) is the cheapest in
   tokens, `'json'` is for programs.
 - **`tokenBudget`** — the context never exceeds it; nodes that do not fit are skipped whole and
   `truncated` says so.
 - **`hops`** and **`rank`** — how far from the first hits to look (default 2) and how to order what
   is found (`'ppr'`, the default, favours what is closely connected to the best hits).
-- **`asOf`** — facts written by `drevo.memory.assertFact` are shown as they stood at that time.
+- **`asOf`** — facts written by `drevo.memory.assertFact` are shown as they stood at that time
+  (an RFC 3339 timestamp such as `'2025-06-01T09:00:00+03:00'`, or a date).
 
 Every option is in the [Cypher Reference](cypher-reference.md#graph-rag-retrieval).
 
@@ -426,8 +430,11 @@ Each row is one strategy, from plain search to the full pipeline:
 | `hybrid` | words and meaning together |
 | `hybrid+expand` | those hits and their neighbourhood, nearest first |
 | `rag` | the same neighbourhood ranked by how closely it connects to the hits — what `drevo.rag.context` does |
+| `rag-global` | the summaries of the matching communities and their members — `drevo.rag.context` with `scope: 'global'` (only once [`drevo.community.summarize`](#global-questions) has run) |
 
-All of them get the same token budget, and each is scored on what fits it — what the model would
+`rag-global` joins the default list by itself once the graph has communities, so the same
+questions tell you whether local or global retrieval suits them. All of them get the same token
+budget, and each is scored on what fits it — what the model would
 see. `meanRecall` is the share of the expected nodes that made it in: if `rag` beats `vector` on
 your questions, the graph is earning its keep. `drevo.rag.evaluate` gives the same scores per
 question, with the ids of the nodes each context held; a question the graph strategies miss

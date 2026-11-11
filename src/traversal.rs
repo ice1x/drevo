@@ -441,9 +441,12 @@ pub struct ExpandOptions {
     /// At most this many nodes are returned, seeds included when
     /// [`include_seeds`](Self::include_seeds) is set.
     pub max_nodes: usize,
-    /// An ISO-8601 timestamp: a relationship with `valid_from` /
+    /// An RFC 3339 timestamp (or date): a relationship with `valid_from` /
     /// `valid_until` string properties is walked only if
-    /// `valid_from <= as_of < valid_until`; one without them always is.
+    /// `valid_from <= as_of < valid_until`, compared as instants where the
+    /// bounds parse and as strings where they do not; one without them
+    /// always is. The `asOf` config key stores it normalised to UTC
+    /// (`2024-03-01T00:00:00.000Z`).
     pub as_of: Option<String>,
     /// Whether the seeds are returned (at distance `0`).
     pub include_seeds: bool,
@@ -682,15 +685,11 @@ pub(crate) fn expand_walks(edge: &Edge, options: &ExpandOptions) -> bool {
     let Some(as_of) = options.as_of.as_deref() else {
         return true;
     };
-    let started = match edge.properties.get("valid_from") {
-        Some(serde_json::Value::String(from)) => from.as_str() <= as_of,
-        _ => true,
+    let bound = |key: &str| match edge.properties.get(key) {
+        Some(serde_json::Value::String(s)) => Some(s.as_str()),
+        _ => None,
     };
-    let still = match edge.properties.get("valid_until") {
-        Some(serde_json::Value::String(until)) => until.as_str() > as_of,
-        _ => true,
-    };
-    started && still
+    crate::cypher::timestamp::holds_at(bound("valid_from"), bound("valid_until"), as_of)
 }
 
 /// Whether [`expand_bfs`] returns and walks on from a node with `labels`.

@@ -881,6 +881,171 @@ fn facts_at_yields_source_and_quote_last() {
     );
 }
 
+/// Dana `WORKS_AT` Acme from `2024-03-01T00:30:00Z`, with no end.
+fn employment_from_half_past_midnight(svc: &NativeService) {
+    manuscript(svc);
+    run_ok(
+        svc,
+        "CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', false) YIELD rel RETURN rel",
+    );
+    run_ok(
+        svc,
+        "MATCH ()-[f:RELATED_TO]->() SET f.valid_from = '2024-03-01T00:30:00Z'",
+    );
+}
+
+#[test]
+fn facts_at_normalises_timezone_offsets() {
+    let svc = NativeService::in_memory();
+    employment_from_half_past_midnight(&svc);
+    // 02:00+02:00 is 00:00 UTC — before the fact began.
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.factsAt('Dana', '2024-03-01T02:00:00+02:00') YIELD relation \
+         RETURN relation",
+    );
+    assert!(
+        res.rows.is_empty(),
+        "#808: factsAt '2024-03-01T02:00:00+02:00' (= 00:00Z) is before valid_from \
+         '2024-03-01T00:30:00Z', yet the string comparison returned the fact: {:?}",
+        res.rows
+    );
+    // Sanity: at 01:00Z the fact holds.
+    let later = run_ok(
+        &svc,
+        "CALL drevo.memory.factsAt('Dana', '2024-03-01T01:00:00Z') YIELD relation \
+         RETURN relation",
+    );
+    assert_eq!(strings(&later, 0), vec!["WORKS_AT"]);
+}
+
+#[test]
+fn facts_at_rejects_a_non_timestamp() {
+    let svc = NativeService::in_memory();
+    employment_from_half_past_midnight(&svc);
+    let res = run(
+        &svc,
+        "CALL drevo.memory.factsAt('Dana', 'yesterday') YIELD relation RETURN relation",
+    );
+    assert!(
+        res.is_err(),
+        "#808: factsAt('Dana', 'yesterday') must be refused — 'yesterday' is not an \
+         RFC 3339 timestamp — but it is accepted and compared as a string: {res:?}"
+    );
+}
+
+// ----- several citations for one fact ---------------------------------------------
+
+#[test]
+fn a_second_citation_for_a_cited_fact_is_kept_in_evidence() {
+    // #808 point 3 offers two fixes; this test pins the first, "keep every
+    // citation". The alternative ("first citation wins", documented, and no
+    // orphan :Source / :Chunk for the dropped citation) would instead assert
+    // that book-2 and book-2#0 do not exist after the second assertFact.
+    let svc = NativeService::in_memory();
+    for (name, ty) in [("Dana", "PERSON"), ("Acme", "ORGANIZATION")] {
+        run_ok(
+            &svc,
+            &format!(
+                "CALL drevo.memory.rememberEntity(null, '{name}', '{ty}', null) YIELD node \
+                 RETURN node"
+            ),
+        );
+    }
+    run_ok(
+        &svc,
+        &format!(
+            "CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', false, {{\
+               source: {{id: 'book-1', title: 'Book One'}}, \
+               chunk: {{id: 'book-1#1', order: 1, text: '{CH1}'}}, \
+               quote: 'Dana had joined Acme'}}) YIELD rel RETURN rel"
+        ),
+    );
+    run_ok(
+        &svc,
+        "CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', false, {\
+           source: {id: 'book-2', title: 'Staff list'}, \
+           chunk: {id: 'book-2#0', order: 0, text: 'Editors: Dana (Acme), since spring.'}, \
+           quote: 'Dana (Acme)'}) YIELD rel RETURN rel",
+    );
+    let mut chunks = strings(
+        &run_ok(
+            &svc,
+            "CALL drevo.memory.evidence('Dana', 10) YIELD chunk, fact \
+             WHERE fact IS NOT NULL RETURN chunk.id",
+        ),
+        0,
+    );
+    chunks.sort();
+    let orphans = count(
+        &svc,
+        "MATCH (c:Chunk {id: 'book-2#0'})-[:FROM]->(:Source {id: 'book-2'}) RETURN count(c)",
+    );
+    assert_eq!(
+        chunks,
+        vec!["book-1#1".to_string(), "book-2#0".to_string()],
+        "#808: the second citation of an already-cited fact is dropped from evidence \
+         while its Source/Chunk were still written ({orphans} orphan chunk(s) of book-2)"
+    );
+}
+
+#[test]
+fn every_citation_is_listed_from_either_end_newest_first_without_duplicates() {
+    // A book-editor workflow: one fact read in two books, the first passage
+    // cited twice. Evidence from the object's side lists both passages once,
+    // the newer one first, and the fact keeps its first citation's props.
+    let svc = NativeService::in_memory();
+    for (name, ty) in [("Dana", "PERSON"), ("Acme", "ORGANIZATION")] {
+        run_ok(
+            &svc,
+            &format!(
+                "CALL drevo.memory.rememberEntity(null, '{name}', '{ty}', null) YIELD node \
+                 RETURN node"
+            ),
+        );
+    }
+    let first = format!(
+        "CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', false, {{\
+           source: {{id: 'book-1', title: 'Book One'}}, \
+           chunk: {{id: 'book-1#1', order: 1, text: '{CH1}'}}, \
+           quote: 'Dana had joined Acme'}}) YIELD rel RETURN rel"
+    );
+    run_ok(&svc, &first);
+    run_ok(&svc, &first);
+    run_ok(
+        &svc,
+        "CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', false, {\
+           source: {id: 'book-2', title: 'Staff list'}, \
+           chunk: {id: 'book-2#0', order: 0, text: 'Editors: Dana (Acme), since spring.'}, \
+           quote: 'Dana (Acme)'}) YIELD rel RETURN rel",
+    );
+    run_ok(
+        &svc,
+        "CALL drevo.memory.assertFact('Dana', 'WORKS_AT', 'Acme', false, {\
+           chunk: 'book-2#0', quote: 'Dana (Acme)'}) YIELD rel RETURN rel",
+    );
+    assert_eq!(
+        count(&svc, "MATCH ()-[e:EVIDENCES]->() RETURN count(e)"),
+        1,
+        "re-citing a passage adds nothing"
+    );
+    let res = run_ok(
+        &svc,
+        "CALL drevo.memory.evidence('Acme', 10) YIELD chunk, quote, fact \
+         WHERE fact IS NOT NULL RETURN chunk.id, quote",
+    );
+    assert_eq!(strings(&res, 0), vec!["book-2#0", "book-1#1"]);
+    assert_eq!(
+        strings(&res, 1),
+        vec!["Dana (Acme)", "Dana had joined Acme"]
+    );
+    let facts = run_ok(
+        &svc,
+        "MATCH (:Entity {name: 'Dana'})-[f:RELATED_TO]->() RETURN f.chunk_id",
+    );
+    assert_eq!(strings(&facts, 0), vec!["book-1#1"]);
+}
+
 // ----- FTS -----------------------------------------------------------------------
 
 #[test]

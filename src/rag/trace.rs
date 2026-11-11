@@ -212,6 +212,7 @@ mod tests {
                 reached(4, 2, 0.05),
             ],
             rels: Vec::new(),
+            rel_weights: std::collections::BTreeMap::new(),
             truncated: true,
         };
         let rendered = Rendered {

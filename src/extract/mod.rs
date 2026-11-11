@@ -229,6 +229,21 @@ impl Default for ExtractOptions {
 }
 
 impl ExtractOptions {
+    /// Whether an extraction made with `self` is the one `other` would make:
+    /// the same types, relations, schema hint, language, model, passage size
+    /// and confidence floor. The keys only `drevo.extract.ingest` reads
+    /// (`source`, `session`, `resolve`, `dryRun`) do not change it.
+    #[must_use]
+    pub fn extracts_like(&self, other: &Self) -> bool {
+        self.types == other.types
+            && self.relations == other.relations
+            && self.schema_hint == other.schema_hint
+            && self.language == other.language
+            && self.model == other.model
+            && self.chunk_chars == other.chunk_chars
+            && self.min_confidence.to_bits() == other.min_confidence.to_bits()
+    }
+
     /// Parse a config map; `null` gives the defaults. `ingest` allows the
     /// keys only `drevo.extract.ingest` takes (`source`, `session`,
     /// `resolve`, `dryRun`) and requires `source`.
@@ -513,44 +528,128 @@ pub fn extract_text(
 }
 
 thread_local! {
-    /// An extraction already made for a text, used by `drevo.extract.ingest`
-    /// on this thread instead of asking the model again.
-    static PREPARED: std::cell::RefCell<Option<(String, Vec<ChunkExtraction>)>> =
-        const { std::cell::RefCell::new(None) };
+    /// An extraction already made for a text with some options, used by
+    /// `drevo.extract.ingest` on this thread instead of asking the model
+    /// again.
+    static PREPARED: std::cell::RefCell<Option<Memo>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Run `work` with `found` as the extraction of `text`: a
-/// `drevo.extract.ingest` of exactly `text` that `work` runs on this thread
-/// writes `found` instead of calling the model. An ingest job extracts an
-/// item outside any transaction, then writes it this way, so a write retried
-/// after a conflict does not ask the model again.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+/// Run `work` with `found` as the extraction of `text` with `options`: a
+/// `drevo.extract.ingest` of exactly `text`, with options that extract the
+/// same way ([`ExtractOptions::extracts_like`]), that `work` runs on this
+/// thread writes `found` instead of calling the model. An ingest job, and a
+/// statement that opens with the call, extract outside any transaction, then
+/// write this way, so a write retried after a conflict does not ask the
+/// model again.
 pub(crate) fn with_prepared<R>(
     text: &str,
+    options: &ExtractOptions,
     found: Vec<ChunkExtraction>,
     work: impl FnOnce() -> R,
 ) -> R {
-    struct Restore(Option<(String, Vec<ChunkExtraction>)>);
+    struct Restore(Option<Memo>);
     impl Drop for Restore {
         fn drop(&mut self) {
             let outer = self.0.take();
             PREPARED.with(|p| *p.borrow_mut() = outer);
         }
     }
-    let outer = PREPARED.with(|p| p.borrow_mut().replace((text.to_string(), found)));
+    let outer = PREPARED.with(|p| {
+        p.borrow_mut()
+            .replace((text.to_string(), options.clone(), found))
+    });
     let _restore = Restore(outer);
     work()
 }
 
-/// The extraction prepared for `text` on this thread ([`with_prepared`]),
-/// if any.
-pub(crate) fn prepared_for(text: &str) -> Option<Vec<ChunkExtraction>> {
+/// The extraction prepared for `text` with `options` on this thread
+/// ([`with_prepared`]), if any.
+pub(crate) fn prepared_for(text: &str, options: &ExtractOptions) -> Option<Vec<ChunkExtraction>> {
     PREPARED.with(|p| {
         p.borrow()
             .as_ref()
-            .filter(|(prepared, _)| prepared == text)
-            .map(|(_, found)| found.clone())
+            .filter(|(t, o, _)| t == text && o.extracts_like(options))
+            .map(|(_, _, found)| found.clone())
     })
+}
+
+thread_local! {
+    /// The extractions made on this thread inside [`with_memo`], by text and
+    /// options; `None` outside it.
+    static MEMO: std::cell::RefCell<Option<Vec<Memo>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One remembered extraction of [`MEMO`].
+type Memo = (String, ExtractOptions, Vec<ChunkExtraction>);
+
+/// Run `work` remembering every [`prepare_ingest`] it makes on this thread,
+/// so the same text with the same options is extracted once however often
+/// `work` asks. A writing statement runs its attempts inside one memo: an
+/// attempt retried after a commit conflict does not ask the model again.
+/// Nested calls share the outermost memo.
+pub(crate) fn with_memo<R>(work: impl FnOnce() -> R) -> R {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            MEMO.with(|m| *m.borrow_mut() = None);
+        }
+    }
+    let outer = MEMO.with(|m| {
+        let mut memo = m.borrow_mut();
+        let outer = memo.is_some();
+        if !outer {
+            *memo = Some(Vec::new());
+        }
+        outer
+    });
+    if outer {
+        return work();
+    }
+    let _clear = Clear;
+    work()
+}
+
+/// The extraction of `text` that `drevo.extract.ingest` writes: the one
+/// prepared on this thread ([`with_prepared`]), else the one remembered by
+/// [`with_memo`], else a call to the installed model per passage (recorded
+/// for [`status`]). The ingest scheduler and a statement that opens with the
+/// call both prepare it this way before the write begins, outside the
+/// writer's turn and the statement timeout.
+///
+/// # Errors
+///
+/// [`ExtractError::NotConfigured`] without an installed model, else as
+/// [`extract_chunks`].
+pub(crate) fn prepare_ingest(
+    text: &str,
+    options: &ExtractOptions,
+) -> Result<Vec<ChunkExtraction>, ExtractError> {
+    if let Some(found) = prepared_for(text, options) {
+        return Ok(found);
+    }
+    let remembered = MEMO.with(|m| {
+        m.borrow().as_ref().and_then(|memo| {
+            memo.iter()
+                .find(|(t, o, _)| t == text && o.extracts_like(options))
+                .map(|(_, _, found)| found.clone())
+        })
+    });
+    if let Some(found) = remembered {
+        return Ok(found);
+    }
+    let completer = installed().ok_or(ExtractError::NotConfigured)?;
+    let found = extract_chunks(completer.as_ref(), text, options, Want::Both);
+    match &found {
+        Ok(found) => record(Ok(found.iter().map(|f| f.accepted.skipped).sum())),
+        Err(e) => record(Err(e)),
+    }
+    let found = found?;
+    MEMO.with(|m| {
+        if let Some(memo) = m.borrow_mut().as_mut() {
+            memo.push((text.to_string(), options.clone(), found.clone()));
+        }
+    });
+    Ok(found)
 }
 
 /// The process-wide chat endpoint extraction uses.
@@ -569,8 +668,12 @@ struct LastRun {
 }
 
 /// Install the chat endpoint extraction uses, replacing any other.
+///
+/// Every database's ingest scheduler wakes up: jobs queued while no
+/// endpoint was installed start now.
 pub fn install(completer: Arc<dyn ChatCompleter>) {
     *GLOBAL.write().unwrap_or_else(|e| e.into_inner()) = Some(completer);
+    crate::ingest::wake();
 }
 
 /// Remove the installed chat endpoint: extraction reports "not configured".
@@ -1142,12 +1245,130 @@ mod tests {
             },
             accepted: Accepted::default(),
         }];
-        assert_eq!(prepared_for("Dana"), None);
-        let inside = with_prepared("Dana", found.clone(), || {
-            (prepared_for("Dana"), prepared_for("Acme"))
+        let o = ExtractOptions::default();
+        assert_eq!(prepared_for("Dana", &o), None);
+        let inside = with_prepared("Dana", &o, found.clone(), || {
+            (prepared_for("Dana", &o), prepared_for("Acme", &o))
         });
         assert_eq!(inside, (Some(found), None));
-        assert_eq!(prepared_for("Dana"), None);
+        assert_eq!(prepared_for("Dana", &o), None);
+    }
+
+    /// Counts the calls it answers, each with no item.
+    struct Counting(Mutex<usize>);
+    impl ChatCompleter for Counting {
+        fn complete(&self, _: &ChatRequest) -> Result<String, LlmError> {
+            *self.0.lock().unwrap() += 1;
+            Ok(r#"{"entities": [], "facts": []}"#.into())
+        }
+    }
+
+    #[test]
+    fn prepare_ingest_asks_once_per_text_and_options_inside_a_memo() {
+        let _serial = TEST_GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let model = Arc::new(Counting(Mutex::new(0)));
+        install(model.clone());
+        let calls = || *model.0.lock().unwrap();
+        let text = "Dana joined Acme. Acme is in Oslo.";
+        let options = ExtractOptions {
+            chunk_chars: 20,
+            ..ExtractOptions::default()
+        };
+        assert!(chunk::split(text, 20).len() >= 2);
+        let (first, asked, again) = with_memo(|| {
+            let first = prepare_ingest(text, &options).unwrap();
+            let asked = calls();
+            let again = with_memo(|| prepare_ingest(text, &options).unwrap());
+            (first, asked, again)
+        });
+        assert!(asked > 0);
+        assert_eq!(first, again);
+        assert_eq!(calls(), asked, "the memo served the second ask");
+        let other = ExtractOptions {
+            chunk_chars: 40,
+            ..options.clone()
+        };
+        with_memo(|| prepare_ingest(text, &other).unwrap());
+        assert!(calls() > asked, "other options are another extraction");
+        let before = calls();
+        prepare_ingest(text, &options).unwrap();
+        assert_eq!(calls(), before + asked, "nothing is remembered outside");
+        let before = calls();
+        let prepared = with_prepared(text, &options, Vec::new(), || {
+            prepare_ingest(text, &options)
+        });
+        assert_eq!(prepared.unwrap(), Vec::new());
+        assert_eq!(calls(), before, "a prepared extraction asks nothing");
+        uninstall();
+        assert!(matches!(
+            prepare_ingest(text, &options),
+            Err(ExtractError::NotConfigured)
+        ));
+    }
+
+    #[test]
+    fn an_extraction_serves_only_the_same_text_with_options_that_extract_alike() {
+        let _serial = TEST_GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let model = Arc::new(Counting(Mutex::new(0)));
+        install(model.clone());
+        let calls = || *model.0.lock().unwrap();
+        let text = "Dana joined Acme.";
+        let base = ExtractOptions::default();
+        let variants = [
+            ExtractOptions {
+                types: vec!["PERSON".into()],
+                ..base.clone()
+            },
+            ExtractOptions {
+                relations: Some(vec!["WORKS_AT".into()]),
+                ..base.clone()
+            },
+            ExtractOptions {
+                schema_hint: Some("A novel.".into()),
+                ..base.clone()
+            },
+            ExtractOptions {
+                language: "ru".into(),
+                ..base.clone()
+            },
+            ExtractOptions {
+                model: Some("other".into()),
+                ..base.clone()
+            },
+            ExtractOptions {
+                chunk_chars: 400,
+                ..base.clone()
+            },
+            ExtractOptions {
+                min_confidence: 0.9,
+                ..base.clone()
+            },
+        ];
+        // Ingest-only keys extract the same way.
+        let same = ExtractOptions {
+            source: Some(SourceRef::Id("book-1".into())),
+            session: Some("chat-1".into()),
+            resolve: Resolve::Fuzzy,
+            dry_run: true,
+            ..base.clone()
+        };
+        with_prepared(text, &base, Vec::new(), || {
+            assert_eq!(prepare_ingest(text, &same).unwrap(), Vec::new());
+            assert_eq!(calls(), 0, "same text, same extraction: no call");
+            for (i, other) in variants.iter().enumerate() {
+                prepare_ingest(text, other).unwrap();
+                assert_eq!(calls(), i + 1, "another extraction asks: {other:?}");
+            }
+        });
+        with_memo(|| {
+            prepare_ingest(text, &base).unwrap();
+            let asked = calls();
+            prepare_ingest(text, &same).unwrap();
+            assert_eq!(calls(), asked, "the memo serves alike options");
+            prepare_ingest(text, &variants[0]).unwrap();
+            assert_eq!(calls(), asked + 1, "the memo does not serve other types");
+        });
+        uninstall();
     }
 
     #[test]

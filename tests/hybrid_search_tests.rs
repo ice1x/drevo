@@ -411,6 +411,24 @@ fn k_zero_is_rejected() {
 }
 
 #[test]
+fn all_zero_weights_are_refused() {
+    let db = with_embedder();
+    let q = "CALL drevo.search.hybrid('Zephyrine', 'Doc', 'embedding', 5, \
+             {weights: {fts: 0, vector: 0}}) YIELD node RETURN node.title";
+    match try_run(&db, q) {
+        Err(ExecError::InvalidProcedureCall { message, .. }) => assert!(
+            message.contains("weights must not all be zero"),
+            "{message}"
+        ),
+        other => panic!(
+            "#808: weights {{fts: 0, vector: 0}} must be refused with \
+             \"weights must not all be zero\"; instead every fused score is 0 and the \
+             call silently returns no rows: {other:?}"
+        ),
+    }
+}
+
+#[test]
 fn negative_rrf_k_is_rejected() {
     let db = without_embedder();
     let message = invalid_call(

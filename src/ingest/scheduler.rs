@@ -10,9 +10,22 @@
 //! transaction and then writes the result — or the failure, with the time
 //! of the next attempt — in one transaction.
 //!
+//! A job of the `community` pipeline has one item, which is the whole
+//! `drevo.community.summarize` call: its plan and model calls run with no
+//! gate held, then its write — which marks the item done in the same
+//! transaction — runs under the gate.
+//!
 //! The scheduler sleeps until [`wake`](crate::ingest::wake) (a job
-//! submitted, resumed or retried, an item finished) or, while jobs are
-//! active, until the next retry is due, at most a second.
+//! submitted, resumed or retried, an item finished, an extraction endpoint
+//! installed) or, while jobs are active, until the next retry is due, at
+//! most a second. While no extraction endpoint is installed nothing can
+//! run: the scheduler sleeps until one is, however many jobs are queued.
+//!
+//! An item deleted while the model answered it is gone: nothing is written
+//! for it, and its job finishes — `cancelled` when it lost items — once
+//! nothing else is left to run. An item whose chunk is not found after its
+//! extraction was written (its job's `source_id` differs from the source of
+//! its config) is `dead` with the reason.
 //!
 //! The scheduler and the item threads hold the service only weakly, and a
 //! strong reference only while they run statements. [`Scheduler::stop`]
@@ -28,14 +41,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::cypher::executor::{ExecError, ExecResult, Value};
-use crate::cypher::lexer::Span;
-use crate::extract::{ChunkExtraction, ExtractError, ExtractOptions, Want};
+use crate::extract::{ChunkExtraction, ExtractOptions};
 use crate::native_service::NativeService;
 
 use super::backoff::{self, Jitter};
 use super::progress::{Coalescer, Progress};
 use super::state::{self, ItemAction, ItemState, JobAction, JobState};
-use super::Outcome;
+use super::{Outcome, Pipeline};
 
 /// How often the scheduler looks again while jobs are active and nothing
 /// woke it.
@@ -338,6 +350,10 @@ struct Job {
     max_attempts: u32,
     config: Value,
     options: ExtractOptions,
+    pipeline: Pipeline,
+    /// Whether its items need the chat model: they wait while none is
+    /// configured.
+    needs_model: bool,
 }
 
 /// The queued and running jobs; a job whose config no longer parses is
@@ -346,7 +362,8 @@ fn active_jobs(service: &NativeService, database: &str) -> Result<Vec<Job>, Exec
     let res = run_query(
         service,
         "MATCH (j:IngestJob) WHERE j.state IN [$queued, $running] \
-         RETURN j.id, j.state, j.priority, j.created_at, j.concurrency, j.max_attempts, j.config",
+         RETURN j.id, j.state, j.priority, j.created_at, j.concurrency, j.max_attempts, j.config, \
+                j.pipeline",
         vec![
             ("queued", Value::String(JobState::Queued.as_str().into())),
             ("running", Value::String(JobState::Running.as_str().into())),
@@ -359,12 +376,16 @@ fn active_jobs(service: &NativeService, database: &str) -> Result<Vec<Job>, Exec
             let config = string(&r[6])
                 .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
                 .map_or(Value::Null, |c| crate::cypher::executor::json_to_value(&c));
-            let options = match ExtractOptions::from_value(&config, true) {
-                Ok(options) => options,
-                Err(e) => {
-                    log_warn(database, "an ingest job has an unusable config", &e);
-                    return None;
-                }
+            let pipeline = Pipeline::parse(string(&r[7]).as_deref());
+            let (options, needs_model) = match pipeline {
+                Pipeline::Extract => match ExtractOptions::from_value(&config, true) {
+                    Ok(options) => (options, true),
+                    Err(e) => {
+                        log_warn(database, "an ingest job has an unusable config", &e);
+                        return None;
+                    }
+                },
+                Pipeline::Community => (ExtractOptions::default(), community_needs_model(&config)),
             };
             Some(Job {
                 id: string(&r[0])?,
@@ -378,6 +399,8 @@ fn active_jobs(service: &NativeService, database: &str) -> Result<Vec<Job>, Exec
                     .max(1),
                 config,
                 options,
+                pipeline,
+                needs_model,
             })
         })
         .collect();
@@ -451,6 +474,7 @@ struct Work {
     options: ExtractOptions,
     config: Value,
     source_id: String,
+    pipeline: Pipeline,
 }
 
 /// Mark item `seq` of `job` running (and the job with it); the item's work,
@@ -500,6 +524,7 @@ fn mark_running(
         options: job.options.clone(),
         config: job.config.clone(),
         source_id: string(&row[3]).unwrap_or_default(),
+        pipeline: job.pipeline,
     }))
 }
 
@@ -555,13 +580,20 @@ fn pass(
     if jobs.is_empty() {
         return None;
     }
-    if crate::extract::installed().is_none() {
-        return Some(POLL);
+    // Jobs that need the chat model wait while none is configured. When
+    // every active job does, sleep until woken, which installing an
+    // endpoint does.
+    let model = crate::extract::installed().is_some();
+    if !model && jobs.iter().all(|j| j.needs_model) {
+        return None;
     }
     let settings = super::settings();
     let now_ms = crate::model::now_ms();
     let mut next_at: Option<i64> = None;
     'jobs: for job in jobs {
+        if job.needs_model && !model {
+            continue;
+        }
         loop {
             if shared.stop.load(Ordering::SeqCst) {
                 return None;
@@ -612,7 +644,10 @@ fn pass(
             let spawned = std::thread::Builder::new()
                 .name("drevo-ingest-item".into())
                 .spawn(move || {
-                    run_item(&item_shared, &item_weak, work);
+                    match work.pipeline {
+                        Pipeline::Extract => run_item(&item_shared, &item_weak, work),
+                        Pipeline::Community => run_community_item(&item_shared, &item_weak, &work),
+                    }
                     drop(flight);
                     drop(slot);
                 });
@@ -644,16 +679,7 @@ fn run_item(shared: &Arc<Shared>, weak: &Weak<NativeService>, work: Work) {
         ),
         ..work.options.clone()
     };
-    let found = match crate::extract::installed() {
-        Some(completer) => {
-            crate::extract::extract_chunks(completer.as_ref(), &work.text, &options, Want::Both)
-        }
-        None => Err(ExtractError::NotConfigured),
-    };
-    match &found {
-        Ok(found) => crate::extract::record(Ok(found.iter().map(|f| f.accepted.skipped).sum())),
-        Err(e) => crate::extract::record(Err(e)),
-    }
+    let found = crate::extract::prepare_ingest(&work.text, &options);
     let gate = shared.gate.lock().unwrap_or_else(|e| e.into_inner());
     if shared.stop.load(Ordering::SeqCst) {
         return;
@@ -662,19 +688,15 @@ fn run_item(shared: &Arc<Shared>, weak: &Weak<NativeService>, work: Work) {
         return;
     };
     let outcome = match found {
-        Ok(found) => write_item(&service, &work, found).map_err(|e| {
-            // Our own refusal (an unknown source, a chunk of another
-            // source) fails the same way again.
-            let retry = !matches!(e, ExecError::InvalidProcedureCall { .. });
-            (retry, e.to_string())
-        }),
+        Ok(found) => write_item(&service, &work, found),
         Err(e) => Err((e.is_retryable(), e.to_string())),
     };
     let error = match outcome {
-        Ok(()) => {
+        Ok(Written::Done) => {
             super::record(Outcome::Done);
             None
         }
+        Ok(Written::Gone) => None,
         Err((retryable, message)) => {
             let retry = retryable && work.attempts < work.max_attempts;
             let jitter = shared
@@ -703,25 +725,164 @@ fn run_item(shared: &Arc<Shared>, weak: &Weak<NativeService>, work: Work) {
     drop(service);
 }
 
+/// How an item's write ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Written {
+    /// The extraction is written and the item is `done`.
+    Done,
+    /// The item was deleted meanwhile: nothing was written for it.
+    Gone,
+}
+
+/// Whether a community job's `config` asks for LLM summaries
+/// (`mode: 'llm'`), so it waits for a chat model like an extraction.
+fn community_needs_model(config: &Value) -> bool {
+    matches!(
+        crate::community::SummarizeConfig::from_value(config),
+        Ok(c) if c.mode == crate::community::SummaryMode::Llm
+    )
+}
+
+/// The statement a community job's item runs: `drevo.community.summarize`
+/// with the job's config, marking the item done in the same transaction;
+/// it returns how many items it marked, 0 when the item is gone.
+const COMMUNITY_WRITE: &str = "CALL drevo.community.summarize($config) YIELD community \
+     WITH count(community) AS communities \
+     MATCH (i:IngestItem {job_id: $job, seq: $seq}) \
+     SET i.state = $done, i.last_error = null, i.updated_at = $now \
+     RETURN count(i)";
+
+/// Run a community job's one item in the three phases of
+/// [`crate::community::llm`]: plan read-only and ask the model with no gate
+/// held, then take the gate and write with the answers. A write that meets
+/// a community the plan did not see fails, to be tried again later.
+fn run_community_item(shared: &Arc<Shared>, weak: &Weak<NativeService>, work: &Work) {
+    let Some(statement) = crate::cypher::parser::parse(COMMUNITY_WRITE).ok() else {
+        return;
+    };
+    let done = match state::item(ItemState::Running, ItemAction::Succeed) {
+        Ok(done) => done,
+        Err(e) => {
+            log_warn(&shared.database, "cannot run a community item", &e);
+            return;
+        }
+    };
+    let params: HashMap<String, Value> = [
+        ("config", work.config.clone()),
+        ("job", Value::String(work.job.clone())),
+        ("seq", Value::Integer(work.seq)),
+        ("done", Value::String(done.as_str().into())),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    // Phases 1 and 2, holding the service only while planning.
+    let mut answers = Vec::new();
+    let planned = {
+        let Some(service) = weak.upgrade() else {
+            return;
+        };
+        crate::community::llm::as_job(|| {
+            service.plan_community_answers(&statement, &params, None, &mut answers)
+        })
+    };
+    let gate = shared.gate.lock().unwrap_or_else(|e| e.into_inner());
+    if shared.stop.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(service) = weak.upgrade() else {
+        return;
+    };
+    let outcome = match planned {
+        Err((e, model)) => Err((e, model)),
+        Ok(_) => {
+            let mut params = params;
+            params.insert("now".into(), now_iso(crate::model::now_ms()));
+            let (result, missed) = crate::community::llm::with_prepared(&answers, || {
+                crate::community::llm::as_job(|| service.execute_internal(&statement, params))
+            });
+            match result {
+                // The graph changed between the plan and the write.
+                Err(e) if missed => Err((e, Some(true))),
+                Err(e) => Err((e, None)),
+                // The item was deleted meanwhile: the job finishes without it.
+                Ok(res) if first_integer(&res) == Some(0) => Ok(Written::Gone),
+                Ok(_) => Ok(Written::Done),
+            }
+        }
+    };
+    let error = match outcome {
+        Ok(Written::Done) => {
+            super::record(Outcome::Done);
+            None
+        }
+        Ok(Written::Gone) => None,
+        Err((e, model)) => {
+            // The model says whether it may succeed later; otherwise our
+            // own refusal (a config, a layer kept) fails the same way again.
+            let retryable = model.unwrap_or(!matches!(e, ExecError::InvalidProcedureCall { .. }));
+            let message = e.to_string();
+            record_failure(shared, &service, work, retryable, &message);
+            Some(message)
+        }
+    };
+    refresh(shared, &service, &work.job, error.as_deref());
+    drop(gate);
+    // Dropped after the gate: if this was the last reference, the service
+    // stops its scheduler, which takes the gate.
+    drop(service);
+}
+
+/// Record a failed attempt of `work` with the time of its next one (when
+/// `retryable` and attempts are left; else it is dead) and count it.
+fn record_failure(
+    shared: &Shared,
+    service: &NativeService,
+    work: &Work,
+    retryable: bool,
+    message: &str,
+) {
+    let retry = retryable && work.attempts < work.max_attempts;
+    let jitter = shared
+        .jitter
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .draw();
+    let wait = backoff::next(work.attempts, super::settings().retry_base, jitter);
+    let next_at =
+        crate::model::now_ms().saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX));
+    if let Err(e) = fail_item(service, work, retry, message, next_at) {
+        log_warn(&shared.database, "cannot record an ingest item failure", &e);
+    }
+    super::record(if retry {
+        Outcome::Failed
+    } else {
+        Outcome::Dead
+    });
+}
+
 /// Write an item's extraction, mark it done and link its chunk, in one
-/// transaction.
+/// transaction. A failure says whether another attempt may succeed.
 fn write_item(
     service: &NativeService,
     work: &Work,
     mut found: Vec<ChunkExtraction>,
-) -> Result<(), ExecError> {
+) -> Result<Written, (bool, String)> {
     let order = usize::try_from(work.seq).unwrap_or(0);
     for f in &mut found {
         f.chunk.order = order;
         f.chunk.offset += work.offset;
     }
-    let done = state::item(ItemState::Running, ItemAction::Succeed).map_err(internal)?;
+    let done = state::item(ItemState::Running, ItemAction::Succeed).map_err(|e| (true, e))?;
     let chunk = crate::cypher::provenance::default_chunk_id(&work.source_id, work.seq);
-    crate::extract::with_prepared(&work.text, found, || -> Result<(), ExecError> {
-        let result = run_query(
+    // Keyed on the job's options, which the statement's `$config` reads to:
+    // the passage size the item was asked with is its own. The item is
+    // matched first, so nothing is written for an item deleted meanwhile.
+    let res = crate::extract::with_prepared(&work.text, &work.options, found, || {
+        run_query(
             service,
-            "CALL drevo.extract.ingest($text, $config) YIELD source \
-             MATCH (i:IngestItem {job_id: $job, seq: $seq}) \
+            "MATCH (i:IngestItem {job_id: $job, seq: $seq}) \
+             CALL drevo.extract.ingest($text, $config) YIELD source \
              MATCH (c:Chunk {id: $chunk}) \
              SET i.state = $done, i.last_error = null, i.updated_at = $now \
              MERGE (i)-[:PRODUCED]->(c) \
@@ -735,29 +896,55 @@ fn write_item(
                 ("done", Value::String(done.as_str().into())),
                 ("now", now_iso(crate::model::now_ms())),
             ],
-        )?;
-        require_single_update(&result, &work.job, work.seq)?;
-        Ok(())
+        )
+    })
+    .map_err(|e| {
+        // Our own refusal (an unknown source, a chunk of another source)
+        // fails the same way again.
+        let retry = !matches!(e, ExecError::InvalidProcedureCall { .. });
+        (retry, e.to_string())
     })?;
-    Ok(())
+    if first_integer(&res) != Some(0) {
+        return Ok(Written::Done);
+    }
+    // Nothing was marked done: either the item is gone, or its chunk is
+    // not where the job's source id says it is.
+    let left = run_query(
+        service,
+        "MATCH (i:IngestItem {job_id: $job, seq: $seq}) RETURN count(i)",
+        vec![
+            ("job", Value::String(work.job.clone())),
+            ("seq", Value::Integer(work.seq)),
+        ],
+    )
+    .map_err(|e| (true, e.to_string()))?;
+    if first_integer(&left) == Some(0) {
+        return Ok(Written::Gone);
+    }
+    Err((false, missing_chunk(&chunk, work)))
 }
 
-fn require_single_update(result: &ExecResult, job: &str, seq: i64) -> Result<(), ExecError> {
-    let updated = result
-        .rows
-        .first()
-        .and_then(|row| row.first())
-        .and_then(integer);
-    if updated == Some(1) {
-        return Ok(());
-    }
-    Err(ExecError::InvalidProcedureCall {
-        name: "drevo.extract.ingest".into(),
-        message: format!(
-            "ingest item {seq} of job `{job}` was not completed: the item or its chunk is missing"
+/// The reason an item fails when its chunk is not found after its
+/// extraction was written.
+fn missing_chunk(chunk: &str, work: &Work) -> String {
+    let configured = match &work.options.source {
+        Some(crate::cypher::provenance::SourceRef::Id(id)) => Some(id.as_str()),
+        Some(crate::cypher::provenance::SourceRef::Spec(spec)) => Some(spec.id.as_str()),
+        None => None,
+    };
+    match configured {
+        Some(configured) if configured != work.source_id => format!(
+            "chunk `{chunk}` not found after ingest: the job's source_id `{}` differs from \
+             config.source `{configured}`",
+            work.source_id
         ),
-        span: Span::new(0, 0, 1, 1),
-    })
+        _ => format!("chunk `{chunk}` not found after ingest"),
+    }
+}
+
+/// The first column of the first row, as an integer.
+fn first_integer(res: &ExecResult) -> Option<i64> {
+    res.rows.first().and_then(|r| r.first()).and_then(integer)
 }
 
 /// Record a failed attempt: `failed` with the time of the next attempt when
@@ -839,8 +1026,16 @@ fn try_refresh(
         .iter()
         .map(|s| counts.get(s.as_str()).copied().unwrap_or(0))
         .sum::<i64>();
-    let finish = if from == JobState::Running && left == 0 && !counts.is_empty() {
-        Some(state::job(from, JobAction::Finish { dead: dead > 0 })?)
+    // A running job with nothing left finishes; one that lost items
+    // (deleted before they were written) without any dead is cancelled.
+    let finish = if from == JobState::Running && left == 0 {
+        let lost = done.saturating_add(dead) < total;
+        let action = if lost && dead == 0 {
+            JobAction::Cancel
+        } else {
+            JobAction::Finish { dead: dead > 0 }
+        };
+        Some(state::job(from, action)?)
     } else {
         None
     };
@@ -911,18 +1106,54 @@ fn try_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cypher::provenance::{SourceRef, SourceSpec};
+
+    fn work(source_id: &str, source: Option<SourceRef>) -> Work {
+        Work {
+            job: "job-1".into(),
+            seq: 0,
+            text: "Dana joined Acme.".into(),
+            offset: 0,
+            attempts: 1,
+            max_attempts: 5,
+            options: ExtractOptions {
+                source,
+                ..ExtractOptions::default()
+            },
+            config: Value::Null,
+            source_id: source_id.into(),
+            pipeline: Pipeline::Extract,
+        }
+    }
 
     #[test]
-    fn missing_write_target_is_a_non_retryable_procedure_error() {
-        let result = ExecResult {
-            columns: vec!["count(i)".into()],
-            rows: vec![vec![Value::Integer(0)]],
-            stats: Default::default(),
+    fn a_missing_chunk_names_both_source_ids_when_they_differ() {
+        let w = work("book-2", Some(SourceRef::Id("book-1".into())));
+        assert_eq!(
+            missing_chunk("book-2#0", &w),
+            "chunk `book-2#0` not found after ingest: the job's source_id `book-2` differs \
+             from config.source `book-1`"
+        );
+        let spec = SourceSpec {
+            id: "book-1".into(),
+            uri: None,
+            title: None,
+            kind: None,
         };
-        let error = require_single_update(&result, "job-1", 3).unwrap_err();
-        assert!(matches!(error, ExecError::InvalidProcedureCall { .. }));
-        assert!(error
-            .to_string()
-            .contains("item 3 of job `job-1` was not completed"));
+        let w = work("book-2", Some(SourceRef::Spec(spec)));
+        assert!(missing_chunk("book-2#0", &w).contains("config.source `book-1`"));
+    }
+
+    #[test]
+    fn a_missing_chunk_of_a_matching_source_says_only_that() {
+        let w = work("book-1", Some(SourceRef::Id("book-1".into())));
+        assert_eq!(
+            missing_chunk("book-1#0", &w),
+            "chunk `book-1#0` not found after ingest"
+        );
+        assert_eq!(
+            missing_chunk("book-1#0", &work("book-1", None)),
+            "chunk `book-1#0` not found after ingest"
+        );
     }
 }

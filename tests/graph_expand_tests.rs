@@ -393,6 +393,76 @@ fn as_of_walks_only_facts_valid_then() {
     assert!(employers("'2000-01-01T00:00:00Z'").is_empty());
 }
 
+/// Alice `WORKS_AT` Acme from `valid_from`, with no end.
+fn employment_from(valid_from: &str) -> NativeService {
+    let db = NativeService::in_memory();
+    for (name, ty) in [("Alice", "PERSON"), ("Acme", "ORGANIZATION")] {
+        run(
+            &db,
+            &format!(
+                "CALL drevo.memory.rememberEntity('s1', '{name}', '{ty}', null) YIELD node \
+                 RETURN node"
+            ),
+        );
+    }
+    run(
+        &db,
+        "CALL drevo.memory.assertFact('Alice', 'WORKS_AT', 'Acme', false) YIELD rel RETURN rel",
+    );
+    run(
+        &db,
+        &format!("MATCH ()-[f:RELATED_TO]->() SET f.valid_from = '{valid_from}'"),
+    );
+    db
+}
+
+#[test]
+fn as_of_must_be_an_rfc3339_timestamp() {
+    let db = employment_from("2024-03-01T00:30:00Z");
+    let q = "MATCH (a {name: 'Alice'}) \
+             CALL drevo.graph.expand(a, {relTypes: ['RELATED_TO'], asOf: 'yesterday'}) \
+             YIELD node RETURN node.name";
+    match try_run(&db, q) {
+        Err(ExecError::InvalidProcedureCall { name, message, .. }) => {
+            assert_eq!(name, "drevo.graph.expand");
+            assert!(message.contains("asOf"), "{message}");
+        }
+        other => panic!(
+            "#808: asOf 'yesterday' is not a timestamp and must be refused naming asOf; \
+             instead it is accepted and compared as a string: {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn as_of_with_a_timezone_offset_is_normalised() {
+    // The fact holds from 00:30 UTC; 02:00+02:00 is 00:00 UTC, before it.
+    let db = employment_from("2024-03-01T00:30:00Z");
+    let rows = run(
+        &db,
+        "MATCH (a {name: 'Alice'}) \
+         CALL drevo.graph.expand(a, {relTypes: ['RELATED_TO'], \
+           asOf: '2024-03-01T02:00:00+02:00', includeSeeds: false}) \
+         YIELD node RETURN node.name",
+    )
+    .rows;
+    assert!(
+        rows.is_empty(),
+        "#808: asOf '2024-03-01T02:00:00+02:00' (= 00:00Z) is before valid_from \
+         '2024-03-01T00:30:00Z', yet the string comparison walked the fact: {rows:?}"
+    );
+    // Sanity: one hour later (01:00Z) the fact holds.
+    let later = run(
+        &db,
+        "MATCH (a {name: 'Alice'}) \
+         CALL drevo.graph.expand(a, {relTypes: ['RELATED_TO'], \
+           asOf: '2024-03-01T01:00:00Z', includeSeeds: false}) \
+         YIELD node RETURN node.name",
+    )
+    .rows;
+    assert_eq!(later.len(), 1, "{later:?}");
+}
+
 // ── Config errors ───────────────────────────────────────────────────────────
 
 #[test]

@@ -35,6 +35,7 @@
 //! | `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep) | Delete `:ContextTrace` nodes (recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours |
 //! | `DREVO_INGEST_WORKERS` | `2` | Ingest-job items (`drevo.ingest.submit`) extracted at once, across every database; a job's `concurrency` is capped by it |
 //! | `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts` (1–100); after the last failed one the item is `dead` |
+//! | `DREVO_COMMUNITY_MAX_LLM_SYNC` | `20` | The most communities one synchronous `drevo.community.summarize({mode: 'llm'})` may ask the chat model to summarise; more fails with an error pointing at `async: true` (a background job has no limit), and `mode: 'auto'` writes extractive summaries instead |
 //! | `DREVO_INGEST_RETRY_BASE_MS` | `2000` | A failed ingest item waits `base × 2^attempts` (at most 5 minutes, less a random part of up to half) before it is tried again |
 //! | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
 //! | `DREVO_TX_ISOLATION` | `snapshot` | When an explicit transaction may commit after others committed: `snapshot` (unless they touched the same records) or `serializable` (only if nothing committed) |
@@ -153,6 +154,10 @@ pub struct Config {
     /// every 24 hours, from `DREVO_RAG_TRACE_RETENTION_DAYS` (default `0`:
     /// keep them forever).
     pub rag_trace_retention_days: u64,
+    /// The most communities one synchronous `drevo.community.summarize` with
+    /// `mode: 'llm'` may summarise, from `DREVO_COMMUNITY_MAX_LLM_SYNC`
+    /// (default 20).
+    pub community_max_llm_sync: usize,
     /// The ingest-job limits, from `DREVO_INGEST_WORKERS`,
     /// `DREVO_INGEST_MAX_ATTEMPTS` and `DREVO_INGEST_RETRY_BASE_MS`.
     pub ingest: crate::ingest::IngestSettings,
@@ -387,6 +392,14 @@ pub enum ConfigError {
         /// The raw env-var value.
         value: String,
     },
+    /// `DREVO_COMMUNITY_MAX_LLM_SYNC` was not a positive integer.
+    #[error(
+        "invalid DREVO_COMMUNITY_MAX_LLM_SYNC value `{value}`: expected a whole number of communities, at least 1"
+    )]
+    InvalidCommunityMaxLlmSync {
+        /// The raw env-var value.
+        value: String,
+    },
     /// `DREVO_INGEST_WORKERS` was not a positive integer.
     #[error(
         "invalid DREVO_INGEST_WORKERS value `{value}`: expected a whole number of items in flight, at least 1"
@@ -612,6 +625,14 @@ impl Config {
             },
         };
 
+        let community_max_llm_sync = match getter("DREVO_COMMUNITY_MAX_LLM_SYNC") {
+            None => crate::community::llm::DEFAULT_MAX_LLM_SYNC,
+            Some(raw) => match raw.trim().parse::<usize>() {
+                Ok(n) if n >= 1 => n,
+                _ => return Err(ConfigError::InvalidCommunityMaxLlmSync { value: raw }),
+            },
+        };
+
         let ingest = crate::ingest::IngestSettings {
             workers: match getter("DREVO_INGEST_WORKERS") {
                 None => crate::ingest::DEFAULT_WORKERS,
@@ -812,6 +833,7 @@ impl Config {
             expand_max_hops,
             expand_max_nodes,
             rag_trace_retention_days,
+            community_max_llm_sync,
             ingest,
             prepared_tx_warn,
             prepared_tx_timeout,
@@ -1461,6 +1483,8 @@ async fn run_native_durable(
         max_hops: cfg.expand_max_hops,
         max_nodes: cfg.expand_max_nodes,
     });
+    // How many communities one synchronous LLM summarize may ask about.
+    crate::community::llm::set_max_llm_sync(cfg.community_max_llm_sync);
     // How many ingest items run at once, how often each is tried, and how
     // long a retry waits.
     crate::ingest::configure(cfg.ingest);

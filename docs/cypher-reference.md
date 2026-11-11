@@ -1718,6 +1718,12 @@ Both write through the regular `CREATE` path, so the usual mutation counters
 are reported, and a registered `'auto'` `Message` semantic target (see below)
 embeds each turn as it is written.
 
+A statement that calls any writing memory procedure (these two, the
+`rememberEntity`/`assertFact`/`retractFact`/`addSource`/`addChunks` writers
+below, or a `drevo.rag.context` that records a trace) runs as one
+transaction: it is one WAL record and fsync, and when any part of it fails —
+a constraint violation, a later `CALL` — nothing it wrote is kept.
+
 `CALL drevo.memory.recall(session, query, k) YIELD node, score` returns the
 top-`k` messages of `session` whose text best matches `query` by BM25,
 best-first — "what did *this* conversation say about X?". It reuses the
@@ -1814,10 +1820,12 @@ RETURN rel.type, rel.valid_from, rel.valid_until
 `CALL drevo.memory.factsAt(name, asOf) YIELD subject, relation, object,
 valid_from, valid_until, source, quote` answers "what did memory hold about this entity at
 that time?": every fact touching the entity, either direction, with
-`valid_from <= asOf` and `valid_until` unset or later. `asOf` is an ISO-8601
-UTC timestamp in the form `datetime()` returns, or `null` for now. `source`
-and `quote` are the fact's citation (see Provenance below), `null` when it has
-none.
+`valid_from <= asOf` and `valid_until` unset or later. `asOf` is an RFC 3339
+timestamp — `datetime()` returns one; any offset is allowed, so
+`'2024-03-01T02:00:00+02:00'` is the instant `'2024-03-01T00:00:00Z'` — or a
+date (`'2024-03-01'`, midnight UTC), or `null` for now; anything else is an
+error naming `asOf`. `source` and `quote` are the fact's first citation (see
+Provenance below), `null` when it has none.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null) YIELD node
@@ -1898,6 +1906,12 @@ offset. A fact then carries `source_id, chunk_id, quote, offset,
 length`; an entity gets `-[:MENTIONED_IN {offset, length, surface}]->` the
 chunk, once per place (`surface` defaults to the quote, then the entity's
 name). Re-asserting a fact that holds without a citation adds this one.
+Re-asserting a cited fact with another citation keeps both: the fact's own
+`source_id`, `chunk_id`, `quote`, `offset` and `length` stay the first
+citation, and each further one is a
+`(:Chunk)-[:EVIDENCES {fact_id, quote, offset, length, created_at}]->(subject)`
+relationship (`fact_id` is the fact's `id`; from the `:Source` when no chunk
+is cited). Citing a chunk the fact already cites changes nothing.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null,
@@ -1913,10 +1927,11 @@ RETURN rel.source_id, rel.chunk_id, rel.quote, rel.offset, rel.length
 
 `CALL drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source, fact`
 lists the passages behind an entity: chunks that back one of its facts (either
-direction; `fact` is the relationship, `quote` / `offset` its citation) and
-chunks that only mention it (`fact` is `null`, `quote` the surface at its
-first place). Each chunk appears once per fact and a chunk backing a fact is
-not repeated as a mention. Newest chunks come first; at most `k` rows.
+direction; `fact` is the relationship, `quote` / `offset` its citation —
+every citation of a fact, the first and each `EVIDENCES` one) and chunks that
+only mention it (`fact` is `null`, `quote` the surface at its first place).
+Each chunk appears once per fact and a chunk backing a fact is not repeated as
+a mention. Newest chunks come first; at most `k` rows.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Dana', 'PERSON', null,
@@ -2469,7 +2484,7 @@ RETURN node.title, score, ftsRank, vectorRank, mode
 | `rrfK` | `60` | the RRF constant, a number ≥ 0; a larger one narrows the gap between neighbouring ranks |
 | `mode` | `'auto'` | `'auto'`, `'hybrid'`, `'fts'` or `'vector'`, see below |
 | `ftsFilter` | `null` | a label the BM25 ranking is restricted to (BM25 otherwise covers every node) |
-| `weights` | `{fts: 1.0, vector: 1.0}` | multiplies each ranking's reciprocal rank; finite numbers ≥ 0. A node only a `0`-weighted ranking found is left out |
+| `weights` | `{fts: 1.0, vector: 1.0}` | multiplies each ranking's reciprocal rank; finite numbers ≥ 0, not all zero (`{fts: 0, vector: 0}` is refused with "weights must not all be zero"). A node only a `0`-weighted ranking found is left out |
 
 An unknown key, a config that is not a map, `k < 1`, a negative `rrfK` or a
 wrong-typed value fail with an error naming the key.
@@ -2631,7 +2646,7 @@ RETURN node.title, distance
 | `excludeLabels` | `[]` | nodes with any of these labels are neither returned nor walked through |
 | `perNodeLimit` | `25` | at most this many new nodes are taken from one node, its relationships taken by id, lowest first |
 | `maxNodes` | `200` | at most this many rows, seeds included; at most `DREVO_EXPAND_MAX_NODES` (5000 unless the server sets it) |
-| `asOf` | `null` | an ISO-8601 timestamp: a relationship with `valid_from` / `valid_until` (as `drevo.memory.assertFact` writes them) is walked only if `valid_from <= asOf < valid_until`; one without them always is |
+| `asOf` | `null` | an RFC 3339 timestamp such as `'2024-03-01T00:00:00Z'` or `'2024-03-01T02:00:00+02:00'`, or a date such as `'2024-03-01'` (midnight UTC): a relationship with `valid_from` / `valid_until` (as `drevo.memory.assertFact` writes them) is walked only if `valid_from <= asOf < valid_until`; one without them always is. Times are compared as instants, so offsets and fractional seconds count; anything else (`'yesterday'`, `''`) is an error naming `asOf` |
 | `includeSeeds` | `true` | whether the seeds come back as distance-0 rows |
 
 Each row holds:
@@ -2749,6 +2764,82 @@ The three formats, for a node *Thought* that carries a quote and a fact
 
 ```text
 markdown:
+## Seeds
+- Anna (kind=Person, id=1): Keeps a CBT journal
+
+## Neighbours
+- Catastrophizing (kind=Distortion, id=4): Expecting the worst
+- I will fail (kind=Thought, id=3) «I will fail at this» (journal-1)
+
+## Edges
+- 3 -[IS_A]-> 4 (id=12, weight=1.0) valid 2025-01-01→ «always the worst» (journal-1)
+
+triples:
+Anna | Person | Keeps a CBT journal
+I will fail | Thought | «I will fail at this» (journal-1)
+I will fail | IS_A | Catastrophizing | valid 2025-01-01→ | «always the worst» (journal-1)
+
+json:
+{"nodes":[{"id":1,"labels":["Person"],"props":{"description":"Keeps a CBT journal","name":"Anna"}}],"rels":[{"from":3,"id":12,"props":{"valid_from":"2025-01-01"},"to":4,"type":"IS_A"}],"stats":{"nodes":1,"rels":1}}
+```
+
+`markdown` has the layout of drevo-py's `Context.to_text('markdown')`: the
+nodes that fit the budget are written under `## Seeds` and `## Neighbours`,
+each sorted by kind, name and id, as `- name (kind=Label, id=7)` followed by
+`: ` and its other text values, then its provenance; their relationships come
+under `## Edges`, sorted by start id, end id and id, as
+`- 3 -[REL]-> 4 (id=12, weight=1.0)` followed by their provenance; an empty
+section reads `- (none)`. Which nodes fit is still decided best-ranked first.
+A node's kind is its labels joined by `:` and its name is its first text
+property (drevo-py writes `title`), so for nodes with one label and only a
+`title` the two renderings are byte for byte the same. `triples` takes the
+fewest tokens. A `RELATED_TO` fact written by
+`drevo.memory.assertFact` is shown under its own relation name (its `type`
+property). JSON keys are sorted; a node's `props` holds its text properties and,
+with `includeProvenance`, `quote`, `source_id`, `valid_from` and `valid_until`.
+
+`drevo.rag.retrieve` returns one row per node, in rank order:
+
+| Column | Meaning |
+|---|---|
+| `node` | the node |
+| `seedScore` | its fused search score when it is a seed, else `null` |
+| `distance` | relationships from the nearest seed; `0` for a seed |
+| `pprScore` | its Personalized PageRank score with `rank: 'ppr'` (the scores of an untruncated retrieval sum to 1), else `null` |
+| `rank` | its position, from 1 |
+| `via` | as in [`drevo.graph.expand`](#graph-expansion); `null` for a seed |
+| `truncated` | whether the expansion stopped at `maxNodes` |
+| `scope` | the scope that ran: `'local'` or `'global'`. In the global scope the communities are the seeds and their members have `distance` 1 and their in-community rank as `pprScore` |
+
+```cypher
+CALL drevo.rag.retrieve('team meeting', {rank: 'distance', hops: 1})
+YIELD node, seedScore, distance, rank
+RETURN rank, node.title, distance, seedScore
+```
+
+`drevo.rag.context` returns one row:
+
+| Column | Meaning |
+|---|---|
+| `text` | the context; `''` when nothing matched or nothing fits |
+| `tokens` | the size of `text` under `tokenizer` — never more than `tokenBudget` |
+| `format` | the format written |
+| `nodeIds`, `relIds` | the ids of the nodes and relationships in `text`, in the order written |
+| `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
+| `mode` | the search mode that ran: `'hybrid'`, `'fts'` or `'vector'` (`'auto'` without an embedder or a `label` runs `'fts'`) |
+| `traceId` | the `id` of the [context trace](#context-traces) recorded with `session` or `trace: true`, else `null` |
+| `scope` | the scope that ran: `'local'` or `'global'` (`'auto'` resolves to one of them); a context trace records it too |
+
+The same graph, question and config give byte-identical `text`: ties are broken
+by node id and properties are written in a fixed order. A question that matches
+nothing gives no `retrieve` rows and a `context` row with empty `text`, `tokens`
+`0` and empty id lists. Nodes and relationships the user may not read are left
+out of every stage. A query that is not a string, a config that is not a map, an
+unknown key (`includeSeeds` included: seeds are always returned) and a value of
+the wrong type or range fail with an error naming the key; an explicit `mode:
+'hybrid'` or `'vector'` without an embedder fails as in `drevo.search.hybrid`.
+Over HTTP the same call is [`POST /rag/context`](admin-guide.md#graph-rag-context-post-ragcontext).
+
 ### Extraction
 
 `drevo.extract.*` reads entities and facts out of a text with a language
@@ -2827,6 +2918,24 @@ into the same source again finds the same chunks, entities and facts, and
 changes nothing. Afterwards `drevo.memory.evidence` and `drevo.memory.factsAt`
 show the passages behind each entity.
 
+**The model runs before the write, once.** A statement that opens with
+`CALL drevo.extract.ingest(…)` — its text and config literals or parameters
+— asks the model for every passage first, and only then writes, in one
+transaction. Other writing statements on the database are not held up while
+the model answers, and a write retried after a commit conflict with another
+writer (up to 8 times) reuses the answers instead of asking again. The
+statement reads the graph as of its start, before the model is asked, so a
+commit that touches the same nodes meanwhile costs one retry of the graph
+write, never another model call. Answers are reused only for the same text
+with the same extraction options (`types`, `relations`, `schemaHint`,
+`language`, `model`, `chunkChars`, `minConfidence`). The model
+phase is bounded per call by `DREVO_EXTRACT_TIMEOUT_MS`; the server's
+statement timeout (`DREVO_QUERY_TIMEOUT_MS`) applies to the write that
+follows. A call that only runs per row (after `UNWIND`, `MATCH` or `WITH`,
+as in a trigger) asks the model while the statement writes, but still once
+per text however often the write is retried. For texts too long for one
+statement, submit an [ingest job](#ingest-jobs).
+
 ```text
 CALL drevo.extract.ingest($chapter, {source: {id: 'book-1', title: 'Book One', kind: 'document'}})
 YIELD source, chunks, entities, facts, skipped
@@ -2890,68 +2999,6 @@ A failed extraction is logged by the trigger and recorded in
 suits short texts; the call's time is bounded by `DREVO_EXTRACT_TIMEOUT_MS`
 per passage.
 
-## Entities
-- **Anna** (Person): Keeps a CBT journal
-- **I will fail** (Thought) «I will fail at this» (journal-1)
-
-## Relations
-- (I will fail) -[IS_A]-> (Catastrophizing) valid 2025-01-01→ «always the worst» (journal-1)
-
-triples:
-Anna | Person | Keeps a CBT journal
-I will fail | Thought | «I will fail at this» (journal-1)
-I will fail | IS_A | Catastrophizing | valid 2025-01-01→ | «always the worst» (journal-1)
-
-json:
-{"nodes":[{"id":1,"labels":["Person"],"props":{"description":"Keeps a CBT journal","name":"Anna"}}],"rels":[{"from":3,"id":12,"props":{"valid_from":"2025-01-01"},"to":4,"type":"IS_A"}],"stats":{"nodes":1,"rels":1}}
-```
-
-`triples` takes the fewest tokens. A `RELATED_TO` fact written by
-`drevo.memory.assertFact` is shown under its own relation name (its `type`
-property). JSON keys are sorted; a node's `props` holds its text properties and,
-with `includeProvenance`, `quote`, `source_id`, `valid_from` and `valid_until`.
-
-`drevo.rag.retrieve` returns one row per node, in rank order:
-
-| Column | Meaning |
-|---|---|
-| `node` | the node |
-| `seedScore` | its fused search score when it is a seed, else `null` |
-| `distance` | relationships from the nearest seed; `0` for a seed |
-| `pprScore` | its Personalized PageRank score with `rank: 'ppr'` (the scores of an untruncated retrieval sum to 1), else `null` |
-| `rank` | its position, from 1 |
-| `via` | as in [`drevo.graph.expand`](#graph-expansion); `null` for a seed |
-| `truncated` | whether the expansion stopped at `maxNodes` |
-| `scope` | the scope that ran: `'local'` or `'global'`. In the global scope the communities are the seeds and their members have `distance` 1 and their in-community rank as `pprScore` |
-
-```cypher
-CALL drevo.rag.retrieve('team meeting', {rank: 'distance', hops: 1})
-YIELD node, seedScore, distance, rank
-RETURN rank, node.title, distance, seedScore
-```
-
-`drevo.rag.context` returns one row:
-
-| Column | Meaning |
-|---|---|
-| `text` | the context; `''` when nothing matched or nothing fits |
-| `tokens` | the size of `text` under `tokenizer` — never more than `tokenBudget` |
-| `format` | the format written |
-| `nodeIds`, `relIds` | the ids of the nodes and relationships in `text`, in the order written |
-| `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
-| `mode` | the search mode that ran: `'hybrid'`, `'fts'` or `'vector'` (`'auto'` without an embedder or a `label` runs `'fts'`) |
-| `traceId` | the `id` of the [context trace](#context-traces) recorded with `session` or `trace: true`, else `null` |
-| `scope` | the scope that ran: `'local'` or `'global'` (`'auto'` resolves to one of them); a context trace records it too |
-
-The same graph, question and config give byte-identical `text`: ties are broken
-by node id and properties are written in a fixed order. A question that matches
-nothing gives no `retrieve` rows and a `context` row with empty `text`, `tokens`
-`0` and empty id lists. Nodes and relationships the user may not read are left
-out of every stage. A query that is not a string, a config that is not a map, an
-unknown key (`includeSeeds` included: seeds are always returned) and a value of
-the wrong type or range fail with an error naming the key; an explicit `mode:
-'hybrid'` or `'vector'` without an embedder fails as in `drevo.search.hybrid`.
-Over HTTP the same call is [`POST /rag/context`](admin-guide.md#graph-rag-context-post-ragcontext).
 
 ### Communities
 
@@ -2963,7 +3010,7 @@ handful of summaries with [`scope: 'global'`](#graph-rag-retrieval) instead of
 from the neighbourhood of a few search hits.
 
 ```text
-CALL drevo.community.summarize([config]) YIELD community, size, summary, keywords, mode
+CALL drevo.community.summarize([config]) YIELD community, size, summary, keywords, mode, jobId
 CALL drevo.community.query(query, k[, config]) YIELD community, score, summary
 CALL drevo.community.of(node) YIELD community, level
 CALL drevo.community.stale() YIELD community, size, changed
@@ -3012,12 +3059,12 @@ the JSON `{"labels": …, "relTypes": …}` the layer was computed with.
 | `relTypes` | `null` | partition along these relationship types only; `null` takes every type |
 | `minSize` | `3` | smaller communities get no summary, keywords or mode (their members still get `MEMBER_OF`) |
 | `maxMembers` | `40` | the most members a summary names, best-ranked first |
-| `mode` | `'auto'` | `'extractive'`: written from the members, no model. `'llm'`: written by the chat model — an error while none is configured (see `drevo.extract.status()`). `'auto'`: the model when one is configured, else extractive; `mode` on the row and the node says which ran |
-| `model` | `null` | the chat model for `'llm'`; `null` uses the server's |
+| `mode` | `'auto'` | `'extractive'`: written from the members, no model. `'llm'`: written by the chat model of [`drevo.extract.*`](#extraction) — an error while none is configured (`drevo.extract.status()` shows whether one is), and over more than `DREVO_COMMUNITY_MAX_LLM_SYNC` (default 20) summarised communities in one synchronous call. `'auto'`: the model when one is configured and the call stays within that limit, else extractive; `mode` on the row and the node says which ran |
+| `model` | `null` | the chat model for `'llm'`; `null` uses the endpoint's own |
 | `tokenBudget` | `300` | the most tokens a summary takes (the `'approx'` estimate of [`drevo.rag.context`](#graph-rag-retrieval)); at least `20` |
 | `replace` | `true` | delete the layer's previous communities first; `false` refuses a layer that already has some |
 | `layer` | `'default'` | the name of the partition, so several can sit side by side (say, `'fine'` with `resolution: 2.0`); the global scope of `drevo.rag.context` reads the one its `communityLayer` names |
-| `async` | `false` | `true` is refused until background jobs exist; summarise synchronously |
+| `async` | `false` | `true`: run the call as a background [ingest job](#ingest-jobs) and return at once with its id (see below) |
 
 An extractive summary is `<size> members.`, then the members named best-ranked
 first, grouped by label in the order of their best member (`Person: Alice,
@@ -3026,6 +3073,53 @@ Bob.`), then `Keywords:` — the ten most salient terms of the members' `name`,
 partitioned node as a document — then `Relations:` with the three most frequent
 relationship types inside the community and their counts. As many members as
 fit `tokenBudget` are named. The same graph and config give the same text.
+
+An LLM summary is the chat model's answer when given that extractive view
+(with four times the budget) and asked for a summary of at most `tokenBudget`
+tokens; an answer over the budget is cut. The keywords are the extractive
+ones either way. The model is never asked while anything is written:
+
+1. the statement runs read-only, under the statement timeout: the graph is
+   partitioned and ranked and each community's request prepared;
+2. one model call per summarised community, outside any transaction and the
+   statement timeout, each bounded by `DREVO_EXTRACT_TIMEOUT_MS` (the phase
+   as a whole is not); answers are remembered by the community's member
+   set and request;
+3. the statement runs as its transaction with those answers, under the
+   statement timeout: a retry after a commit conflict reads them again
+   instead of asking. If the graph changed meanwhile and a community has no
+   answer, steps 1–3 run again (three times at most), asking only for what
+   is new.
+
+So a synchronous `auto` or `llm` call on a server with a chat upstream
+configured makes up to `DREVO_COMMUNITY_MAX_LLM_SYNC` (default 20) model
+calls before it returns; `mode: 'extractive'` or `async: true` avoid that. A
+call over more communities than that limit (those under `minSize` do not
+count) fails with `'llm'`, before asking the model, with an error pointing at
+`async: true`, and writes extractive summaries with `'auto'`. `'llm'` also
+needs the statement to open with `CALL drevo.community.summarize` and run in
+auto-commit (elsewhere `'auto'` is extractive).
+
+With `async: true` the call checks the config, the privileges and `replace`
+as a synchronous one would, stores an `:IngestJob` with `pipeline:
+'community'` and one item, and yields one row: `jobId` is the job's id and
+every other column is `null` (a synchronous call yields `jobId = null` on
+each row). The database's ingest scheduler runs the item as
+`drevo.community.summarize` with the same config less `async`, in the same
+three steps — the model asked with no scheduler gate held — and without the
+synchronous limit. It is retried like any ingest item — a rate limit, timeout or `5xx`
+from the model, a write conflict, or a graph changed between the plan and the
+write, is tried again after the backoff; a
+refusal (another `4xx`, `replace: false` over a taken layer) makes it
+`dead` — and `drevo.ingest.status`, `errors`, `cancel` and `retryFailed`
+work on it. A `mode: 'llm'` job waits while no chat model is configured.
+`async: true` needs a user who may read everything, as the job summarises
+the whole graph.
+
+```text
+CALL drevo.community.summarize({async: true, mode: 'llm'}) YIELD jobId
+CALL drevo.ingest.status($jobId) YIELD job RETURN job.state
+```
 
 `drevo.community.summarize` writes, so it needs `CREATE` (and `DELETE` to
 replace a layer); the other three only read. It runs over what the user may
@@ -3082,7 +3176,10 @@ is not a node or an id, or with an id no node has, fails naming it.
 
 An ingest job runs [`drevo.extract.ingest`](#extraction) over a long text in
 the background, one passage at a time, retrying passages the model fails on
-and carrying on after a restart. The job lives in the graph:
+and carrying on after a restart. (`drevo.community.summarize({async: true})`
+stores a job too, with `pipeline: 'community'` and a single item that is the
+whole summarize call; see [Communities](#communities).) The job lives in the
+graph:
 
 ```text
 (:IngestJob {id, state, pipeline: 'extract', total, done, failed, priority,
@@ -3469,11 +3566,14 @@ ones — shared by all strategies, plus `strategies`, a list of:
 | `'hybrid'` | the `k` hits of `drevo.search.hybrid` (in the config's `mode`) |
 | `'hybrid+expand'` | those hits, then their neighbourhood within `hops`, nearest first (`rank: 'distance'`) |
 | `'rag'` | the full `drevo.rag.context` pipeline, ranked by Personalized PageRank (`rank: 'ppr'`) |
-| `'rag-global'` | retrieval over community summaries; this server does not build them, so naming it is an error |
+| `'rag-global'` | the same pipeline in the global scope (`scope: 'global'`, the config's `communityLayer`): the communities best matching the question, then their members. Needs community summaries in that layer — run [`drevo.community.summarize`](#communities) first |
 
 The default is every strategy this server can run with the config: `'fts'`,
 `'hybrid'`, `'hybrid+expand'` and `'rag'`, with `'vector'` first when there is
-an embedder and a `label`. Every strategy writes its nodes as
+an embedder and a `label`, and `'rag-global'` last when `communityLayer`
+(default `'default'`) holds a `:Community`. `'rag'` always runs the local
+scope, whatever `scope` the config gives, so the two compare local against
+global retrieval on one gold set. Every strategy writes its nodes as
 `drevo.rag.context` would, within the same `tokenBudget`, and is scored on what
 fits — what the model would see:
 
@@ -3501,8 +3601,9 @@ label}` nothing matches — fails the call with every such entry listed
 (`2 expected nodes not found: questions[0].expected[1] {name: 'Fix', label:
 'Commit'}, …`); a `{name}` that matches several nodes — by `name` on one and
 `title` on another, say — fails listing their ids. An
-unknown `traceId`, an unknown strategy, `'rag-global'`, `'vector'` without a
-`label` or an embedder, a `session` or `trace: true` (an evaluation records
+unknown `traceId`, an unknown strategy, `'rag-global'` when `communityLayer`
+holds no community (the error says to run `drevo.community.summarize` first),
+`'vector'` without a `label` or an embedder, a `session` or `trace: true` (an evaluation records
 nothing), and a malformed question or config key fail with an error naming it.
 
 ---

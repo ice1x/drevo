@@ -960,33 +960,61 @@ impl NativeService {
         if self.is_read_only() && query_changes_schema(query) {
             return Err(ExecError::Storage(DrevoError::ReadOnly));
         }
-        let checked_writes = restriction.is_some_and(|r| !r.writes_everything());
-        let triggers = self.triggers_active();
         let fired = std::cell::RefCell::new(None);
         let (result, events) = crate::event_bus::collect(|| {
             self.listed_if(list, || {
-                crate::cypher::executor::deadline::with_statement_timeout(
-                    self.statement_timeout(),
-                    || {
-                        let writes = query_writes(query)
-                            || query_calls_atomic_procedure(query)
-                            || ((checked_writes || triggers)
-                                && query_calls_writing_procedure(query, &params));
-                        // A writing statement is one transaction: one log
-                        // record and fsync, and nothing of it stays when it
-                        // fails (#715).
-                        if writes {
-                            let (rows, params) =
-                                self.execute_as_transaction(query, &params, restriction)?;
-                            *fired.borrow_mut() = params;
-                            Ok(rows)
-                        } else {
-                            self.with_fresh_indexes(|idx| {
-                                self.execute_with(idx, query, params, restriction)
-                            })
-                        }
-                    },
-                )
+                // A statement opening with `drevo.extract.ingest` asks the
+                // model first: outside the writers' turn and the statement
+                // timeout, and once however often its write is retried (#805).
+                let upfront = self.prepare_upfront_ingest(query, &params, restriction)?;
+                let first_tx = upfront.as_ref().map(|u| u.tx);
+                let run = |params: HashMap<String, Value>| {
+                    crate::cypher::executor::deadline::with_statement_timeout(
+                        self.statement_timeout(),
+                        || {
+                            let writes = query_writes(query)
+                                || query_calls_writing_procedure(query, &params);
+                            // A writing statement, a writing procedure's call
+                            // included, is one transaction: one log record and
+                            // fsync, and nothing of it stays when it fails
+                            // (#715, #796).
+                            if writes {
+                                let (rows, params) = self.execute_as_transaction(
+                                    query,
+                                    &params,
+                                    restriction,
+                                    first_tx,
+                                )?;
+                                *fired.borrow_mut() = params;
+                                Ok(rows)
+                            } else {
+                                self.with_fresh_indexes(|idx| {
+                                    self.execute_with(idx, query, params, restriction)
+                                })
+                            }
+                        },
+                    )
+                };
+                let result = match upfront {
+                    Some(u) => {
+                        crate::extract::with_prepared(&u.text, &u.options, u.found, || run(params))
+                    }
+                    // A statement opening with `drevo.community.summarize`
+                    // asks the model between a read-only plan and its write
+                    // (#804).
+                    None if self.wants_community_answers(query) => {
+                        self.with_community_answers(query, &params, restriction, || {
+                            run(params.clone())
+                        })
+                    }
+                    None => run(params),
+                };
+                if let Some(tx) = first_tx {
+                    // Committed or rolled back already, unless the statement
+                    // never reached its write.
+                    self.graph.tx_rollback(tx);
+                }
+                result
             })
         });
         if result.is_ok() {
@@ -1052,34 +1080,53 @@ impl NativeService {
     }
 
     /// Run a writing statement as one transaction, committed at its end
-    /// (#606). Used while an `IS NOT NULL` or `NODE KEY` constraint is
-    /// declared: those are checked at commit, so `CREATE (n:User) SET
-    /// n.email = …` or `MERGE … ON CREATE SET …` satisfy them by the end of
-    /// the statement, and a statement that does not writes nothing. Reads in
-    /// the statement see its own writes and are not narrowed by the
-    /// property, label, path or text indexes, which describe the committed
-    /// graph. A commit that lost a race with another writer is retried.
+    /// (#606, #715). Every auto-commit statement that writes runs this way, a
+    /// call to a writing procedure such as `drevo.memory.addMessage`
+    /// included (#796), so a failure part-way through leaves nothing.
+    /// `IS NOT NULL` and `NODE KEY` constraints are checked at commit, so
+    /// `CREATE (n:User) SET n.email = …` or `MERGE … ON CREATE SET …` satisfy
+    /// them by the end of the statement. Reads in the statement see its own
+    /// writes and are not narrowed by the property, label, path or text
+    /// indexes, which describe the committed graph. A commit that lost a race
+    /// with another writer is retried.
     ///
-    /// While triggers are installed every writing statement runs this way:
-    /// the `before` triggers run in the transaction ahead of the commit, and
-    /// the change parameters are returned for the `after` phases.
+    /// While triggers are installed the `before` triggers run in the
+    /// transaction ahead of the commit, and the change parameters are
+    /// returned for the `after` phases.
     fn execute_as_transaction(
         &self,
         query: &Query,
         params: &HashMap<String, Value>,
         restriction: Option<Restriction<'_>>,
+        first: Option<crate::native::NativeTxId>,
     ) -> Result<(ExecResult, Option<HashMap<String, Value>>), ExecError> {
-        const ATTEMPTS: usize = 8;
         let _turn = self
             .autocommit_writer
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // An extraction the statement makes is made once for all attempts.
+        crate::extract::with_memo(|| self.write_attempts(query, params, restriction, first))
+    }
+
+    /// The attempts of [`execute_as_transaction`](Self::execute_as_transaction),
+    /// the first in `first` when the statement began before the writer's
+    /// turn.
+    fn write_attempts(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        mut first: Option<crate::native::NativeTxId>,
+    ) -> Result<(ExecResult, Option<HashMap<String, Value>>), ExecError> {
+        const ATTEMPTS: usize = 8;
         let mut attempt = 0;
         loop {
             attempt += 1;
             // One statement: bounded by the statement timeout, not by the
             // write limit of a client's transaction.
-            let tx = self.graph.tx_begin_statement();
+            let tx = first
+                .take()
+                .unwrap_or_else(|| self.graph.tx_begin_statement());
             let Some(engine) = self.graph.tx_engine(tx) else {
                 return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
                     "the statement's transaction closed before it ran",
@@ -1091,26 +1138,7 @@ impl NativeService {
                     // A fresh transaction: the indexes describe its snapshot
                     // unless another writer committed since it began.
                     let overlay = self.graph.tx_index_overlay(tx);
-                    let indexed = overlay.is_some();
-                    let ctx = NativeQueryContext {
-                        fts: idx.fts(),
-                        fts_rel: idx.fts_rel(),
-                        labels: indexed.then_some(&idx.labels),
-                        properties: idx.props().filter(|_| indexed),
-                        paths: indexed.then_some(&idx.paths),
-                        texts: indexed.then_some(&idx.texts),
-                        points: indexed.then_some(&idx.points),
-                        values: idx.values(),
-                        #[cfg(feature = "http")]
-                        embedder: self.embedder.get(),
-                        #[cfg(not(feature = "http"))]
-                        embedder: None,
-                        semantic: Some(self),
-                        in_transaction: false,
-                        tx_has_written: false,
-                        tx_written: overlay.as_ref(),
-                        restriction,
-                    };
+                    let ctx = self.statement_context(idx, overlay.as_ref(), restriction);
                     execute_on_engine_with_context(query, &engine, &ctx, params.clone())
                 })
             });
@@ -1158,6 +1186,166 @@ impl NativeService {
                         e.to_string(),
                     ))));
                 }
+            }
+        }
+    }
+
+    /// The context of a statement running as its own transaction: the
+    /// indexes narrow its reads only while `overlay` (the transaction's
+    /// [`NativeGraph::tx_index_overlay`]) says they describe its snapshot.
+    fn statement_context<'a>(
+        &'a self,
+        idx: &'a ServiceIndexes,
+        overlay: Option<&'a std::collections::HashSet<u64>>,
+        restriction: Option<Restriction<'a>>,
+    ) -> NativeQueryContext<'a> {
+        let indexed = overlay.is_some();
+        NativeQueryContext {
+            fts: idx.fts(),
+            fts_rel: idx.fts_rel(),
+            labels: indexed.then_some(&idx.labels),
+            properties: idx.props().filter(|_| indexed),
+            paths: indexed.then_some(&idx.paths),
+            texts: indexed.then_some(&idx.texts),
+            points: indexed.then_some(&idx.points),
+            values: idx.values(),
+            #[cfg(feature = "http")]
+            embedder: self.embedder.get(),
+            #[cfg(not(feature = "http"))]
+            embedder: None,
+            semantic: Some(self),
+            in_transaction: false,
+            tx_has_written: false,
+            tx_written: overlay,
+            restriction,
+        }
+    }
+
+    /// For a statement that opens with `CALL drevo.extract.ingest(…)`: begin
+    /// its transaction, read the call's arguments on it and ask the model,
+    /// all before the writer's turn and outside the statement timeout (the
+    /// model's calls are bounded by `DREVO_EXTRACT_TIMEOUT_MS`). `None` for
+    /// any other statement, and for a call that fails before asking the
+    /// model, which then runs as it is.
+    fn prepare_upfront_ingest(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+    ) -> Result<Option<UpfrontPrepared>, ExecError> {
+        if !crate::cypher::executor::opens_with_ingest(query) || self.is_read_only() {
+            return Ok(None);
+        }
+        let tx = self.graph.tx_begin_statement();
+        let Some(engine) = self.graph.tx_engine(tx) else {
+            return Ok(None);
+        };
+        let call = self.with_fresh_indexes(|idx| {
+            let overlay = self.graph.tx_index_overlay(tx);
+            let ctx = self.statement_context(idx, overlay.as_ref(), restriction);
+            crate::cypher::executor::upfront_ingest(query, &engine, &ctx, params.clone())
+        });
+        let Some(call) = call else {
+            self.graph.tx_rollback(tx);
+            return Ok(None);
+        };
+        match crate::extract::prepare_ingest(&call.text, &call.options) {
+            Ok(found) => Ok(Some(UpfrontPrepared {
+                tx,
+                text: call.text,
+                options: call.options,
+                found,
+            })),
+            Err(e) => {
+                self.graph.tx_rollback(tx);
+                Err(crate::cypher::executor::ingest_failed(&e, call.span))
+            }
+        }
+    }
+
+    /// Whether `query` is a statement whose LLM community summaries are
+    /// asked for before its write: it opens with
+    /// `drevo.community.summarize`, a chat model is installed, and no
+    /// answers are in place yet (a community job brings its own).
+    fn wants_community_answers(&self, query: &Query) -> bool {
+        crate::cypher::executor::opening_community_summarize(query).is_some()
+            && !self.is_read_only()
+            && !crate::community::llm::is_prepared()
+            && crate::extract::installed().is_some()
+    }
+
+    /// Phases 1 and 2 of an LLM `drevo.community.summarize`
+    /// ([`crate::community::llm`]): run `query` read-only as a plan, under
+    /// the statement timeout, then ask the model for every planned community
+    /// `answers` has no answer for — outside the writers' turn, any
+    /// transaction and the statement timeout. `false` when the call needs no
+    /// model (extractive, `async: true`).
+    ///
+    /// # Errors
+    ///
+    /// The statement's own error when planning fails, else the model's
+    /// failure with whether asking again later may succeed.
+    pub(crate) fn plan_community_answers(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        answers: &mut crate::community::llm::Answers,
+    ) -> Result<bool, (ExecError, Option<bool>)> {
+        let (result, plan) = crate::community::llm::planning(|| {
+            crate::cypher::executor::deadline::with_statement_timeout(
+                self.statement_timeout(),
+                || {
+                    self.with_fresh_indexes(|idx| {
+                        self.execute_with(idx, query, params.clone(), restriction)
+                    })
+                },
+            )
+        });
+        let asks = match plan {
+            Some(Some(asks)) => asks,
+            Some(None) => return Ok(false),
+            None => return result.map(|_| false).map_err(|e| (e, None)),
+        };
+        crate::community::llm::ask_planned(&asks, answers).map_err(|(message, retryable)| {
+            (
+                ExecError::InvalidProcedureCall {
+                    name: "drevo.community.summarize".into(),
+                    message,
+                    span: crate::cypher::executor::opening_community_summarize(query)
+                        .unwrap_or_else(|| crate::cypher::lexer::Span::new(0, 0, 1, 1)),
+                },
+                Some(retryable),
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// Run `write` (phase 3) with the community summaries planned and asked
+    /// for `query` in place; when the write meets a community the plan did
+    /// not see (the graph changed meanwhile), plan, ask for what is new and
+    /// write again, up to three times. An answer is asked for once.
+    fn with_community_answers(
+        &self,
+        query: &Query,
+        params: &HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        mut write: impl FnMut() -> Result<ExecResult, ExecError>,
+    ) -> Result<ExecResult, ExecError> {
+        const ROUNDS: usize = 3;
+        let mut answers = Vec::new();
+        let mut round = 0;
+        loop {
+            round += 1;
+            if !self
+                .plan_community_answers(query, params, restriction, &mut answers)
+                .map_err(|(e, _)| e)?
+            {
+                return write();
+            }
+            let (result, missed) = crate::community::llm::with_prepared(&answers, &mut write);
+            if !missed || round == ROUNDS {
+                return result;
             }
         }
     }
@@ -3767,8 +3955,6 @@ impl NativeService {
     }
 }
 
-/// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
-/// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
 /// Whether `query` calls a procedure that writes the graph: a
 /// `drevo.memory.*` writer, `drevo.entity.merge`, `drevo.rag.pruneTraces`,
 /// `drevo.community.summarize`, a `drevo.ingest.*` procedure that writes
@@ -3815,26 +4001,18 @@ fn ingest_changes_jobs(name: &str) -> bool {
     )
 }
 
-/// Whether `query` calls a procedure whose writes must land together or
-/// not at all, so the statement always runs as one transaction:
-/// `drevo.entity.merge` (moves, deletes and aliases),
-/// `drevo.extract.ingest` (a source, its chunks, entities and facts),
-/// `drevo.community.summarize` (a layer replaced: old communities deleted,
-/// new ones and their relationships written) and the `drevo.ingest.*`
-/// procedures that write jobs (a job and all its items).
-fn query_calls_atomic_procedure(query: &Query) -> bool {
-    use crate::cypher::ast::Clause;
-    query.parts.iter().any(|part| {
-        part.query.clauses.iter().any(|c| {
-            matches!(c, Clause::Call(call) if {
-                let name = call.name.join(".");
-                matches!(
-                    name.as_str(),
-                    "drevo.entity.merge" | "drevo.extract.ingest" | "drevo.community.summarize"
-                ) || ingest_changes_jobs(&name)
-            })
-        })
-    })
+/// A statement's `drevo.extract.ingest` extraction, made before its write
+/// ([`NativeService::prepare_upfront_ingest`]).
+struct UpfrontPrepared {
+    /// The statement's transaction, begun before the model was asked: the
+    /// first attempt of the write runs on it.
+    tx: crate::native::NativeTxId,
+    /// The text extracted.
+    text: String,
+    /// The options it was extracted with.
+    options: crate::extract::ExtractOptions,
+    /// What the model found in it.
+    found: Vec<crate::extract::ChunkExtraction>,
 }
 
 /// Whether the config argument of a `drevo.rag.context` call asks for a
@@ -3897,6 +4075,8 @@ fn query_changes_schema(query: &Query) -> bool {
     })
 }
 
+/// Whether `query` has a clause that writes data (`CREATE`, `MERGE`, `SET`,
+/// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
 fn query_writes(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
     query.parts.iter().any(|part| {
@@ -4337,7 +4517,7 @@ mod node_text_tests {
 mod writing_procedure_tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use super::{query_calls_atomic_procedure, query_calls_writing_procedure};
+    use super::query_calls_writing_procedure;
     use crate::cypher::executor::Value;
     use crate::cypher::parser::parse;
 
@@ -4430,32 +4610,31 @@ mod writing_procedure_tests {
     }
 
     #[test]
-    fn only_entity_merge_ingest_and_summarize_always_run_as_one_transaction() {
-        let atomic = |q: &str| query_calls_atomic_procedure(&parse(q).expect("parse"));
-        assert!(atomic("CALL drevo.community.summarize()"));
-        assert!(atomic(
-            "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community RETURN community"
-        ));
-        assert!(!atomic("CALL drevo.community.query('x', 3)"));
-        assert!(!atomic("CALL drevo.community.stale()"));
-        assert!(atomic("CALL drevo.entity.merge(1, [2])"));
-        assert!(atomic(
-            "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept"
-        ));
-        assert!(atomic(
-            "CALL drevo.extract.ingest('x', {source: 'b'}) YIELD facts RETURN facts"
-        ));
-        assert!(!atomic("CALL drevo.entity.candidates('Entity')"));
-        assert!(!atomic("CALL drevo.memory.addMessage('s', 'user', 'hi')"));
-        assert!(!atomic(
-            "CALL drevo.memory.addSource('b', null, null, null)"
-        ));
-        assert!(!atomic("CALL drevo.extract.entities('x')"));
+    fn entity_merge_ingest_and_summarize_run_as_one_transaction() {
+        // Every writing procedure's statement runs as one transaction (#796).
+        for q in [
+            "CALL drevo.community.summarize()",
+            "CALL drevo.community.summarize({mode: 'extractive'}) YIELD community RETURN community",
+            "CALL drevo.entity.merge(1, [2])",
+            "MATCH (a), (b) CALL drevo.entity.merge(a, [b]) YIELD kept RETURN kept",
+            "CALL drevo.extract.ingest('x', {source: 'b'}) YIELD facts RETURN facts",
+            "CALL drevo.memory.addMessage('s', 'user', 'hi')",
+            "CALL drevo.memory.addSource('b', null, null, null)",
+        ] {
+            assert!(writes(q), "{q}");
+        }
+        for q in [
+            "CALL drevo.community.query('x', 3)",
+            "CALL drevo.community.stale()",
+            "CALL drevo.entity.candidates('Entity')",
+            "CALL drevo.extract.entities('x')",
+        ] {
+            assert!(!writes(q), "{q}");
+        }
     }
 
     #[test]
     fn ingest_job_changes_write_and_run_as_one_transaction() {
-        let atomic = |q: &str| query_calls_atomic_procedure(&parse(q).expect("parse"));
         for q in [
             "CALL drevo.ingest.submit(['a', 'b'], {source: 'book-1'}) YIELD jobId RETURN jobId",
             "CALL drevo.ingest.cancel('job-1') YIELD job RETURN job",
@@ -4465,7 +4644,6 @@ mod writing_procedure_tests {
             "CALL drevo.ingest.purge('job-1') YIELD deleted RETURN deleted",
         ] {
             assert!(writes(q), "{q}");
-            assert!(atomic(q), "{q}");
         }
         for q in [
             "CALL drevo.ingest.status('job-1') YIELD job, items RETURN job, items",
@@ -4473,7 +4651,6 @@ mod writing_procedure_tests {
             "CALL drevo.ingest.errors('job-1', 10) YIELD seq RETURN seq",
         ] {
             assert!(!writes(q), "{q}");
-            assert!(!atomic(q), "{q}");
         }
     }
 

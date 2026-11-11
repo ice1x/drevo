@@ -193,6 +193,7 @@ fn retrieved(svc: &NativeService, text: &str, label: Option<&str>) -> Subgraph {
     Subgraph {
         nodes,
         rels,
+        rel_weights: std::collections::BTreeMap::new(),
         truncated: false,
     }
 }

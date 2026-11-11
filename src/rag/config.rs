@@ -693,7 +693,10 @@ mod tests {
         assert!(config.expand.exclude_labels.is_empty());
         assert_eq!(config.expand.per_node_limit, 5);
         assert_eq!(config.expand.max_nodes, 50);
-        assert_eq!(config.expand.as_of.as_deref(), Some("2025-06-01"));
+        assert_eq!(
+            config.expand.as_of.as_deref(),
+            Some("2025-06-01T00:00:00.000Z")
+        );
         assert_eq!(config.rank, RankMode::None);
         assert_eq!(config.sources, Some(vec!["journal-1".to_string()]));
         assert_eq!(config.render.token_budget, 50);
