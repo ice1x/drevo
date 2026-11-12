@@ -105,6 +105,30 @@ fn the_restart_script_forwards_the_server_settings() {
 }
 
 #[test]
+fn the_restart_script_forwards_the_extraction_and_ingest_settings() {
+    // Graph-RAG settings read by the server (docs/admin-guide.md): a
+    // container recreated by the script loses them unless they are forwarded
+    // (#821).
+    let script = std::fs::read_to_string(repo_root().join("scripts/drevo-restart.sh")).unwrap();
+    let line = script
+        .lines()
+        .find(|l| l.starts_with("FORWARD_VARS="))
+        .expect("a FORWARD_VARS line");
+    for var in [
+        "DREVO_EXTRACT_UPSTREAM",
+        "DREVO_EXTRACT_API_KEY",
+        "DREVO_EXTRACT_MODEL",
+        "DREVO_EXTRACT_TIMEOUT_MS",
+        "DREVO_INGEST_WORKERS",
+        "DREVO_INGEST_MAX_ATTEMPTS",
+        "DREVO_INGEST_RETRY_BASE_MS",
+        "DREVO_COMMUNITY_MAX_LLM_SYNC",
+    ] {
+        assert!(line.contains(var), "#821: {var} is not forwarded: {line}");
+    }
+}
+
+#[test]
 fn watchdog_recreates_when_container_absent() {
     assert!(
         run_watchdog_recreates(""),
