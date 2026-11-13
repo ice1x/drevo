@@ -12,6 +12,7 @@
 //! - `GET /ui` → `index.html` (`text/html; charset=utf-8`)
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/big_layout.js` → `big_layout.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/transactions_view.js` → `transactions_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/backups_view.js` → `backups_view.js` (`text/javascript; charset=utf-8`)
@@ -68,6 +69,12 @@ const APP_JS: &str = include_str!("../static/web/app.js");
 /// embedded at compile time. Unit-tested separately by `graph_math.test.js`
 /// (`node --test`, the `web-assets` CI job).
 const GRAPH_MATH_JS: &str = include_str!("../static/web/graph_math.js");
+
+/// `big_layout.js` body — the layout of a large graph (a force simulation
+/// computed in short steps, then a pass that leaves no two nodes or titles
+/// overlapping), used by `app.js`. Unit-tested by `big_layout.test.js`
+/// under `node --test`.
+const BIG_LAYOUT_JS: &str = include_str!("../static/web/big_layout.js");
 
 /// `report.js` body — pure helpers for problem toasts and the "Report a
 /// problem" GitHub issue (#552), used by `app.js`. Unit-tested by
@@ -146,6 +153,11 @@ pub async fn serve_app_js() -> Response {
 /// `GET /ui/graph_math.js` → serve the pure geometry helpers `app.js` depends on.
 pub async fn serve_graph_math_js() -> Response {
     asset_response(GRAPH_MATH_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/big_layout.js` → serve the large-graph layout `app.js` depends on.
+pub async fn serve_big_layout_js() -> Response {
+    asset_response(BIG_LAYOUT_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/report.js` → serve the problem-report helpers `app.js` depends on.
@@ -619,6 +631,75 @@ mod tests {
         assert!(
             APP_JS.contains("new EventSource(Live.eventsUrl(currentDb))"),
             "app.js must follow GET /events for the database being viewed"
+        );
+    }
+
+    // A large overview (#822, #823, #824): the layout comes from
+    // big_layout.js, computed in slices so the tab stays responsive, and the
+    // node limit reaches 5000.
+    #[test]
+    fn embedded_big_layout_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            BIG_LAYOUT_JS.contains("DrevoBigLayout")
+                && BIG_LAYOUT_JS.contains("function createLayout")
+                && BIG_LAYOUT_JS.contains("function overlappingPairs"),
+            "big_layout.js must export createLayout on DrevoBigLayout"
+        );
+        assert!(
+            !BIG_LAYOUT_JS.contains("document") && !BIG_LAYOUT_JS.contains("window."),
+            "big_layout.js must stay DOM-free so it is unit-testable under node"
+        );
+        let big = INDEX_HTML
+            .find("/ui/big_layout.js")
+            .expect("index.html must load big_layout.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(big < appjs, "big_layout.js must load before app.js");
+    }
+
+    #[test]
+    fn embedded_app_js_lays_out_a_large_graph_in_slices() {
+        assert!(
+            APP_JS.contains("DrevoBigLayout.isLargeGraph("),
+            "app.js must pick the layout by graph size"
+        );
+        assert!(
+            APP_JS.contains("DrevoBigLayout.createLayout("),
+            "app.js must lay a large graph out with big_layout.js"
+        );
+        assert!(
+            APP_JS.contains("DrevoBigLayout.nodeBox("),
+            "the layout must be given each node's circle and title box"
+        );
+        assert!(
+            APP_JS.contains("layout.step(1)") && APP_JS.contains("LAYOUT_SLICE_MS"),
+            "the layout must be computed in time slices, not in one call"
+        );
+        assert!(
+            INDEX_HTML.contains("id=\"layout-progress\""),
+            "the canvas must show the progress of a running layout"
+        );
+    }
+
+    #[test]
+    fn embedded_node_limit_reaches_5000_and_shows_the_value_used() {
+        assert!(
+            INDEX_HTML.contains("id=\"node-limit\" min=\"1\" max=\"5000\""),
+            "the node limit field must allow 5000 nodes"
+        );
+        assert!(
+            GRAPH_MATH_JS.contains("const MAX_NODE_LIMIT = 5000;"),
+            "graph_math.js must hold the maximum node limit"
+        );
+        assert!(
+            APP_JS.contains("DrevoGraphMath.clampNodeLimit($nodeLimit.value)")
+                && APP_JS.contains("$nodeLimit.value = String(limit)"),
+            "app.js must write the limit it uses back into the field"
+        );
+        assert!(
+            !APP_JS.contains("Math.min(n, 2000)"),
+            "the limit must not be cut to 2000 in app.js"
         );
     }
 

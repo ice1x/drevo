@@ -645,6 +645,41 @@ async fn ui_serves_backups_view_module_and_the_backup_buttons() {
     }
 }
 
+// A large overview (#822, #823, #824): the layout module is served
+// same-origin before app.js, the canvas has a progress indicator, and the
+// node limit field allows 5000 nodes.
+#[tokio::test]
+async fn ui_serves_the_large_graph_layout_and_a_5000_node_limit() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/big_layout.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/javascript"), "got {ct:?}");
+    let js = String::from_utf8(bytes).expect("utf-8");
+    for needle in [
+        "DrevoBigLayout",
+        "LARGE_GRAPH_NODES",
+        "isLargeGraph",
+        "nodeBox",
+        "overlappingPairs",
+        "createLayout",
+    ] {
+        assert!(js.contains(needle), "big_layout.js must define {needle}");
+    }
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let big = idx
+        .find("/ui/big_layout.js")
+        .expect("index.html must load big_layout.js");
+    let appjs = idx.find("/ui/app.js").expect("index.html must load app.js");
+    assert!(big < appjs, "big_layout.js must load before app.js");
+    assert!(idx.contains("id=\"layout-progress\""));
+    assert!(idx.contains("id=\"node-limit\" min=\"1\" max=\"5000\""));
+    let (_, _, appjs) = get(&app, "/ui/app.js").await;
+    let appjs = String::from_utf8(appjs).expect("utf-8");
+    assert!(appjs.contains("DrevoBigLayout.createLayout("));
+    assert!(appjs.contains("DrevoGraphMath.clampNodeLimit("));
+}
+
 // The live overview: its pure helpers are served same-origin before app.js,
 // the overview panel has the switch, and the stream it follows is served.
 #[tokio::test]

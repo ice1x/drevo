@@ -15,6 +15,8 @@ const {
   hubIds,
   nodeSize,
   labelFontSize,
+  MAX_NODE_LIMIT,
+  clampNodeLimit,
 } = require("./graph_math.js");
 
 test("meanEdgeLength averages the segment lengths", () => {
@@ -235,4 +237,27 @@ test("labelFontSize keeps about 11px on screen within bounds", () => {
   assert.equal(labelFontSize(0.5), 22);
   assert.equal(labelFontSize(0.05), 44, "capped when zoomed far out");
   assert.equal(labelFontSize(3), 11, "never below the base size");
+});
+
+test("the node limit reaches 5000 nodes", () => {
+  assert.equal(MAX_NODE_LIMIT, 5000);
+  assert.equal(clampNodeLimit("5000"), 5000);
+  assert.equal(clampNodeLimit("4392"), 4392);
+  assert.equal(clampNodeLimit(2001), 2001);
+});
+
+test("a node limit above the maximum becomes the maximum", () => {
+  assert.equal(clampNodeLimit("5001"), 5000);
+  assert.equal(clampNodeLimit("9999999"), 5000);
+});
+
+test("a node limit that is not a positive number becomes 50", () => {
+  for (const raw of ["", "abc", "0", "-3", null, undefined, NaN]) {
+    assert.equal(clampNodeLimit(raw), 50, `limit for ${String(raw)}`);
+  }
+});
+
+test("a fractional node limit is cut to a whole number", () => {
+  assert.equal(clampNodeLimit("12.7"), 12);
+  assert.equal(clampNodeLimit(1), 1);
 });
