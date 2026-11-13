@@ -2237,6 +2237,22 @@ async fn ui_backups_view_module_serves_to_client() {
 }
 
 #[tokio::test]
+async fn ui_big_layout_module_serves_to_client() {
+    // The large-graph layout (#823, #824), unit-tested by big_layout.test.js.
+    let app = make_app();
+    let (status, content_type, body) = fetch_text(&app, "/ui/big_layout.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.contains("javascript"));
+    assert!(body.contains("DrevoBigLayout"));
+    assert!(body.contains("createLayout"));
+    let (_, _, app_js) = fetch_text(&app, "/ui/app.js").await;
+    assert!(
+        app_js.contains("DrevoBigLayout.createLayout("),
+        "app.js lays a large graph out with big_layout.js"
+    );
+}
+
+#[tokio::test]
 async fn ui_live_refresh_module_serves_to_client() {
     // The live-overview helpers, unit-tested by live_refresh.test.js.
     let app = make_app();
