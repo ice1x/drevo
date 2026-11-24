@@ -24,6 +24,14 @@ use drevo::cypher::executor::{ExecError, ExecResult, Value};
 use drevo::cypher::parser::parse;
 use drevo::native_service::NativeService;
 
+/// Serialises the tests of this binary: the installed chat model is
+/// process-wide, so a test that installs, removes or relies on it holds this.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn run(svc: &NativeService, q: &str) -> Result<ExecResult, ExecError> {
     svc.execute(&parse(q).expect("parse"), HashMap::new())
 }
@@ -63,6 +71,7 @@ fn invalid_call(svc: &NativeService, q: &str) -> String {
 
 #[test]
 fn without_an_upstream_each_procedure_names_the_status_procedure() {
+    let _s = serial();
     drevo::extract::uninstall();
     let svc = NativeService::in_memory();
     for q in [
@@ -86,6 +95,7 @@ fn without_an_upstream_each_procedure_names_the_status_procedure() {
 
 #[test]
 fn status_reports_no_upstream() {
+    let _s = serial();
     drevo::extract::uninstall();
     let svc = NativeService::in_memory();
     let res = run_ok(
@@ -93,20 +103,20 @@ fn status_reports_no_upstream() {
         "CALL drevo.extract.status() YIELD configured, model, upstream, lastError, lastSkipped \
          RETURN configured, model, upstream, lastError, lastSkipped",
     );
+    // `lastError` and `lastSkipped` are the outcome of the process's last
+    // extraction call, whichever test made it: only their presence is
+    // checked here.
+    assert_eq!(res.rows.len(), 1);
     assert_eq!(
-        res.rows,
-        vec![vec![
-            Value::Bool(false),
-            Value::Null,
-            Value::Null,
-            Value::Null,
-            Value::Null
-        ]]
+        res.rows[0][..3],
+        [Value::Bool(false), Value::Null, Value::Null]
     );
+    assert_eq!(res.rows[0].len(), 5);
 }
 
 #[test]
 fn a_bad_config_is_refused_before_any_call() {
+    let _s = serial();
     drevo::extract::uninstall();
     let svc = NativeService::in_memory();
     assert_eq!(
@@ -154,6 +164,7 @@ fn ingest_takes_two_arguments() {
 
 #[test]
 fn chunks_shows_the_passages_with_exact_character_offsets() {
+    let _s = serial();
     drevo::extract::uninstall();
     let svc = NativeService::in_memory();
     let text = "Дана открыла рукопись на рассвете. 🚀 Дана прочла её до полудня. ".repeat(4);
@@ -395,13 +406,6 @@ mod upstream {
             // Let nothing hang past the test.
             self.release();
         }
-    }
-
-    /// Serialises the tests of this binary: the endpoint is process-wide.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     const BOOK: &str = "Dana joined Acme in May. Acme is based in Oslo, far from the Nostromo.";
