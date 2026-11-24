@@ -159,14 +159,15 @@ def test_a_failed_statement_rolls_the_transaction_back(drevo_db: drevo.Drevo) ->
 def test_full_text_search_runs_in_a_transaction(drevo_db: drevo.Drevo, fake: Faker) -> None:
     word = fake.unique.lexify("zq????").lower()
     drevo_db.execute("CREATE (:Doc {title: $t})", {"t": f"{word} notes"})
+    search = "CALL fts.search($q, 5) YIELD node RETURN node.title AS t ORDER BY t"
     with drevo_db.transaction() as tx:
-        rows = tx.execute(
-            "CALL fts.search($q, 5) YIELD node RETURN node.title AS t", {"q": word}
-        ).rows
-        assert rows == [{"t": f"{word} notes"}]
-        tx.execute("CREATE (:Doc {title: 'draft'})")
-        with pytest.raises(drevo.CypherError, match="committed data only"):
-            tx.execute("CALL fts.search($q, 5) YIELD node RETURN node", {"q": word})
+        assert tx.execute(search, {"q": word}).rows == [{"t": f"{word} notes"}]
+        # The transaction's own write is a hit too (#817).
+        tx.execute("CREATE (:Doc {title: $t})", {"t": f"{word} draft"})
+        assert tx.execute(search, {"q": word}).rows == [
+            {"t": f"{word} draft"},
+            {"t": f"{word} notes"},
+        ]
 
 
 def test_show_indexes_in_a_transaction_lists_the_schema(drevo_db: drevo.Drevo) -> None:

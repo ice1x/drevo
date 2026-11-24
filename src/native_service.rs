@@ -1138,7 +1138,7 @@ impl NativeService {
                     // A fresh transaction: the indexes describe its snapshot
                     // unless another writer committed since it began.
                     let overlay = self.graph.tx_index_overlay(tx);
-                    let ctx = self.statement_context(idx, overlay.as_ref(), restriction);
+                    let ctx = self.statement_context(idx, tx, overlay.as_ref(), restriction);
                     execute_on_engine_with_context(query, &engine, &ctx, params.clone())
                 })
             });
@@ -1190,12 +1190,13 @@ impl NativeService {
         }
     }
 
-    /// The context of a statement running as its own transaction: the
+    /// The context of a statement running as its own transaction `tx`: the
     /// indexes narrow its reads only while `overlay` (the transaction's
     /// [`NativeGraph::tx_index_overlay`]) says they describe its snapshot.
     fn statement_context<'a>(
         &'a self,
         idx: &'a ServiceIndexes,
+        tx: crate::native::NativeTxId,
         overlay: Option<&'a std::collections::HashSet<u64>>,
         restriction: Option<Restriction<'a>>,
     ) -> NativeQueryContext<'a> {
@@ -1215,7 +1216,7 @@ impl NativeService {
             embedder: None,
             semantic: Some(self),
             in_transaction: false,
-            tx_has_written: false,
+            tx: Some((&self.graph, tx)),
             tx_written: overlay,
             restriction,
         }
@@ -1242,7 +1243,7 @@ impl NativeService {
         };
         let call = self.with_fresh_indexes(|idx| {
             let overlay = self.graph.tx_index_overlay(tx);
-            let ctx = self.statement_context(idx, overlay.as_ref(), restriction);
+            let ctx = self.statement_context(idx, tx, overlay.as_ref(), restriction);
             crate::cypher::executor::upfront_ingest(query, &engine, &ctx, params.clone())
         });
         let Some(call) = call else {
@@ -1772,10 +1773,9 @@ impl NativeService {
         };
         // The label, property, path and text indexes describe the committed
         // graph, not this transaction's snapshot, so reads scan instead. The
-        // full-text indexes have no scan fallback: they serve the statement
-        // and their hits resolve against the snapshot, until the transaction
-        // has written (`tx_has_written`).
-        let tx_has_written = self.graph.tx_has_writes(tx);
+        // full-text indexes have no scan fallback: they serve the statement,
+        // completed with what the transaction has changed, and their hits
+        // resolve against the snapshot.
         // A terminated transaction runs nothing more; its commit is refused.
         #[cfg(not(target_arch = "wasm32"))]
         let entry = self
@@ -1835,7 +1835,7 @@ impl NativeService {
                                 embedder: None,
                                 semantic: Some(self),
                                 in_transaction: true,
-                                tx_has_written,
+                                tx: Some((&self.graph, tx)),
                                 restriction,
                             };
                             execute_on_engine_with_context(query, &engine, &ctx, params)
@@ -1954,7 +1954,7 @@ impl NativeService {
                         embedder: None,
                         semantic: Some(self),
                         in_transaction: true,
-                        tx_has_written: true,
+                        tx: Some((&self.graph, tx)),
                         tx_written: None,
                         restriction: None,
                     };
@@ -3894,7 +3894,7 @@ impl NativeService {
             // manage this service's registry instead of a KV secondary (#447).
             semantic: Some(self),
             in_transaction: false,
-            tx_has_written: false,
+            tx: None,
             tx_written: None,
             restriction,
         };

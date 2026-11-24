@@ -6,10 +6,8 @@
 //! services attached:
 //! - full-text, vector and fuzzy search, `keywords()`, `SHOW INDEXES` and
 //!   `SHOW CONSTRAINTS` work, resolving hits against the snapshot;
-//! - the full-text index covers committed data only, so after the
-//!   transaction has written a full-text procedure fails with
-//!   `ExecError::IndexBehindWrites` (as it does after a write earlier in
-//!   the same statement);
+//! - full-text search reads the transaction's own writes (#817; the
+//!   cases are in `fts_after_write_tests.rs`);
 //! - nodes created in the transaction are auto-embedded;
 //! - schema commands, which take effect outside the transaction, fail with
 //!   `ExecError::ForbiddenInTransaction`.
@@ -130,58 +128,40 @@ fn full_text_hits_resolve_against_the_transaction_snapshot() {
 }
 
 #[test]
-fn full_text_search_after_the_transaction_wrote_names_the_cause() {
+fn full_text_search_after_the_transaction_wrote_finds_its_writes() {
     let svc = NativeService::in_memory();
     ok(&svc, "CREATE (:Doc {title: 'sourdough bread'})");
     let tx = svc.begin_tx();
     ok_in_tx(&svc, tx, "CREATE (:Doc {title: 'rye bread'})");
-    for (q, feature) in [
-        (
-            "CALL fts.search('bread', 5) YIELD node RETURN node",
-            "fts.search",
-        ),
-        (
-            "CALL db.index.fulltext.queryNodes('any', 'bread') YIELD node RETURN node",
-            "db.index.fulltext.queryNodes",
-        ),
-        (
-            "CALL fts.searchRelationships('bread', 5) YIELD rel RETURN rel",
-            "fts.searchRelationships",
-        ),
-        (
-            "CALL drevo.memory.recall('s', 'bread', 5) YIELD node RETURN node",
-            "drevo.memory.recall",
-        ),
+    for q in [
+        "CALL fts.search('bread', 5) YIELD node RETURN node.title ORDER BY node.title",
+        "CALL db.index.fulltext.queryNodes('any', 'bread') YIELD node \
+         RETURN node.title ORDER BY node.title",
     ] {
-        let err = in_tx(&svc, tx, q).expect_err(q);
-        assert!(
-            matches!(&err, ExecError::IndexBehindWrites { feature: f } if f == feature),
-            "{q}: {err:?}"
+        assert_eq!(
+            strings(&ok_in_tx(&svc, tx, q)),
+            ["rye bread", "sourdough bread"],
+            "{q}"
         );
-        let message = err.to_string();
-        assert!(message.contains("committed"), "{q}: {message}");
-        assert!(!message.contains("KV"), "{q}: {message}");
+    }
+    for q in [
+        "CALL fts.searchRelationships('bread', 5) YIELD rel RETURN rel",
+        "CALL drevo.memory.recall('s', 'bread', 5) YIELD node RETURN node",
+    ] {
+        assert!(ok_in_tx(&svc, tx, q).rows.is_empty(), "{q}");
     }
     svc.rollback_tx(tx);
 }
 
 #[test]
-fn full_text_search_after_a_write_in_the_same_statement_names_the_cause() {
+fn full_text_search_after_a_write_in_the_same_statement_finds_it() {
     let svc = NativeService::in_memory();
-    let err = svc
-        .execute(
-            &parse(
-                "CREATE (:Doc {title: 'rye bread'}) WITH 1 AS one \
-                 CALL fts.search('bread', 5) YIELD node RETURN node",
-            )
-            .expect("parse"),
-            HashMap::new(),
-        )
-        .expect_err("search after a write");
-    assert!(
-        matches!(&err, ExecError::IndexBehindWrites { feature } if feature == "fts.search"),
-        "{err:?}"
+    let res = ok(
+        &svc,
+        "CREATE (:Doc {title: 'rye bread'}) WITH 1 AS one \
+         CALL fts.search('bread', 5) YIELD node RETURN node.title",
     );
+    assert_eq!(strings(&res), ["rye bread"]);
 }
 
 #[test]
@@ -436,12 +416,10 @@ fn bolt_full_text_search_in_an_explicit_transaction() {
     assert_eq!(record_count(&hits), 1);
     let write = run(&mut s, "CREATE (:Doc {title: 'rye bread'})");
     assert_eq!(failure_code(&write), None, "{write:?}");
+    // The transaction's own write is a hit too (#817).
     let after = run(&mut s, "CALL fts.search('bread', 5) YIELD node RETURN node");
-    assert_eq!(
-        failure_code(&after).as_deref(),
-        Some(FORBIDDEN),
-        "{after:?}"
-    );
+    assert_eq!(failure_code(&after), None, "{after:?}");
+    assert_eq!(record_count(&after), 2);
 }
 
 #[test]
