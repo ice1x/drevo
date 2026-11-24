@@ -60,6 +60,13 @@ pub(crate) const DEFAULT_EXCLUDE_LABELS: [&str; 6] = [
     "IngestItem",
 ];
 
+/// The server's own bookkeeping labels that full-text search leaves out: a
+/// context trace repeats the question it answered and a queued ingest item
+/// holds the text it is about to turn into knowledge, so indexed they would
+/// be hits for that same text. `Message` and `ReasoningTrace` stay
+/// searchable — `drevo.memory.recall` is built on them.
+pub(crate) const FULL_TEXT_SKIPPED_LABELS: [&str; 3] = ["ContextTrace", "IngestJob", "IngestItem"];
+
 /// The smallest `tokenBudget` accepted.
 pub(crate) const MIN_TOKEN_BUDGET: usize = 50;
 

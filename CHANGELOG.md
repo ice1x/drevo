@@ -269,6 +269,17 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Full-text search leaves the server's bookkeeping out** (issue #819).
+  `fts.search`, `db.index.fulltext.queryNodes`, `drevo.search.hybrid`, the
+  REST `/search/fts` and the Web UI search returned `:ContextTrace` nodes
+  (every traced question was a hit for the same question asked again) and
+  `:IngestItem` nodes (a submitted text was found as its queue rows), and
+  their text shifted the BM25 scores of everything else. `:ContextTrace`,
+  `:IngestJob` and `:IngestItem` are no longer full-text indexed; `:Message`
+  and `:ReasoningTrace` stay searchable, and traces and jobs are read by id
+  as before. An existing store needs nothing: the index is rebuilt when the
+  server starts. In `drevo-core`, `NativeFtsIndex::without_labels(labels)`
+  makes an index that leaves out nodes carrying one of the labels.
 - **Two-phase commit no longer conflicts at graph level** (issue #828).
   `drevo.tx.prepare` failed with `Neo.TransientError.Transaction.Outdated`
   after any commit made since `BEGIN`, even to unrelated nodes, and with
