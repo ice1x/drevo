@@ -441,6 +441,11 @@ DREVO_EXTRACT_UPSTREAM=http://host.docker.internal:11434/v1/chat/completions
 DREVO_EXTRACT_MODEL=qwen2.5:14b-instruct
 ```
 
+`scripts/drevo-restart.sh` forwards the four `DREVO_EXTRACT_*` variables, the
+`DREVO_INGEST_*` variables and `DREVO_COMMUNITY_MAX_LLM_SYNC` from
+`~/.drevo.env` into the container, so they survive a restart and a recreate
+by the watchdog.
+
 **Runtime configuration.** `GET`/`POST /config/extract` work like
 `/config/text2cypher` (admin only):
 

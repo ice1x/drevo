@@ -23,6 +23,16 @@
 #   DREVO_HTTP_PORT       host port -> container 8080     (default: 8080)
 #   DREVO_BOLT_PORT_HOST  host port -> container 7687     (default: 7687)
 #   DREVO_ENV_FILE        extra env file to source        (default: ~/.drevo.env if present)
+#
+# Server settings passed on to the container when set (see FORWARD_VARS):
+#   DREVO_EMBEDDINGS_UPSTREAM / _API_KEY / _MODEL     embeddings proxy
+#   DREVO_TEXT2CYPHER_UPSTREAM / _MODEL / _API_KEY    text-to-Cypher
+#   DREVO_EXTRACT_UPSTREAM / _API_KEY / _MODEL / _TIMEOUT_MS
+#                                                     extraction and LLM community summaries
+#   DREVO_INGEST_WORKERS / _MAX_ATTEMPTS / _RETRY_BASE_MS
+#                                                     ingest jobs
+#   DREVO_COMMUNITY_MAX_LLM_SYNC                      LLM summaries per synchronous call
+#   DREVO_ENGINE, DREVO_QUERY_TIMEOUT_MS, DREVO_IDLE_SESSION_TIMEOUT_MS, DREVO_AUTH
 set -euo pipefail
 
 # Optionally load persistent deploy config (image tag, embeddings proxy vars,
@@ -53,10 +63,13 @@ mkdir -p "$DATA_DIR"
 
 # Server settings forwarded into the container when set (in the shell or the
 # env file): the embeddings proxy (issue #217; needs the `embeddings-proxy`
-# feature, a 503 no-op otherwise), the engine, the statement and idle-session
-# timeouts, and DREVO_AUTH — `none` keeps a server without users open to
-# clients that send no credentials, such as an MCP server.
-FORWARD_VARS="DREVO_EMBEDDINGS_UPSTREAM DREVO_EMBEDDINGS_API_KEY DREVO_EMBEDDINGS_MODEL DREVO_TEXT2CYPHER_UPSTREAM DREVO_TEXT2CYPHER_MODEL DREVO_TEXT2CYPHER_API_KEY DREVO_ENGINE DREVO_QUERY_TIMEOUT_MS DREVO_IDLE_SESSION_TIMEOUT_MS DREVO_AUTH"
+# feature, a 503 no-op otherwise), text-to-Cypher, the chat model of
+# extraction and LLM community summaries (DREVO_EXTRACT_*, each falling back
+# to its DREVO_TEXT2CYPHER_* twin), the ingest job workers and retries
+# (DREVO_INGEST_*), DREVO_COMMUNITY_MAX_LLM_SYNC, the engine, the statement
+# and idle-session timeouts, and DREVO_AUTH — `none` keeps a server without
+# users open to clients that send no credentials, such as an MCP server.
+FORWARD_VARS="DREVO_EMBEDDINGS_UPSTREAM DREVO_EMBEDDINGS_API_KEY DREVO_EMBEDDINGS_MODEL DREVO_TEXT2CYPHER_UPSTREAM DREVO_TEXT2CYPHER_MODEL DREVO_TEXT2CYPHER_API_KEY DREVO_EXTRACT_UPSTREAM DREVO_EXTRACT_API_KEY DREVO_EXTRACT_MODEL DREVO_EXTRACT_TIMEOUT_MS DREVO_INGEST_WORKERS DREVO_INGEST_MAX_ATTEMPTS DREVO_INGEST_RETRY_BASE_MS DREVO_COMMUNITY_MAX_LLM_SYNC DREVO_ENGINE DREVO_QUERY_TIMEOUT_MS DREVO_IDLE_SESSION_TIMEOUT_MS DREVO_AUTH"
 EMB_ENV=()
 for _v in $FORWARD_VARS; do
   if [ -n "${!_v:-}" ]; then

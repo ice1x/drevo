@@ -322,6 +322,15 @@ history and the in-repo issue tracker; format loosely follows
   `NativeFtsRelIndex::search_with_changes` take the transaction's
   `tx_changes`. `NativeQueryContext::tx_has_written` is replaced by
   `NativeQueryContext::tx` (the statement's transaction and its graph).
+- **`scripts/drevo-restart.sh` forwards the extraction, ingest and community
+  settings** (issue #821). A container restarted by the script, or recreated
+  by the watchdog, came up without `DREVO_EXTRACT_UPSTREAM`,
+  `DREVO_EXTRACT_API_KEY`, `DREVO_EXTRACT_MODEL`, `DREVO_EXTRACT_TIMEOUT_MS`,
+  `DREVO_INGEST_WORKERS`, `DREVO_INGEST_MAX_ATTEMPTS`,
+  `DREVO_INGEST_RETRY_BASE_MS` and `DREVO_COMMUNITY_MAX_LLM_SYNC` even when
+  the environment file set them: a separate extraction endpoint or model,
+  the ingest worker count and the LLM summary cap silently fell back to
+  their defaults.
 - **An ingest item deleted while the model answered it no longer leaves its
   job `running` forever, and a chunk-id mismatch fails the item with the
   reason** (issue #806). The scheduler matches the item before writing its

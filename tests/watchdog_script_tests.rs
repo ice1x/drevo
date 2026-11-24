@@ -105,6 +105,113 @@ fn the_restart_script_forwards_the_server_settings() {
 }
 
 #[test]
+fn the_restart_script_forwards_the_extraction_and_ingest_settings() {
+    // Graph-RAG settings read by the server (docs/admin-guide.md): a
+    // container recreated by the script loses them unless they are forwarded
+    // (#821).
+    let script = std::fs::read_to_string(repo_root().join("scripts/drevo-restart.sh")).unwrap();
+    let line = script
+        .lines()
+        .find(|l| l.starts_with("FORWARD_VARS="))
+        .expect("a FORWARD_VARS line");
+    for var in [
+        "DREVO_EXTRACT_UPSTREAM",
+        "DREVO_EXTRACT_API_KEY",
+        "DREVO_EXTRACT_MODEL",
+        "DREVO_EXTRACT_TIMEOUT_MS",
+        "DREVO_INGEST_WORKERS",
+        "DREVO_INGEST_MAX_ATTEMPTS",
+        "DREVO_INGEST_RETRY_BASE_MS",
+        "DREVO_COMMUNITY_MAX_LLM_SYNC",
+    ] {
+        assert!(line.contains(var), "#821: {var} is not forwarded: {line}");
+    }
+}
+
+/// Run `scripts/drevo-restart.sh` with `settings` in its environment and
+/// nothing else of the caller's, against a stub `docker` and a stub `curl`
+/// (the health check), and return the arguments `docker run` was given.
+fn restart_run_arguments(settings: &[(&str, &str)]) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("docker.log");
+    let stub = |name: &str, body: String| {
+        let path = dir.path().join(name);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let docker = stub(
+        "docker",
+        format!(
+            "#!/usr/bin/env bash\nif [ \"$1\" = run ]; then printf '%s\\n' \"$@\" > '{}'; fi\nexit 0\n",
+            log.display()
+        ),
+    );
+    stub("curl", "#!/usr/bin/env bash\nexit 0\n".to_string());
+    let path = format!(
+        "{}:{}",
+        dir.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new("bash")
+        .arg(repo_root().join("scripts/drevo-restart.sh"))
+        .env_clear()
+        .env("PATH", path)
+        .env("HOME", dir.path())
+        .env("DREVO_DOCKER", &docker)
+        .env("DREVO_DATA_DIR", dir.path().join("data"))
+        .env("DREVO_ENV_FILE", dir.path().join("no-such.env"))
+        .envs(settings.iter().copied())
+        .output()
+        .expect("run the restart script");
+    assert!(
+        out.status.success(),
+        "the restart script failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::read_to_string(&log).expect("docker run was called")
+}
+
+#[test]
+fn a_restart_passes_the_extraction_and_ingest_settings_to_the_container() {
+    let settings = [
+        (
+            "DREVO_EXTRACT_UPSTREAM",
+            "http://chat.example/v1/chat/completions",
+        ),
+        ("DREVO_EXTRACT_API_KEY", "test-key"),
+        ("DREVO_EXTRACT_MODEL", "extract-model"),
+        ("DREVO_EXTRACT_TIMEOUT_MS", "45000"),
+        ("DREVO_INGEST_WORKERS", "4"),
+        ("DREVO_INGEST_MAX_ATTEMPTS", "7"),
+        ("DREVO_INGEST_RETRY_BASE_MS", "250"),
+        ("DREVO_COMMUNITY_MAX_LLM_SYNC", "12"),
+    ];
+    let args = restart_run_arguments(&settings);
+    let args: Vec<&str> = args.lines().collect();
+    for (var, value) in settings {
+        let wanted = format!("{var}={value}");
+        assert!(
+            args.windows(2).any(|w| w[0] == "-e" && w[1] == wanted),
+            "#821: `-e {wanted}` is not passed to docker run: {args:?}"
+        );
+    }
+}
+
+#[test]
+fn a_restart_passes_no_setting_that_is_not_set() {
+    let args = restart_run_arguments(&[("DREVO_INGEST_WORKERS", "4")]);
+    assert!(args.contains("DREVO_INGEST_WORKERS=4"), "{args}");
+    for var in [
+        "DREVO_EXTRACT_UPSTREAM",
+        "DREVO_COMMUNITY_MAX_LLM_SYNC",
+        "DREVO_AUTH",
+    ] {
+        assert!(!args.contains(var), "{var} was passed though unset: {args}");
+    }
+}
+
+#[test]
 fn watchdog_recreates_when_container_absent() {
     assert!(
         run_watchdog_recreates(""),
