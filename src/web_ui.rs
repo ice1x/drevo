@@ -21,6 +21,7 @@
 //! - `GET /ui/query_history.js` → `query_history.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/auth.js` → `auth.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/styles.css` → `styles.css` (`text/css; charset=utf-8`)
+//! - `GET /ui/vendor/LICENSES.txt` → licence notices of the vendored libraries
 //! - `GET /ui/vendor/cytoscape.min.js` → Cytoscape.js core
 //! - `GET /ui/vendor/layout-base.js` → fcose dep
 //! - `GET /ui/vendor/cose-base.js` → fcose dep
@@ -112,6 +113,10 @@ const AUTH_JS: &str = include_str!("../static/web/auth.js");
 /// `styles.css` body — embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
+/// The licence notices of the libraries below: each vendored file with its
+/// package, version, licence and copyright line, and the licence text.
+const VENDOR_LICENSES: &str = include_str!("../static/web/vendor/LICENSES.txt");
+
 /// Cytoscape.js core (`cytoscape@3.30.2`) — vendored, embedded at compile time.
 const VENDOR_CYTOSCAPE: &str = include_str!("../static/web/vendor/cytoscape.min.js");
 
@@ -195,6 +200,12 @@ pub async fn serve_auth_js() -> Response {
 /// `GET /ui/styles.css` → serve the stylesheet.
 pub async fn serve_styles_css() -> Response {
     asset_response(STYLES_CSS, "text/css; charset=utf-8")
+}
+
+/// `GET /ui/vendor/LICENSES.txt` → the licence notices of the vendored
+/// libraries, so they travel with every copy of the binary.
+pub async fn serve_vendor_licenses() -> Response {
+    asset_response(VENDOR_LICENSES, "text/plain; charset=utf-8")
 }
 
 /// `GET /ui/vendor/cytoscape.min.js` → serve the vendored Cytoscape core.

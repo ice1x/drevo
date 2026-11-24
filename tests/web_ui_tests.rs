@@ -645,6 +645,19 @@ async fn ui_serves_backups_view_module_and_the_backup_buttons() {
     }
 }
 
+// The licence notices of the vendored libraries travel with the binary
+// (#827): they are served next to the libraries.
+#[tokio::test]
+async fn ui_serves_the_licence_notices_of_the_vendored_libraries() {
+    let app = make_app();
+    let (status, ct, bytes) = get(&app, "/ui/vendor/LICENSES.txt").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ct.starts_with("text/plain"), "got {ct:?}");
+    let text = String::from_utf8(bytes).expect("utf-8");
+    assert!(text.contains("cytoscape-fcose.js"));
+    assert!(text.contains("Permission is hereby granted, free of charge"));
+}
+
 // The live overview: its pure helpers are served same-origin before app.js,
 // the overview panel has the switch, and the stream it follows is served.
 #[tokio::test]

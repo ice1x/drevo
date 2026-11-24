@@ -324,6 +324,15 @@ history and the in-repo issue tracker; format loosely follows
   installed the scheduler sleeps instead of reading the jobs every second;
   installing one (`POST /config/extract`, `drevo::extract::install`) wakes
   every database's scheduler and the queued jobs start.
+- **The vendored Web UI libraries ship with their licence notices** (issue
+  #827). drevo redistributes cytoscape, layout-base, cose-base,
+  cytoscape-fcose, webcola and cytoscape-cola (all MIT) inside
+  `drevo-server`; five of the six files carried no copyright or permission
+  notice, and nothing else in the repository, the crate or the Docker image
+  did. `static/web/vendor/LICENSES.txt` lists every vendored file with its
+  package, version, licence and copyright line, followed by the licence
+  text; it is embedded in the binary and served at
+  `GET /ui/vendor/LICENSES.txt`.
 - **A failing statement that calls a writing procedure leaves nothing
   behind** (issue #796). In plain auto-commit (no triggers, no
   authentication) the `drevo.memory.*` writers (`addMessage`,
