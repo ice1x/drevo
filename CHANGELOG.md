@@ -353,6 +353,21 @@ history and the in-repo issue tracker; format loosely follows
   package, version, licence and copyright line, followed by the licence
   text; it is embedded in the binary and served at
   `GET /ui/vendor/LICENSES.txt`.
+- **`scripts/drevo-restart.sh` forwards every server setting that needs
+  only its value** (issue #840). The script passed on a hand-kept list, and
+  22 settings the server reads were not on it: `DREVO_READ_ONLY`,
+  `DREVO_WAL_FORMAT`, `DREVO_ENCRYPTION_KEY`, `DREVO_TX_ISOLATION`,
+  `DREVO_TX_CONFLICT_HISTORY`, `DREVO_MAX_TX_WRITES`,
+  `DREVO_PREPARED_TX_TIMEOUT_SECS`, `DREVO_PREPARED_TX_WARN_SECS`,
+  `DREVO_MAX_CONNECTIONS`, `DREVO_HTTP_MAX_IN_FLIGHT`, `DREVO_HTTP_FORMATS`,
+  `DREVO_SLOW_QUERY_MS`, `DREVO_AUDIT_LOG`, `DREVO_AUDIT_QUERY_TEXT`,
+  `DREVO_EXPAND_MAX_HOPS`, `DREVO_EXPAND_MAX_NODES`,
+  `DREVO_RAG_TRACE_RETENTION_DAYS` and the five `DREVO_OIDC_*`. Set in the
+  environment file, they looked applied and were not. They are forwarded
+  now, so **a setting already present in that file takes effect at the next
+  restart**. Settings that also need a mount or a published port are named
+  in the script header. A test fails when the server gains a setting the
+  script neither forwards nor excepts with a reason.
 - **A failing statement that calls a writing procedure leaves nothing
   behind** (issue #796). In plain auto-commit (no triggers, no
   authentication) the `drevo.memory.*` writers (`addMessage`,
