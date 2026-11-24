@@ -320,10 +320,20 @@ jobs:
         # The steps below build their own binaries with other features; the
         # suite's test executables are not used again. Shared libraries and
         # build-script outputs stay.
+        #
+        # A test executable is an executable `<name>-<hash>` file with no
+        # extension. Up to cargo 1.99 they are in debug/deps; since 1.100 in
+        # debug/build/<package>/<hash>/out, beside the build scripts
+        # (`build_script_build`), which the feature steps run again, and
+        # debug/deps no longer exists.
         run: |
           df -h "$CARGO_TARGET_DIR"
-          find "$CARGO_TARGET_DIR/debug/deps" -maxdepth 1 -type f -perm -u+x \
-            ! -name '*.so' ! -name '*.d' ! -name '*.rlib' ! -name '*.rmeta' -delete
+          shopt -s nullglob
+          for dir in "$CARGO_TARGET_DIR"/debug/deps "$CARGO_TARGET_DIR"/debug/build/*/*/out; do
+            [ -d "$dir" ] || continue
+            find "$dir" -maxdepth 1 -type f -perm -u+x -name '*-*' ! -name '*.*' \
+              ! -name 'build_script_*' ! -name 'build-script-*' -delete
+          done
           df -h "$CARGO_TARGET_DIR"
       # Phase 11 task `00073` — Bolt-over-TLS lives behind the
       # `bolt-tls` Cargo feature, which is NOT in the default set
