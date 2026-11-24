@@ -626,6 +626,44 @@ fn python_ci_workflow_runs_full_lint_and_test_gate() {
 }
 
 #[test]
+fn python_ci_workflow_runs_for_every_crate_the_extension_links() {
+    // `drevo-py` links the root crate, which links `drevo-core` and
+    // `drevo-auth`: a change to any of them changes what the Python tests
+    // run against. A filter that names only `src/**` let a `drevo-core`
+    // change through with a Python test still pinning the old behaviour.
+    let wf = read(
+        &repo_root()
+            .join(".github")
+            .join("workflows")
+            .join("python-ci.yml"),
+    );
+    for trigger in ["pull_request:", "push:"] {
+        let section = wf
+            .split(trigger)
+            .nth(1)
+            .unwrap_or_else(|| panic!("python-ci.yml has no `{trigger}` trigger"));
+        let paths: Vec<&str> = section
+            .lines()
+            .skip_while(|line| !line.trim_start().starts_with("paths:"))
+            .skip(1)
+            .map(str::trim)
+            .take_while(|line| line.starts_with("- "))
+            .collect();
+        for path in [
+            "'src/**'",
+            "'drevo-core/**'",
+            "'drevo-auth/**'",
+            "'drevo-py/**'",
+        ] {
+            assert!(
+                paths.contains(&format!("- {path}").as_str()),
+                "python-ci.yml `{trigger}` paths must list {path}, got {paths:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn python_runtime_test_suite_exists() {
     let suite = repo_root()
         .join("drevo-py")
