@@ -269,6 +269,15 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **`scripts/drevo-restart.sh` forwards the extraction, ingest and community
+  settings** (issue #821). A container restarted by the script, or recreated
+  by the watchdog, came up without `DREVO_EXTRACT_UPSTREAM`,
+  `DREVO_EXTRACT_API_KEY`, `DREVO_EXTRACT_MODEL`, `DREVO_EXTRACT_TIMEOUT_MS`,
+  `DREVO_INGEST_WORKERS`, `DREVO_INGEST_MAX_ATTEMPTS`,
+  `DREVO_INGEST_RETRY_BASE_MS` and `DREVO_COMMUNITY_MAX_LLM_SYNC` even when
+  the environment file set them: a separate extraction endpoint or model,
+  the ingest worker count and the LLM summary cap silently fell back to
+  their defaults.
 - **Two-phase commit no longer conflicts at graph level** (issue #828).
   `drevo.tx.prepare` failed with `Neo.TransientError.Transaction.Outdated`
   after any commit made since `BEGIN`, even to unrelated nodes, and with
