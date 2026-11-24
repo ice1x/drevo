@@ -1263,13 +1263,16 @@ pub enum PrepareError {
     /// The id names no open registered transaction (never begun, or already
     /// committed, rolled back or prepared).
     UnknownTransaction,
-    /// The graph changed since the transaction began (optimistic conflict).
+    /// A commit the transaction did not see wrote what it wrote, as for
+    /// [`CommitError::Conflict`] (optimistic conflict).
     Conflict,
     /// The transaction's writes would violate a declared [`Constraint`].
     Constraint(ConstraintViolation),
     /// A transaction is already prepared under this `gid`.
     DuplicateGid(String),
-    /// Another transaction is prepared; the fence refuses this one too.
+    /// The transaction touches what a prepared transaction wrote, or the two
+    /// could not both commit under a declared constraint; carries the gids
+    /// of the prepared transactions. Retry once they are resolved.
     PreparedPending(Vec<String>),
     /// Writing the `Prepare` record failed; nothing was prepared.
     Io(String),
@@ -3581,12 +3584,44 @@ impl NativeGraph {
     }
 
     /// Two-phase commit, phase one: validate registered transaction
-    /// `id` exactly as a commit would (no change since `begin`, constraints
-    /// hold), durably log its write set as prepared under `gid`, and raise the
-    /// write fence. The transaction is closed either way; on success it can
-    /// only be finished by [`commit_prepared`](Self::commit_prepared) or
+    /// `id` exactly as a commit would (no commit it did not see wrote what it
+    /// wrote, constraints hold), durably log its write set as prepared under
+    /// `gid`, and raise the write fence. The transaction is closed either
+    /// way; on success it can only be finished by
+    /// [`commit_prepared`](Self::commit_prepared) or
     /// [`rollback_prepared`](Self::rollback_prepared), from any handle and
     /// across restarts.
+    ///
+    /// Several transactions can be prepared at once. A prepare that touches
+    /// what a prepared transaction wrote, or whose writes could not be
+    /// committed together with it under a declared constraint, fails with
+    /// [`PrepareError::PreparedPending`]; whatever is prepared can then be
+    /// resolved in any order.
+    ///
+    /// ```
+    /// use drevo_core::engine::GraphEngine;
+    /// use drevo_core::model::{NewNode, Properties};
+    /// use drevo_core::native::NativeGraph;
+    ///
+    /// let note = |title: &str| NewNode {
+    ///     kind: "note".to_string(),
+    ///     title: title.to_string(),
+    ///     body: String::new(),
+    ///     body_html: String::new(),
+    ///     properties: Properties::default(),
+    /// };
+    /// let g = NativeGraph::new();
+    /// let (a, b) = (g.tx_begin(), g.tx_begin());
+    /// g.tx_engine(a).unwrap().create_node(note("from a")).unwrap();
+    /// g.tx_engine(b).unwrap().create_node(note("from b")).unwrap();
+    ///
+    /// // Different records: both are prepared, and resolved in any order.
+    /// g.tx_prepare(a, "gid-a").unwrap();
+    /// g.tx_prepare(b, "gid-b").unwrap();
+    /// g.commit_prepared("gid-b").unwrap();
+    /// g.commit_prepared("gid-a").unwrap();
+    /// assert_eq!(g.all_nodes().unwrap().len(), 2);
+    /// ```
     ///
     /// While it is prepared, the fence holds back what could make its
     /// resolution fail: a transaction commit that writes a record it wrote,
@@ -3615,24 +3650,62 @@ impl NativeGraph {
         if live.prepared.contains_key(gid) {
             return Err(PrepareError::DuplicateGid(gid.to_string()));
         }
-        if !live.prepared.is_empty() {
-            return Err(PrepareError::PreparedPending(
-                live.prepared.keys().cloned().collect(),
-            ));
-        }
-        if !Arc::ptr_eq(&live, &slot.base) {
-            self.note_conflict(&slot.base, &slot.ops);
-            return Err(PrepareError::Conflict);
-        }
-        slot.working
-            .validate_constraints()
-            .map_err(PrepareError::Constraint)?;
         let TxSlot {
-            base, working, ops, ..
+            base,
+            working,
+            ops,
+            isolation,
+            ..
         } = slot;
-        // Only the write set is kept: the fence lets through only commits that
-        // touch other records, so applying `ops` at resolution reproduces
-        // what this transaction wrote.
+        let pending =
+            |live: &Inner| PrepareError::PreparedPending(live.prepared.keys().cloned().collect());
+        let mine = ConflictSet::from_ops(&ops);
+        // The fence, as for a commit: a transaction that touches what a
+        // prepared one wrote waits until that one is resolved.
+        if !live.prepared.is_empty() && mine.intersects(&prepared_set(&live)) {
+            return Err(pending(&live));
+        }
+        if Arc::ptr_eq(&live, &base) {
+            working
+                .validate_constraints()
+                .map_err(PrepareError::Constraint)?;
+            if breaks_prepared(&working) {
+                return Err(pending(&live));
+            }
+        } else {
+            // Others committed. Did any of them touch what this one touched?
+            let reason = self
+                .history
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .classify(base.commit_seq, &mine);
+            if reason != ConflictReason::WouldPass || isolation == Isolation::Serializable {
+                self.count_conflict(reason);
+                return Err(PrepareError::Conflict);
+            }
+            // No overlap: the write set must also hold on top of what the
+            // others committed, where it will be applied at resolution. A
+            // constraint the transaction broke on its own keeps its error;
+            // one broken only by the combination is a conflict.
+            working
+                .validate_constraints()
+                .map_err(PrepareError::Constraint)?;
+            let mut merged = Arc::clone(&live);
+            let m = Arc::make_mut(&mut merged);
+            for op in &ops {
+                m.apply_wal_op(op.clone());
+            }
+            if m.validate_constraints().is_err() {
+                self.count_conflict(ConflictReason::Overlap);
+                return Err(PrepareError::Conflict);
+            }
+            if breaks_prepared(m) {
+                return Err(pending(&live));
+            }
+        }
+        // Only the write set is kept: the fence lets through only commits and
+        // prepares that touch other records, so applying `ops` at resolution
+        // reproduces what this transaction wrote.
         drop(working);
         drop(base);
         let entry = PreparedEntry {
@@ -5164,22 +5237,6 @@ impl NativeGraph {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(inner.commit_seq, touched);
-    }
-
-    /// Classify and count a commit (or prepare) rejected because the graph
-    /// changed since the transaction's snapshot `base`: did a commit it did
-    /// not see touch what `ops` touch ([`ConflictReason::Overlap`]), did none
-    /// ([`ConflictReason::WouldPass`]), or did the transaction outlive the
-    /// history ([`ConflictReason::History`])? The decision itself is
-    /// unchanged — the transaction is rejected either way.
-    fn note_conflict(&self, base: &Inner, ops: &[WalOp]) {
-        let mine = ConflictSet::from_ops(ops);
-        let reason = self
-            .history
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .classify(base.commit_seq, &mine);
-        self.count_conflict(reason);
     }
 
     fn count_conflict(&self, reason: ConflictReason) {

@@ -2166,12 +2166,29 @@ believing it never existed:
 CALL drevo.tx.heuristicRollback($gid)   // YIELD gid
 ```
 
-`preparedAt` is ISO-8601 UTC. While any transaction is prepared, **every other
-write fails fast** with a retryable error:
+`preparedAt` is ISO-8601 UTC.
+
+A prepared transaction holds back only what overlaps it. Another transaction's
+`COMMIT` or `drevo.tx.prepare` **fails fast** with a retryable error when it
+writes a node or relationship the prepared one wrote, creates a relationship
+to a node it deleted (or deletes a node its relationships need), or could not
+be committed together with it under a declared constraint, such as a second
+node with a `UNIQUE` value it claimed:
 
 - Bolt: `Neo.TransientError.Transaction.LockAcquisitionTimeout`;
 - HTTP: 503;
 - Python: `TransactionConflict`.
+
+Everything else goes through. Transactions on other records commit, and
+several transactions can be prepared at the same time and resolved in any
+order, so independent two-phase-commit participants on one server do not wait
+for each other. `drevo.tx.prepare` is checked like `COMMIT`: it fails with
+`Neo.TransientError.Transaction.Outdated` only when a commit made since
+`BEGIN` wrote what the transaction wrote (under
+`DREVO_TX_ISOLATION=serializable`, when anything was committed since `BEGIN`).
+Writes that do not run as a transaction — the REST node and relationship
+routes and bulk loads — are refused while anything is prepared, whatever they
+touch.
 
 Reads keep working, in auto-commit and in explicit transactions: `BEGIN`,
 `MATCH … RETURN …`, `COMMIT` succeeds, because a transaction that wrote nothing

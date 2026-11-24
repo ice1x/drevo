@@ -145,6 +145,12 @@ UNIQUE value the prepared transaction claimed). Everything else commits and is m
 `commit_prepared` then replays the prepared write set onto live; it cannot fail, because nothing
 that reached live since intersects it and every constraint holds with it applied.
 
+`tx_prepare` is checked the same way as a commit: against the commits it did not see by 3.1 (its
+write set is validated on top of live, where it is applied at resolution), and against the prepared
+write sets by intersection and by the constraint check. Several transactions can therefore be
+prepared at once; they wrote different records and satisfy every constraint together, so they can
+be resolved in any order.
+
 As implemented, the conflict set is computed from the stored write set when a commit is checked
 rather than kept in the `PreparedEntry`, and the constraint check runs only while constraints are
 declared. Direct engine writes (`GraphEngine` methods on the graph, REST CRUD, bulk loads) keep the

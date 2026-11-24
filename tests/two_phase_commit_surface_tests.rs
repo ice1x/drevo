@@ -276,12 +276,14 @@ fn bolt_prepare_inside_an_explicit_transaction_then_resolve() {
 #[test]
 fn bolt_prepare_failure_closes_the_transaction() {
     let svc = Arc::new(NativeService::in_memory());
+    ok(&svc, "CREATE (:T {n: 0})");
     let mut s = hello(&svc);
     s.handle(ClientMessage::Begin {
         extra: BTreeMap::new(),
     });
-    run(&mut s, "CREATE (:T)");
-    ok(&svc, "CREATE (:Concurrent)"); // the graph moved since BEGIN
+    run(&mut s, "MATCH (t:T) SET t.n = 1");
+    // Someone else wrote the same node since BEGIN.
+    ok(&svc, "MATCH (t:T) SET t.n = 2");
     let replies = run(&mut s, "CALL drevo.tx.prepare('late')");
     assert_eq!(
         failure_code(&replies).as_deref(),

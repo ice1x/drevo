@@ -269,6 +269,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Two-phase commit no longer conflicts at graph level** (issue #828).
+  `drevo.tx.prepare` failed with `Neo.TransientError.Transaction.Outdated`
+  after any commit made since `BEGIN`, even to unrelated nodes, and with
+  `Neo.TransientError.Transaction.LockAcquisitionTimeout` while any other
+  transaction was prepared — so every two-phase-commit participant on a
+  server was serialized. A prepare now follows the rule of `COMMIT`: it
+  conflicts only with a commit that wrote what it wrote, and waits only for a
+  prepared transaction it overlaps (the same node or relationship, a
+  relationship to a deleted node, or a `UNIQUE` value both claim). Several
+  transactions can be prepared at once and resolved in any order, also after
+  a restart. In `drevo-core`, `NativeGraph::tx_prepare` returns
+  `PrepareError::Conflict` / `PreparedPending` under these rules.
 - **Full-text search reads the transaction's own writes** (issue #817).
   `fts.search`, `fts.searchRelationships`, `db.index.fulltext.queryNodes`,
   `drevo.search.hybrid`, `drevo.memory.recall` and the `drevo.rag.*`
