@@ -33,6 +33,25 @@
 #                                                     ingest jobs
 #   DREVO_COMMUNITY_MAX_LLM_SYNC                      LLM summaries per synchronous call
 #   DREVO_ENGINE, DREVO_QUERY_TIMEOUT_MS, DREVO_IDLE_SESSION_TIMEOUT_MS, DREVO_AUTH
+#   DREVO_READ_ONLY, DREVO_WAL_FORMAT, DREVO_ENCRYPTION_KEY
+#                                                     the store
+#   DREVO_TX_ISOLATION, DREVO_TX_CONFLICT_HISTORY, DREVO_MAX_TX_WRITES,
+#   DREVO_PREPARED_TX_TIMEOUT_SECS, DREVO_PREPARED_TX_WARN_SECS
+#                                                     transactions
+#   DREVO_MAX_CONNECTIONS, DREVO_HTTP_MAX_IN_FLIGHT, DREVO_HTTP_FORMATS
+#                                                     connection and HTTP limits
+#   DREVO_SLOW_QUERY_MS, DREVO_AUDIT_LOG, DREVO_AUDIT_QUERY_TEXT
+#                                                     slow-query and audit logs
+#   DREVO_EXPAND_MAX_HOPS, DREVO_EXPAND_MAX_NODES, DREVO_RAG_TRACE_RETENTION_DAYS
+#                                                     graph expansion and context traces
+#   DREVO_OIDC_ISSUER / _AUDIENCE / _USERNAME_CLAIM / _ROLES_CLAIM / _ROLE_MAP
+#                                                     OIDC sign-in
+#
+# Not passed on, because the variable alone is not enough — use
+# docker-compose.yml or your own `docker run` for these:
+#   DREVO_ENCRYPTION_KEY_FILE, DREVO_TLS_CERT, DREVO_TLS_KEY, DREVO_BACKUP_DIR
+#                                                     name a path inside the container: need a mount
+#   DREVO_GRPC_PORT, DREVO_FLIGHT_PORT                need a published port
 set -euo pipefail
 
 # Optionally load persistent deploy config (image tag, embeddings proxy vars,
@@ -69,7 +88,11 @@ mkdir -p "$DATA_DIR"
 # (DREVO_INGEST_*), DREVO_COMMUNITY_MAX_LLM_SYNC, the engine, the statement
 # and idle-session timeouts, and DREVO_AUTH — `none` keeps a server without
 # users open to clients that send no credentials, such as an MCP server.
-FORWARD_VARS="DREVO_EMBEDDINGS_UPSTREAM DREVO_EMBEDDINGS_API_KEY DREVO_EMBEDDINGS_MODEL DREVO_TEXT2CYPHER_UPSTREAM DREVO_TEXT2CYPHER_MODEL DREVO_TEXT2CYPHER_API_KEY DREVO_EXTRACT_UPSTREAM DREVO_EXTRACT_API_KEY DREVO_EXTRACT_MODEL DREVO_EXTRACT_TIMEOUT_MS DREVO_INGEST_WORKERS DREVO_INGEST_MAX_ATTEMPTS DREVO_INGEST_RETRY_BASE_MS DREVO_COMMUNITY_MAX_LLM_SYNC DREVO_ENGINE DREVO_QUERY_TIMEOUT_MS DREVO_IDLE_SESSION_TIMEOUT_MS DREVO_AUTH"
+# The rest of the list is every other setting the server reads that needs
+# nothing but its value (see the header); tests/watchdog_script_tests.rs
+# fails when the server gains a setting that is neither here nor excepted
+# there with a reason.
+FORWARD_VARS="DREVO_EMBEDDINGS_UPSTREAM DREVO_EMBEDDINGS_API_KEY DREVO_EMBEDDINGS_MODEL DREVO_TEXT2CYPHER_UPSTREAM DREVO_TEXT2CYPHER_MODEL DREVO_TEXT2CYPHER_API_KEY DREVO_EXTRACT_UPSTREAM DREVO_EXTRACT_API_KEY DREVO_EXTRACT_MODEL DREVO_EXTRACT_TIMEOUT_MS DREVO_INGEST_WORKERS DREVO_INGEST_MAX_ATTEMPTS DREVO_INGEST_RETRY_BASE_MS DREVO_COMMUNITY_MAX_LLM_SYNC DREVO_ENGINE DREVO_QUERY_TIMEOUT_MS DREVO_IDLE_SESSION_TIMEOUT_MS DREVO_AUTH DREVO_READ_ONLY DREVO_WAL_FORMAT DREVO_ENCRYPTION_KEY DREVO_TX_ISOLATION DREVO_TX_CONFLICT_HISTORY DREVO_MAX_TX_WRITES DREVO_PREPARED_TX_TIMEOUT_SECS DREVO_PREPARED_TX_WARN_SECS DREVO_MAX_CONNECTIONS DREVO_HTTP_MAX_IN_FLIGHT DREVO_HTTP_FORMATS DREVO_SLOW_QUERY_MS DREVO_AUDIT_LOG DREVO_AUDIT_QUERY_TEXT DREVO_EXPAND_MAX_HOPS DREVO_EXPAND_MAX_NODES DREVO_RAG_TRACE_RETENTION_DAYS DREVO_OIDC_ISSUER DREVO_OIDC_AUDIENCE DREVO_OIDC_USERNAME_CLAIM DREVO_OIDC_ROLES_CLAIM DREVO_OIDC_ROLE_MAP"
 EMB_ENV=()
 for _v in $FORWARD_VARS; do
   if [ -n "${!_v:-}" ]; then

@@ -211,6 +211,152 @@ fn a_restart_passes_no_setting_that_is_not_set() {
     }
 }
 
+/// Server settings the restart script does not pass on, each with why.
+const NOT_FORWARDED: &[(&str, &str)] = &[
+    (
+        "DREVO_HOST",
+        "set by the script: the server listens on every interface of the container",
+    ),
+    (
+        "DREVO_PORT",
+        "set by the script: 8080 inside the container, published as DREVO_HTTP_PORT",
+    ),
+    (
+        "DREVO_BOLT_PORT",
+        "set by the script: 7687 inside, published as DREVO_BOLT_PORT_HOST",
+    ),
+    (
+        "DREVO_DATA_DIR",
+        "set by the script: /data inside, the host directory is bind-mounted",
+    ),
+    ("DREVO_VERSION", "build-time: baked into the image"),
+    ("DREVO_GIT_SHA", "build-time: baked into the image"),
+    ("DREVO_BUILD_DATE", "build-time: baked into the image"),
+    (
+        "DREVO_ENCRYPTION_KEY_FILE",
+        "names a file inside the container: needs a mount as well",
+    ),
+    (
+        "DREVO_TLS_CERT",
+        "names a file inside the container: needs a mount as well",
+    ),
+    (
+        "DREVO_TLS_KEY",
+        "names a file inside the container: needs a mount as well",
+    ),
+    (
+        "DREVO_BACKUP_DIR",
+        "names a directory inside the container: needs a mount as well",
+    ),
+    ("DREVO_GRPC_PORT", "needs a published port as well"),
+    ("DREVO_FLIGHT_PORT", "needs a published port as well"),
+];
+
+/// Every `"DREVO_…"` string literal in the server's sources: the settings
+/// it reads from the environment.
+fn settings_read_by_the_server() -> Vec<String> {
+    fn walk(dir: &Path, found: &mut std::collections::BTreeSet<String>) {
+        for entry in fs::read_dir(dir).unwrap().filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, found);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let text = fs::read_to_string(&path).unwrap();
+                for piece in text.split("\"DREVO_").skip(1) {
+                    let name: String = piece
+                        .chars()
+                        .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                        .collect();
+                    if piece[name.len()..].starts_with('"') && !name.is_empty() {
+                        found.insert(format!("DREVO_{name}"));
+                    }
+                }
+            }
+        }
+    }
+    let mut found = std::collections::BTreeSet::new();
+    walk(&repo_root().join("src"), &mut found);
+    found.into_iter().collect()
+}
+
+#[test]
+fn every_server_setting_is_forwarded_or_named_as_not() {
+    // A setting in the environment file that the script drops looks applied
+    // and is not (#840): each one is either forwarded or listed above with
+    // the reason.
+    let script = std::fs::read_to_string(repo_root().join("scripts/drevo-restart.sh")).unwrap();
+    let line = script
+        .lines()
+        .find(|l| l.starts_with("FORWARD_VARS="))
+        .expect("a FORWARD_VARS line");
+    let forwarded: Vec<&str> = line
+        .trim_start_matches("FORWARD_VARS=")
+        .trim_matches('"')
+        .split_whitespace()
+        .collect();
+    let settings = settings_read_by_the_server();
+    assert!(
+        settings.len() > 40,
+        "the scan found the settings: {settings:?}"
+    );
+    let mut dropped = Vec::new();
+    for setting in &settings {
+        let named = NOT_FORWARDED.iter().any(|(name, _)| name == setting);
+        match (forwarded.contains(&setting.as_str()), named) {
+            (true, false) | (false, true) => {}
+            (false, false) => dropped.push(setting.as_str()),
+            (true, true) => panic!("{setting} is both forwarded and listed as not forwarded"),
+        }
+    }
+    assert!(
+        dropped.is_empty(),
+        "#840: scripts/drevo-restart.sh neither forwards these settings nor are they in \
+         NOT_FORWARDED with a reason: {dropped:?}"
+    );
+    // Nothing stale: a forwarded or excepted name is a setting the server reads.
+    for name in forwarded
+        .iter()
+        .copied()
+        .chain(NOT_FORWARDED.iter().map(|(name, _)| *name))
+    {
+        assert!(
+            settings.iter().any(|s| s == name),
+            "{name} is not a setting the server reads"
+        );
+    }
+    // The script says what else the excepted ones need.
+    for (name, _) in NOT_FORWARDED
+        .iter()
+        .filter(|(_, why)| why.contains("needs"))
+    {
+        assert!(
+            script.contains(name),
+            "the script header must mention {name}"
+        );
+    }
+}
+
+#[test]
+fn a_restart_passes_the_transaction_and_access_settings_to_the_container() {
+    let settings = [
+        ("DREVO_READ_ONLY", "1"),
+        ("DREVO_TX_ISOLATION", "serializable"),
+        ("DREVO_WAL_FORMAT", "cbor"),
+        ("DREVO_SLOW_QUERY_MS", "250"),
+        ("DREVO_OIDC_ISSUER", "https://id.example/realms/drevo"),
+        ("DREVO_RAG_TRACE_RETENTION_DAYS", "30"),
+    ];
+    let args = restart_run_arguments(&settings);
+    let args: Vec<&str> = args.lines().collect();
+    for (var, value) in settings {
+        let wanted = format!("{var}={value}");
+        assert!(
+            args.windows(2).any(|w| w[0] == "-e" && w[1] == wanted),
+            "#840: `-e {wanted}` is not passed to docker run: {args:?}"
+        );
+    }
+}
+
 #[test]
 fn watchdog_recreates_when_container_absent() {
     assert!(

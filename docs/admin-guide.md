@@ -622,6 +622,16 @@ Two layers cover two different failures (see [`scripts/README.md`](https://githu
   is missing or not running. This is the layer that survives an accidental
   `docker rm -f`. Pause it without a fight by `touch ~/.drevo-watchdog.disabled`.
 
+`scripts/drevo-restart.sh` starts the container with the server settings found
+in the shell or in `~/.drevo.env`: every setting of [Configuration](#2-configuration)
+that needs nothing but its value, so `DREVO_READ_ONLY=1` or
+`DREVO_TX_ISOLATION=serializable` in that file takes effect at the next restart
+and after a recreate by the watchdog. Settings that name a path inside the
+container (`DREVO_ENCRYPTION_KEY_FILE`, `DREVO_TLS_CERT`, `DREVO_TLS_KEY`,
+`DREVO_BACKUP_DIR`) or open another port (`DREVO_GRPC_PORT`,
+`DREVO_FLIGHT_PORT`) also need a mount or a published port, which the script
+does not add: use `docker-compose.yml` or your own `docker run` for those.
+
 ### Memory after large deletes
 
 The image sets `MALLOC_ARENA_MAX=2`. glibc's allocator otherwise keeps one
