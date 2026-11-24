@@ -281,6 +281,21 @@ history and the in-repo issue tracker; format loosely follows
   transactions can be prepared at once and resolved in any order, also after
   a restart. In `drevo-core`, `NativeGraph::tx_prepare` returns
   `PrepareError::Conflict` / `PreparedPending` under these rules.
+- **Full-text search reads the transaction's own writes** (issue #817).
+  `fts.search`, `fts.searchRelationships`, `db.index.fulltext.queryNodes`,
+  `drevo.search.hybrid`, `drevo.memory.recall` and the `drevo.rag.*`
+  procedures used to fail with "searches the full-text index, which covers
+  committed data only" (`Neo.ClientError.Transaction.ForbiddenDueToTransactionType`
+  over Bolt) once their statement or explicit transaction had written — so
+  `addMessage` followed by `drevo.rag.context` in one `execute_write`, or two
+  traced `drevo.rag.context` calls in one statement, could not run. They now
+  find what the transaction created or changed, leave out what it deleted,
+  and rank with the scores the same search gives after `COMMIT`; a search
+  in a transaction that has not written answers as before. In `drevo-core`,
+  `NativeFtsIndex::search_with_changes` and
+  `NativeFtsRelIndex::search_with_changes` take the transaction's
+  `tx_changes`. `NativeQueryContext::tx_has_written` is replaced by
+  `NativeQueryContext::tx` (the statement's transaction and its graph).
 - **An ingest item deleted while the model answered it no longer leaves its
   job `running` forever, and a chunk-id mismatch fails the item with the
   reason** (issue #806). The scheduler matches the item before writing its

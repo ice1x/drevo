@@ -2280,8 +2280,9 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         // a dedicated code so a coordinator classifies it without parsing text.
         ExecError::PreparedTransactionUnresolved { reason, .. } => reason.code(),
         // A schema command or prepared-transaction resolve inside an explicit
-        // transaction, or a full-text search after this transaction wrote
-        // (#608, #610): the statement does not fit the transaction's state.
+        // transaction (#608, #610), or a full-text search after a write with
+        // no transaction to read it from: the statement does not fit the
+        // transaction's state.
         ExecError::ForbiddenInTransaction { .. } | ExecError::IndexBehindWrites { .. } => {
             codes::FORBIDDEN_DUE_TO_TRANSACTION_TYPE
         }
