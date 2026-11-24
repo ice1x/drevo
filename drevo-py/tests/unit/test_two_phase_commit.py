@@ -121,13 +121,44 @@ def test_unknown_gid(drevo_db: drevo.Drevo) -> None:
 
 
 def test_prepare_conflict_closes_the_transaction(drevo_db: drevo.Drevo) -> None:
+    # A prepare conflicts like a commit: with a commit, made since the
+    # transaction began, that wrote a record the transaction wrote.
+    drevo_db.execute("CREATE (:Shared {v: 0})")
     tx = drevo_db.begin()
-    tx.execute("CREATE (:T)")
-    drevo_db.execute("CREATE (:Concurrent)")
+    tx.execute("MATCH (s:Shared) SET s.v = 1")
+    drevo_db.execute("MATCH (s:Shared) SET s.v = 2")
     with pytest.raises(drevo.TransactionConflict):
         tx.prepare("late")
     assert tx.closed
     assert drevo_db.list_prepared() == []
+    assert drevo_db.execute("MATCH (s:Shared) RETURN s.v AS v")[0]["v"] == 2
+
+
+def test_prepare_passes_after_a_commit_to_other_records(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    gid = fake.uuid4()
+    tx = drevo_db.begin()
+    tx.execute("CREATE (:T)")
+    drevo_db.execute("CREATE (:Concurrent)")
+    tx.prepare(gid)
+    assert [p.gid for p in drevo_db.list_prepared()] == [gid]
+    drevo_db.commit_prepared(gid)
+    assert (count(drevo_db, "T"), count(drevo_db, "Concurrent")) == (1, 1)
+
+
+def test_two_transactions_on_other_records_are_prepared_together(
+    drevo_db: drevo.Drevo, fake: Faker
+) -> None:
+    first, second = fake.uuid4(), fake.uuid4()
+    one = drevo_db.begin()
+    one.execute("CREATE (:A)")
+    two = drevo_db.begin()
+    two.execute("CREATE (:B)")
+    one.prepare(first)
+    two.prepare(second)
+    assert sorted(p.gid for p in drevo_db.list_prepared()) == sorted([first, second])
+    drevo_db.commit_prepared(second)
+    drevo_db.commit_prepared(first)
+    assert (count(drevo_db, "A"), count(drevo_db, "B")) == (1, 1)
 
 
 def test_duplicate_gid_and_closed_transaction(drevo_db: drevo.Drevo) -> None:
