@@ -371,6 +371,11 @@ async fn pruning_context_traces_needs_admin_procedures() {
     assert_eq!(t.count("MATCH (c:ContextTrace) RETURN count(c)").await, 0);
 }
 
+/// Serialises the tests that install a chat model or rely on there being
+/// none: the model is process-wide, and with one installed a queued ingest
+/// job runs to its end.
+static CHAT_MODEL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// A chat endpoint that finds one person in any text.
 struct OnePerson;
 impl drevo::llm::ChatCompleter for OnePerson {
@@ -385,6 +390,7 @@ impl drevo::llm::ChatCompleter for OnePerson {
 
 #[tokio::test]
 async fn extraction_ingest_needs_write_and_extraction_reads_do_not() {
+    let _model = CHAT_MODEL.lock().await;
     drevo::extract::install(Arc::new(OnePerson));
     let t = Tracker::seeded().await;
     let ingest = "CALL drevo.extract.ingest('Rita filed the bug.', {source: {id: 'bug-1'}}) \
@@ -407,6 +413,8 @@ async fn extraction_ingest_needs_write_and_extraction_reads_do_not() {
 
 #[tokio::test]
 async fn ingest_jobs_need_write_to_change_and_read_to_watch() {
+    let _model = CHAT_MODEL.lock().await;
+    drevo::extract::uninstall();
     let t = Tracker::seeded().await;
     let submit = "CALL drevo.ingest.submit(['Rita filed the bug.', 'Ed fixed it.'], \
                   {source: {id: 'bug-log'}}) YIELD jobId RETURN jobId";

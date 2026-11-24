@@ -2,7 +2,8 @@
 //! opened while a binary format is the default is written in it, an existing
 //! JSON store is converted at open, and the data survives every switch.
 //!
-//! One test per binary: the default format is process-wide.
+//! The default format is process-wide, so the tests run one at a time
+//! ([`serial`]) and each starts from the JSON default.
 
 #![cfg(all(feature = "format-cbor", feature = "format-msgpack"))]
 
@@ -12,12 +13,22 @@ use drevo::cypher::parser::parse;
 use drevo::native_service::NativeService;
 use drevo::wal_format::WalFormat;
 
+/// Serialises the tests of this binary and resets the process-wide default
+/// format to JSON, whatever an earlier (or failed) test left behind.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    NativeService::set_default_wal_format(WalFormat::Json);
+    guard
+}
+
 fn run(svc: &NativeService, q: &str) -> drevo::cypher::executor::ExecResult {
     svc.execute(&parse(q).unwrap(), HashMap::new()).unwrap()
 }
 
 #[test]
 fn switching_the_wal_format_converts_existing_stores_at_open() {
+    let _s = serial();
     let dir = std::env::temp_dir().join(format!("drevo_wal_fmt_svc_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -74,6 +85,7 @@ fn switching_the_wal_format_converts_existing_stores_at_open() {
 #[cfg(feature = "wal-zstd")]
 #[test]
 fn switching_to_cbor_zstd_compresses_the_store_at_open() {
+    let _s = serial();
     let dir = std::env::temp_dir().join(format!("drevo_wal_zstd_svc_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -122,6 +134,7 @@ fn switching_to_cbor_zstd_compresses_the_store_at_open() {
 
 #[test]
 fn switching_to_cbor_compact_shrinks_a_store_of_small_records_at_open() {
+    let _s = serial();
     let dir = std::env::temp_dir().join(format!("drevo_wal_compact_svc_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();

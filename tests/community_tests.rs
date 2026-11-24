@@ -23,6 +23,21 @@ use drevo::cypher::parser::parse;
 use drevo::embeddings::{EmbeddingsError, TextEmbedder};
 use drevo::native_service::NativeService;
 
+/// Serialises the tests that install a chat model or rely on there being
+/// none: the model is process-wide.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// [`serial`], with no chat model installed.
+fn no_chat_model() -> std::sync::MutexGuard<'static, ()> {
+    let guard = serial();
+    drevo::extract::uninstall();
+    guard
+}
+
 struct StubEmbedder;
 
 impl TextEmbedder for StubEmbedder {
@@ -462,6 +477,7 @@ fn wcc_keeps_the_bridged_teams_together() {
 
 #[test]
 fn llm_mode_without_a_chat_model_is_a_capability_error() {
+    let _s = no_chat_model();
     let db = plain();
     match try_run(&db, "CALL drevo.community.summarize({mode: 'llm'})") {
         Err(ExecError::EngineCapability { feature }) => {
@@ -479,6 +495,7 @@ fn llm_mode_without_a_chat_model_is_a_capability_error() {
 
 #[test]
 fn auto_mode_degrades_to_extractive() {
+    let _s = no_chat_model();
     let db = plain();
     let rows = summarize(&db, "");
     assert_eq!(rows.len(), 2);
@@ -537,6 +554,7 @@ fn async_stores_a_community_job_and_writes_nothing_yet() {
 
 #[test]
 fn async_is_checked_like_a_synchronous_call() {
+    let _s = no_chat_model();
     let db = plain();
     let message = invalid_call(
         &db,
@@ -1241,7 +1259,6 @@ mod llm {
 
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use axum::extract::State;
@@ -1340,13 +1357,6 @@ mod llm {
         fn drop(&mut self) {
             drevo::extract::uninstall();
         }
-    }
-
-    /// Serialises the tests of this module: the chat model is process-wide.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     #[test]
