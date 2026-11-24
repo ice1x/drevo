@@ -372,6 +372,10 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             get(crate::web_ui::serve_vendor_fcose),
         )
         .route(
+            "/ui/vendor/LICENSES.txt",
+            get(crate::web_ui::serve_vendor_licenses),
+        )
+        .route(
             "/ui/vendor/cola.min.js",
             get(crate::web_ui::serve_vendor_cola),
         )

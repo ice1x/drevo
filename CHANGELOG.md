@@ -269,6 +269,15 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **The vendored Web UI libraries ship with their licence notices** (issue
+  #827). drevo redistributes cytoscape, layout-base, cose-base,
+  cytoscape-fcose, webcola and cytoscape-cola (all MIT) inside
+  `drevo-server`; five of the six files carried no copyright or permission
+  notice, and nothing else in the repository, the crate or the Docker image
+  did. `static/web/vendor/LICENSES.txt` lists every vendored file with its
+  package, version, licence and copyright line, followed by the licence
+  text; it is embedded in the binary and served at
+  `GET /ui/vendor/LICENSES.txt`.
 - **Two-phase commit no longer conflicts at graph level** (issue #828).
   `drevo.tx.prepare` failed with `Neo.TransientError.Transaction.Outdated`
   after any commit made since `BEGIN`, even to unrelated nodes, and with
