@@ -53,6 +53,16 @@ const K1: f32 = 1.2;
 /// BM25 length-normalisation, as in [`FtsRanking::default`](crate::model::FtsRanking::default).
 const B: f32 = 0.75;
 
+/// Which documents a query selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FtsMatch {
+    /// A document holding all of the query.
+    #[default]
+    All,
+    /// A document holding any word of the query.
+    Any,
+}
+
 /// A trigram BM25 full-text index maintained by tailing a [`NativeGraph`]'s
 /// change-feed. See the module docs.
 #[derive(Default)]
@@ -220,7 +230,8 @@ impl NativeFtsIndex {
     /// contains it — so a longer, more specific query concentrates score on the
     /// nodes that match the most of it.
     pub fn search(&self, query: &str, limit: usize) -> Vec<(u64, f32)> {
-        self.corpus().rank(query, limit, &HashMap::new())
+        self.corpus()
+            .rank(query, limit, FtsMatch::All, &HashMap::new())
     }
 
     /// [`search`](Self::search) as it will answer once `changes` are
@@ -269,7 +280,55 @@ impl NativeFtsIndex {
         changes: &[Change<Node>],
     ) -> Vec<(u64, f32)> {
         let changed = changed_docs(changes, |n| n.id, |n| !self.skips(n), Self::node_trigrams);
-        self.corpus().rank(query, limit, &changed)
+        self.corpus().rank(query, limit, FtsMatch::All, &changed)
+    }
+
+    /// [`search`](Self::search) with the choice of which nodes match:
+    /// [`FtsMatch::All`] is `search`; [`FtsMatch::Any`] takes a node holding
+    /// any word of `query` and ranks it by the BM25 weight of the words it
+    /// holds, so the node sharing more, and rarer, words comes first. Use
+    /// it for a natural-language question, which no node holds in full.
+    ///
+    /// A word counts when the node holds every trigram of it; a word of
+    /// fewer than three characters has none and is ignored.
+    ///
+    /// ```
+    /// # use drevo_core::engine::GraphEngine;
+    /// # use drevo_core::model::{NewNode, Properties};
+    /// # use drevo_core::native::NativeGraph;
+    /// # use drevo_core::native_fts::{FtsMatch, NativeFtsIndex};
+    /// # fn chapter(title: &str) -> NewNode {
+    /// #     NewNode { kind: "Chapter".into(), title: title.into(), body: String::new(),
+    /// #               body_html: String::new(), properties: Properties::default() }
+    /// # }
+    /// let graph = NativeGraph::new();
+    /// let storm = graph
+    ///     .create_node(chapter("The lighthouse keeper watched the storm"))
+    ///     .unwrap();
+    /// graph.create_node(chapter("Prices at the harbour market")).unwrap();
+    /// let mut fts = NativeFtsIndex::new();
+    /// fts.sync(&graph);
+    ///
+    /// let question = "who watched the storm from the lighthouse";
+    /// assert!(fts.search(question, 5).is_empty());
+    /// let hits = fts.search_matching(question, 5, FtsMatch::Any);
+    /// assert_eq!(hits[0].0, storm.id);
+    /// ```
+    pub fn search_matching(&self, query: &str, limit: usize, mode: FtsMatch) -> Vec<(u64, f32)> {
+        self.corpus().rank(query, limit, mode, &HashMap::new())
+    }
+
+    /// [`search_with_changes`](Self::search_with_changes) with the choice of
+    /// which nodes match, as in [`search_matching`](Self::search_matching).
+    pub fn search_matching_with_changes(
+        &self,
+        query: &str,
+        limit: usize,
+        mode: FtsMatch,
+        changes: &[Change<Node>],
+    ) -> Vec<(u64, f32)> {
+        let changed = changed_docs(changes, |n| n.id, |n| !self.skips(n), Self::node_trigrams);
+        self.corpus().rank(query, limit, mode, &changed)
     }
 
     /// The indexed documents, for ranking.
@@ -432,7 +491,8 @@ impl NativeFtsRelIndex {
     /// ranked by descending BM25 score. Identical ranking to
     /// [`NativeFtsIndex::search`], over the edge corpus.
     pub fn search(&self, query: &str, limit: usize) -> Vec<(u64, f32)> {
-        self.corpus().rank(query, limit, &HashMap::new())
+        self.corpus()
+            .rank(query, limit, FtsMatch::All, &HashMap::new())
     }
 
     /// [`search`](Self::search) as it will answer once `changes` are
@@ -448,7 +508,27 @@ impl NativeFtsRelIndex {
         changes: &[Change<Edge>],
     ) -> Vec<(u64, f32)> {
         let changed = changed_docs(changes, |e| e.id, |_| true, Self::edge_trigrams);
-        self.corpus().rank(query, limit, &changed)
+        self.corpus().rank(query, limit, FtsMatch::All, &changed)
+    }
+
+    /// [`search`](Self::search) with the choice of which relationships
+    /// match, as in [`NativeFtsIndex::search_matching`].
+    pub fn search_matching(&self, query: &str, limit: usize, mode: FtsMatch) -> Vec<(u64, f32)> {
+        self.corpus().rank(query, limit, mode, &HashMap::new())
+    }
+
+    /// [`search_with_changes`](Self::search_with_changes) with the choice of
+    /// which relationships match, as in
+    /// [`NativeFtsIndex::search_matching`].
+    pub fn search_matching_with_changes(
+        &self,
+        query: &str,
+        limit: usize,
+        mode: FtsMatch,
+        changes: &[Change<Edge>],
+    ) -> Vec<(u64, f32)> {
+        let changed = changed_docs(changes, |e| e.id, |_| true, Self::edge_trigrams);
+        self.corpus().rank(query, limit, mode, &changed)
     }
 
     /// The indexed documents, for ranking.
@@ -582,15 +662,19 @@ impl Corpus<'_> {
     /// score, over this corpus with every document in `changed` replaced by
     /// its entry (or removed, for `None`).
     ///
-    /// The query is trigram-tokenised the same way documents are. A document
-    /// matches only if it contains *every* query trigram — this approximates
-    /// substring matching, so sharing a single incidental trigram does not
-    /// make a document match — and each query trigram then contributes its
-    /// BM25 weight to the document's score.
+    /// The query is trigram-tokenised the same way documents are. With
+    /// [`FtsMatch::All`] a document matches only if it contains *every*
+    /// query trigram — this approximates substring matching, so sharing a
+    /// single incidental trigram does not make a document match — and each
+    /// query trigram then contributes its BM25 weight to the document's
+    /// score. With [`FtsMatch::Any`] the same rule is applied to each word
+    /// of the query on its own, and a document's score is the sum over the
+    /// words it matches.
     fn rank(
         &self,
         query: &str,
         limit: usize,
+        mode: FtsMatch,
         changed: &HashMap<u64, ChangedDoc>,
     ) -> Vec<(u64, f32)> {
         if limit == 0 {
@@ -616,11 +700,44 @@ impl Corpus<'_> {
         let avgdl = total_len as f32 / n as f32;
 
         // Query trigrams, normalised + deduped exactly as the KV store does
-        // (`extract_trigrams`), so candidate selection and scoring line up.
-        let q_trigrams: Vec<String> = tokenizer::extract_trigrams(query, "");
-        if q_trigrams.is_empty() {
-            return Vec::new();
+        // (`extract_trigrams`), so candidate selection and scoring line up:
+        // one set for the whole query, or one per distinct word.
+        let terms: Vec<Vec<String>> = match mode {
+            FtsMatch::All => vec![tokenizer::extract_trigrams(query, "")],
+            FtsMatch::Any => {
+                let mut words = tokenizer::words(query);
+                words.sort_unstable();
+                words.dedup();
+                words.iter().map(|w| tokenizer::trigrams(w)).collect()
+            }
+        };
+        let mut scores: HashMap<u64, f32> = HashMap::new();
+        for q_trigrams in terms.iter().filter(|t| !t.is_empty()) {
+            self.score(q_trigrams, n, avgdl, changed, &mut scores);
         }
+
+        let mut ranked: Vec<(u64, f32)> = scores.into_iter().collect();
+        // Highest score first; ties broken by ascending id for determinism.
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        ranked.truncate(limit);
+        ranked
+    }
+
+    /// Add to `scores` the BM25 weight of `q_trigrams` for every document
+    /// that holds all of them, in a corpus of `n` documents of average
+    /// length `avgdl` (both counted with `changed` applied).
+    fn score(
+        &self,
+        q_trigrams: &[String],
+        n: u64,
+        avgdl: f32,
+        changed: &HashMap<u64, ChangedDoc>,
+        scores: &mut HashMap<u64, f32>,
+    ) {
         let postings: Vec<Option<&HashMap<u64, u32>>> =
             q_trigrams.iter().map(|t| self.postings.get(t)).collect();
 
@@ -646,11 +763,10 @@ impl Corpus<'_> {
                 .then_some(*id)
         }));
         if candidates.is_empty() {
-            return Vec::new();
+            return;
         }
 
         // BM25 over the candidates, summing each query trigram's weight.
-        let mut scores: HashMap<u64, f32> = HashMap::new();
         for (trigram, posting) in q_trigrams.iter().zip(&postings) {
             // Documents holding the trigram: the indexed ones that did not
             // change, plus the changed ones that hold it now.
@@ -681,16 +797,6 @@ impl Corpus<'_> {
                 *scores.entry(id).or_insert(0.0) += contribution;
             }
         }
-
-        let mut ranked: Vec<(u64, f32)> = scores.into_iter().collect();
-        // Highest score first; ties broken by ascending id for determinism.
-        ranked.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
-        ranked.truncate(limit);
-        ranked
     }
 }
 

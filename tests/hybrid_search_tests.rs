@@ -449,7 +449,7 @@ fn unknown_config_key_is_rejected_listing_the_accepted_keys() {
     );
     assert!(message.contains("`topK`"), "{message}");
     assert!(
-        message.contains("candidates, rrfK, mode, ftsFilter, weights"),
+        message.contains("candidates, rrfK, mode, ftsMode, ftsFilter, weights"),
         "{message}"
     );
 }

@@ -36,14 +36,16 @@ use std::collections::BTreeMap;
 
 use crate::cypher::executor::Value;
 use crate::cypher::expand::{expand_options, ExpandCeilings};
-use crate::cypher::hybrid::{parse_k, HybridConfig};
+use crate::cypher::hybrid::{fts_mode_name, parse_k, HybridConfig};
+use crate::native_fts::FtsMatch;
 use crate::rag::serialize::{Format, RenderOptions};
 use crate::rag::tokens::Tokenizer;
 use crate::traversal::ExpandOptions;
 
 /// The keys a `drevo.rag.retrieve` / `drevo.rag.context` config map
 /// accepts, as listed in errors.
-pub const CONFIG_KEYS: &str = "label, embeddingProperty, k, candidates, rrfK, mode, hops, \
+pub const CONFIG_KEYS: &str =
+    "label, embeddingProperty, k, candidates, rrfK, mode, ftsMode, hops, \
      direction, relTypes, labels, excludeLabels, perNodeLimit, maxNodes, asOf, rank, source, \
      tokenBudget, tokenizer, format, textProperties, maxBodyChars, includeProvenance, scope, \
      globalThreshold, globalHint, communityLayer, session, trace";
@@ -212,7 +214,12 @@ impl Default for RagConfig {
             label: None,
             embedding_property: "embedding".to_string(),
             k: DEFAULT_K,
-            hybrid: HybridConfig::default(),
+            // A question is rarely held by one node in full: the seeds are
+            // the nodes sharing the most, and the rarest, of its words.
+            hybrid: HybridConfig {
+                fts_match: FtsMatch::Any,
+                ..HybridConfig::default()
+            },
             expand: ExpandOptions {
                 hops: DEFAULT_HOPS,
                 exclude_labels: DEFAULT_EXCLUDE_LABELS.map(str::to_string).to_vec(),
@@ -257,7 +264,10 @@ impl RagConfig {
         let mut config = Self::default();
         // The search's and the expansion's keys are parsed by their own
         // procedures' parsers, so they mean exactly what they mean there.
-        let mut search = BTreeMap::new();
+        let mut search = BTreeMap::from([(
+            "ftsMode".to_string(),
+            Value::String(fts_mode_name(config.hybrid.fts_match).to_string()),
+        )]);
         let mut walk = BTreeMap::from([
             ("hops".to_string(), Value::Integer(DEFAULT_HOPS as i64)),
             (
@@ -274,6 +284,13 @@ impl RagConfig {
             match key.as_str() {
                 "candidates" | "rrfK" | "mode" => {
                     search.insert(key.clone(), v.clone());
+                    continue;
+                }
+                // `null` keeps the pipeline's default, not the search's.
+                "ftsMode" => {
+                    if !matches!(v, Value::Null) {
+                        search.insert(key.clone(), v.clone());
+                    }
                     continue;
                 }
                 "hops" | "direction" | "relTypes" | "labels" | "excludeLabels" | "perNodeLimit"
@@ -472,6 +489,7 @@ impl RagConfig {
             "candidates": self.hybrid.candidates,
             "rrfK": self.hybrid.rrf_k,
             "mode": self.hybrid.mode.as_str(),
+            "ftsMode": fts_mode_name(self.hybrid.fts_match),
             "hops": self.expand.hops,
             "direction": direction,
             "relTypes": self.expand.rel_types.as_deref().map(strings),
@@ -743,7 +761,8 @@ mod tests {
             (
                 vec![("depth", Value::Integer(2))],
                 "unknown config key `depth`; expected label, embeddingProperty, k, candidates, \
-                 rrfK, mode, hops, direction, relTypes, labels, excludeLabels, perNodeLimit, \
+                 rrfK, mode, ftsMode, hops, direction, relTypes, labels, excludeLabels, \
+                 perNodeLimit, \
                  maxNodes, asOf, rank, source, tokenBudget, tokenizer, format, textProperties, \
                  maxBodyChars, includeProvenance, scope, globalThreshold, globalHint, \
                  communityLayer, session, trace",
@@ -857,6 +876,10 @@ mod tests {
             (
                 vec![("direction", s("up"))],
                 "direction must be 'outgoing', 'incoming' or 'both', got 'up'",
+            ),
+            (
+                vec![("ftsMode", s("some"))],
+                "ftsMode must be 'all' or 'any', got 'some'",
             ),
         ];
         for (entries, expected) in cases {

@@ -302,6 +302,42 @@ add under a millisecond together. To see whether that time buys better
 contexts on your data, score the strategies with
 [`drevo.rag.evaluate`](cypher-reference.md#evaluate-strategies).
 
+### Seeds for a question in plain language
+
+The BM25 leg of the seed search takes a node holding any word of the question
+(`ftsMode: 'any'`, the default of `drevo.rag.*`) or only a node holding all of
+it (`ftsMode: 'all'`). [`drevo.rag.evaluateSummary`](cypher-reference.md#evaluate-strategies)
+on a copy of a drevo knowledge-graph export — 4,568 nodes, 10,886
+relationships, no embedder, `tokenBudget: 2000`, release build, 2026-11-24 —
+with a gold set made from the graph itself: every 18th of the 1,136 `Entity`
+nodes whose name has four or more words, 60 in all, each expected in the
+context of a query about it.
+
+- **keywords** — the words of the name that have three or more letters
+  (`send group message cmd`);
+- **question** — the same words inside a sentence (`what do we know about send
+  group message cmd and why does it matter`).
+
+| Query | `ftsMode` | Strategy | hit rate | recall | MRR | p50 | p95 |
+|-------|-----------|----------|---------:|-------:|----:|----:|----:|
+| keywords | `'all'` | `fts`, `hybrid` | 0.967 | 0.967 | 0.942 | < 1 ms | < 1 ms |
+| keywords | `'all'` | `rag` | 0.967 | 0.967 | 0.942 | < 1 ms | 4 ms |
+| keywords | `'any'` | `fts`, `hybrid` | 1.000 | 1.000 | 0.975 | < 1 ms | 1 ms |
+| keywords | `'any'` | `rag` | 1.000 | 1.000 | 0.975 | 3 ms | 6 ms |
+| question | `'all'` | every strategy | 0.000 | 0.000 | 0.000 | < 1 ms | < 1 ms |
+| question | `'any'` | `fts`, `hybrid` | 1.000 | 1.000 | 0.917 | 1 ms | 1 ms |
+| question | `'any'` | `rag` | 1.000 | 1.000 | 0.917 | 3 ms | 6 ms |
+
+`hybrid+expand` scores as `rag` does. Without an embedder `hybrid` is the BM25
+ranking alone, so it scores as `fts`. With every word required, a question
+finds no seed at all — no node holds "what", "know" and "matter" next to the
+name — and nothing downstream can make up for it. With any word enough, the
+node sharing the most, and the rarest, words comes first; on keywords alone
+`'all'` finds 58 of the 60 and `'any'` all of them.
+The gold set is generated, not written by people: it shows that a question
+reaches the node it names, not how well a real question is answered. **Score
+your own questions before relying on these numbers.**
+
 ## Write transactions
 
 A write transaction works on its own copy of the store. The copy shares

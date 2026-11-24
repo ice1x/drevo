@@ -373,6 +373,7 @@ fn the_config_holds_no_secrets() {
             "embeddingProperty",
             "excludeLabels",
             "format",
+            "ftsMode",
             "globalHint",
             "globalThreshold",
             "hops",

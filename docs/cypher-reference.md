@@ -1267,11 +1267,23 @@ RETURN name, entityType, labelsOrTypes, properties
 As in Neo4j, a query that ends in `CALL … YIELD …` (or `SHOW …`) returns the
 yielded columns without a `RETURN`.
 
-`CALL fts.search(query, k) YIELD node, score` returns the top-`k` nodes
+`CALL fts.search(query, k[, config]) YIELD node, score` returns the top-`k` nodes
 matching `query` in the BM25 full-text index (task `00131`), ranked by
 relevance — the full-text counterpart of `drevo.vector.query`. The `score` is
 the Okapi BM25 relevance. Post-filter with a `WHERE` on any node property and
 `ORDER BY score DESC` as usual.
+
+A node matches when it holds all of the query. For a natural-language
+question, which no node holds in full, pass `{ftsMode: 'any'}`: a node then
+matches when it holds any word of the query, and the nodes sharing more, and
+rarer, words come first. A word of fewer than three characters is ignored.
+`fts.searchRelationships` takes the same config.
+
+```cypher
+CALL fts.search('who watched the storm from the lighthouse', 5, {ftsMode: 'any'})
+YIELD node, score
+RETURN node.title, score
+```
 
 Full text covers every string property of every node except the server's own
 bookkeeping: `:ContextTrace` (a [context trace](#context-traces) repeats the
@@ -2540,6 +2552,7 @@ RETURN node.title, score, ftsRank, vectorRank, mode
 | `candidates` | `max(k, 20)` | how deep each ranking goes before fusion; never fewer than `k` |
 | `rrfK` | `60` | the RRF constant, a number ≥ 0; a larger one narrows the gap between neighbouring ranks |
 | `mode` | `'auto'` | `'auto'`, `'hybrid'`, `'fts'` or `'vector'`, see below |
+| `ftsMode` | `'all'` | what the BM25 ranking takes: `'all'` — a node holding all of the query; `'any'` — a node holding any word of it, as in [`fts.search`](#procedures) |
 | `ftsFilter` | `null` | a label the BM25 ranking is restricted to (BM25 otherwise covers every node) |
 | `weights` | `{fts: 1.0, vector: 1.0}` | multiplies each ranking's reciprocal rank; finite numbers ≥ 0, not all zero (`{fts: 0, vector: 0}` is refused with "weights must not all be zero"). A node only a `0`-weighted ranking found is left out |
 
@@ -2798,6 +2811,7 @@ The statement timeout (`DREVO_QUERY_TIMEOUT_MS`) is checked between stages.
 | `embeddingProperty` | `'embedding'` | the property holding those embeddings |
 | `k` | `8` | how many seeds the search returns |
 | `candidates`, `rrfK`, `mode` | `max(k, 20)`, `60`, `'auto'` | as in [`drevo.search.hybrid`](#hybrid-search-780) |
+| `ftsMode` | `'any'` | what the BM25 leg of the seed search takes: `'any'` — a node holding any word of the question, so a question in plain language finds the nodes sharing the most, and the rarest, of its words; `'all'` — only a node holding all of it, as `fts.search` does by default |
 | `hops` | `2` | as in [`drevo.graph.expand`](#graph-expansion) |
 | `direction`, `relTypes`, `labels`, `perNodeLimit`, `maxNodes`, `asOf` | `'both'`, `null`, `null`, `25`, `200`, `null` | as in [`drevo.graph.expand`](#graph-expansion); `direction` also orients PageRank |
 | `excludeLabels` | `['Message', 'ReasoningTrace', 'ContextTrace', 'Community', 'IngestJob', 'IngestItem']` | labels kept out of the seeds and the expansion: conversation and bookkeeping, not knowledge, and [community summaries](#communities), which `scope: 'global'` reads instead. `[]` keeps everything |
