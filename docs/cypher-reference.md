@@ -877,6 +877,21 @@ CALL db.propertyKeys() YIELD propertyKey AS key
 RETURN count(key) AS distinct_keys
 ```
 
+After other clauses a `CALL` runs once per input row, and its arguments are expressions over
+that row: literals, parameters and the row's variables.
+
+```cypher
+UNWIND ['who wrote the prologue', 'what happens in chapter one'] AS question
+CALL drevo.rag.context(question) YIELD text
+RETURN question, text
+```
+
+Each row is joined with the rows the procedure returns for it, in row order. A row the
+procedure returns nothing for drops out, and with no input rows the procedure is not called.
+A procedure that writes the graph (`drevo.memory.addMessage`, `drevo.memory.assertFact`, …)
+writes once per row. Any other call whose arguments read nothing from the row is evaluated
+once and its rows are joined to every input row.
+
 A `CALL` to an unknown procedure, with the wrong number of arguments, or a `YIELD` of a column
 the procedure does not produce, fails with `ExecError::InvalidProcedureCall` — a deterministic,
 named error rather than a panic or a wrong answer.
@@ -1644,8 +1659,7 @@ trigrams. The index counts shared trigrams to pick candidates, and only those
 get the exact distance. When that bound rules nothing out (a query of a few
 characters, or a large `maxEdits`), every indexed value is checked. Results
 are exact either way, including after a write earlier in the same statement.
-Arguments are literals or parameters; `maxEdits` must be a non-negative
-integer.
+`maxEdits` must be a non-negative integer.
 
 ### Server info (#303)
 

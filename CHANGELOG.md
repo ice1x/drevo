@@ -269,6 +269,21 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Procedure arguments read the row** (issue #818). `UNWIND $questions AS q
+  CALL drevo.rag.context(q) YIELD text RETURN q, text`, `MATCH (m:Message)
+  WITH m.text AS q CALL drevo.rag.retrieve(q) …`, `fts.search(q, k)`,
+  `drevo.search.hybrid`, `drevo.memory.recall` and every other procedure that
+  evaluated its arguments with no row failed with `UnboundVariable` (the
+  variable was "not defined") and worked with literals and parameters only.
+  A `CALL` now runs once per input row with its arguments evaluated against
+  that row, and each row is joined with its own results, in row order.
+  **Behaviour change:** a graph-writing procedure (`drevo.memory.addMessage`,
+  `recordReasoning`, `rememberEntity`, `assertFact`, `retractFact`,
+  `addSource`, `addChunks`, `drevo.rag.context`, `drevo.rag.pruneTraces`)
+  after a clause that produces several rows now runs once per row, and not
+  at all when there are no rows; it used to run exactly once either way. A
+  standalone `CALL` is unchanged, and any other call whose arguments read
+  nothing from the row is still evaluated once.
 - **Two-phase commit no longer conflicts at graph level** (issue #828).
   `drevo.tx.prepare` failed with `Neo.TransientError.Transaction.Outdated`
   after any commit made since `BEGIN`, even to unrelated nodes, and with

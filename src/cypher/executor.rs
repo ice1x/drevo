@@ -6329,78 +6329,57 @@ impl<'a> Executor<'a> {
         if ingest_procs::is_ingest_procedure(&name) {
             return self.run_ingest(&name, c, columns);
         }
+        // Every other procedure runs once per input row, its arguments read
+        // from that row. One that does not write the graph and whose
+        // arguments read nothing from the row gives every row the same
+        // answer, so it is asked once.
+        let row_args: Vec<usize> = (0..c.args.len())
+            .filter(|&i| mentions_variable(&c.args[i]))
+            .collect();
+        let args = row_arguments(&c.args, &row_args);
+        let shared = row_args.is_empty() && !writes_graph(&name);
+        let mut answer: Option<Rows> = None;
+        let outcome = self.run_per_row_mut(c, columns, &mut |exec, row| {
+            if let Some(rows) = answer.as_ref().filter(|_| shared) {
+                return Ok(rows.clone());
+            }
+            for &i in &row_args {
+                let value = exec.eval(&c.args[i], row)?;
+                exec.params.insert(row_argument_key(i), value);
+            }
+            let rows = exec.call_procedure(&name, &args, c.span)?;
+            if shared {
+                answer = Some(rows.clone());
+            }
+            Ok(rows)
+        });
+        for &i in &row_args {
+            self.params.remove(&row_argument_key(i));
+        }
+        outcome
+    }
+
+    /// Run the procedure `name` with `args` and return its output rows, each
+    /// a positional vector aligned with [`procedure_columns`]. `args` are
+    /// evaluated with no row: [`Self::run_call`] hands over the ones that
+    /// read the row as parameters ([`row_arguments`]).
+    fn call_procedure(&mut self, name: &str, args: &[Expression], span: Span) -> ExecResultT<Rows> {
         // Write procedures mutate the graph, so they run here with `&mut self`
         // (through the regular CREATE path, and so its privilege checks)
         // rather than in the read-only `invoke_procedure`.
-        let output = match name.as_str() {
-            "drevo.memory.addMessage" => self.proc_memory_add_message(&c.args, c.span)?,
-            "drevo.memory.recordReasoning" => self.proc_memory_record_reasoning(&c.args, c.span)?,
-            "drevo.memory.rememberEntity" => self.proc_memory_remember_entity(&c.args, c.span)?,
-            "drevo.memory.assertFact" => self.proc_memory_assert_fact(&c.args, c.span)?,
-            "drevo.memory.retractFact" => self.proc_memory_retract_fact(&c.args, c.span)?,
-            "drevo.memory.addSource" => self.proc_memory_add_source(&c.args, c.span)?,
-            "drevo.memory.addChunks" => self.proc_memory_add_chunks(&c.args, c.span)?,
+        match name {
+            "drevo.memory.addMessage" => self.proc_memory_add_message(args, span),
+            "drevo.memory.recordReasoning" => self.proc_memory_record_reasoning(args, span),
+            "drevo.memory.rememberEntity" => self.proc_memory_remember_entity(args, span),
+            "drevo.memory.assertFact" => self.proc_memory_assert_fact(args, span),
+            "drevo.memory.retractFact" => self.proc_memory_retract_fact(args, span),
+            "drevo.memory.addSource" => self.proc_memory_add_source(args, span),
+            "drevo.memory.addChunks" => self.proc_memory_add_chunks(args, span),
             // A context records its trace when asked to.
-            RAG_CONTEXT => self.proc_rag_context(&c.args, c.span)?,
-            RAG_PRUNE => self.proc_rag_prune(&c.args, c.span)?,
-            _ => self.invoke_procedure(&name, &c.args, c.span)?,
-        };
-        // Search, vector, memory and algorithm procedures read storage
-        // directly: drop what the signed-in user may not see (#636).
-        let output = self.visible_rows(output)?;
-
-        match &c.yields {
-            Some(items) => {
-                // An empty list is `YIELD *` / a bare `SHOW … WHERE` (the
-                // grammar produces it for nothing else): every column.
-                let all_columns;
-                let items = if items.is_empty() {
-                    all_columns = yield_all(columns, c.span);
-                    &all_columns
-                } else {
-                    items
-                };
-                // Map each yielded column name to its position in the
-                // procedure's output signature.
-                let prior = std::mem::take(&mut self.bindings);
-                let mut new_bindings: Vec<Bindings> = Vec::new();
-                for row in &prior {
-                    for out_row in &output {
-                        let mut next = row.clone();
-                        for item in items {
-                            let idx = columns
-                                .iter()
-                                .position(|col| *col == item.name)
-                                .unwrap_or(0);
-                            let key = item.alias.clone().unwrap_or_else(|| item.name.clone());
-                            next.insert(key, out_row[idx].clone());
-                        }
-                        match &c.where_clause {
-                            None => new_bindings.push(next),
-                            Some(pred) => match self.eval(pred, &next)? {
-                                Value::Bool(true) => new_bindings.push(next),
-                                Value::Bool(false) | Value::Null => {}
-                                other => {
-                                    return Err(ExecError::TypeMismatch {
-                                        expected: "Boolean".into(),
-                                        got: other.type_name().into(),
-                                        span: pred.span(),
-                                    });
-                                }
-                            },
-                        }
-                    }
-                }
-                self.bindings = new_bindings;
-            }
-            None => {
-                // Standalone call — project every output column directly
-                // as the query result, mirroring Neo4j's bare `CALL`.
-                self.result_columns = columns.iter().map(|c| c.to_string()).collect();
-                self.result_rows = output;
-            }
+            RAG_CONTEXT => self.proc_rag_context(args, span),
+            RAG_PRUNE => self.proc_rag_prune(args, span),
+            _ => self.invoke_procedure(name, args, span),
         }
-        Ok(())
     }
 
     /// `CALL drevo.events.post(name, payload) [YIELD name]` — post a named
@@ -7109,9 +7088,8 @@ impl<'a> Executor<'a> {
     /// scale, per the issue. Nodes without the property, whose property is
     /// not a numeric list, or whose dimensionality does not match the query
     /// are skipped (like a `WHERE c.embedding IS NOT NULL` guard). The
-    /// arguments are evaluated once against an empty binding, so they must
-    /// be literals or parameters (`$query`), not references to variables
-    /// bound by a preceding `MATCH`.
+    /// arguments are evaluated with no row: [`Self::run_call`] hands over
+    /// the ones that read the row as parameters.
     ///
     /// NOTE: `k` is applied *before* any post-`YIELD` `WHERE`, so
     /// `… query(…, $k) YIELD node, score WHERE node.book_id = $b` returns the
@@ -10725,8 +10703,8 @@ impl<'a> Executor<'a> {
     ///
     /// The score is the Okapi BM25 relevance already implemented in
     /// `search_fts`. As with `drevo.vector.query`, `k` is applied before any
-    /// post-`YIELD WHERE`, and the arguments are evaluated once against an
-    /// empty binding (so they must be literals or parameters).
+    /// post-`YIELD WHERE`, and the arguments are evaluated with no row
+    /// ([`Self::run_call`] hands over the ones that read the row).
     fn proc_fts_search(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
         // Arity (2) is already enforced by the upfront validation sweep.
         let empty = Bindings::new();
@@ -14440,6 +14418,71 @@ fn path_search_options(
         }
     }
     Ok(options)
+}
+
+/// Whether the procedure `name` writes the graph when called through
+/// [`Executor::call_procedure`]: it runs once per input row whatever its
+/// arguments are, like a `CREATE`.
+fn writes_graph(name: &str) -> bool {
+    matches!(
+        name,
+        "drevo.memory.addMessage"
+            | "drevo.memory.recordReasoning"
+            | "drevo.memory.rememberEntity"
+            | "drevo.memory.assertFact"
+            | "drevo.memory.retractFact"
+            | "drevo.memory.addSource"
+            | "drevo.memory.addChunks"
+            | RAG_CONTEXT
+            | RAG_PRUNE
+    )
+}
+
+/// The parameter a procedure reads argument `index` from when that argument
+/// uses the row's variables. No statement can name it: `$` is followed by an
+/// identifier or a number.
+fn row_argument_key(index: usize) -> String {
+    format!(" row argument {index}")
+}
+
+/// `args` with every argument listed in `row_args` replaced by its
+/// [`row_argument_key`] parameter.
+fn row_arguments(args: &[Expression], row_args: &[usize]) -> Vec<Expression> {
+    args.iter()
+        .enumerate()
+        .map(|(i, arg)| {
+            if row_args.contains(&i) {
+                Expression::Parameter(row_argument_key(i), arg.span())
+            } else {
+                arg.clone()
+            }
+        })
+        .collect()
+}
+
+/// Whether `expr` may read a variable of the row. An expression that binds
+/// variables of its own (a comprehension, a subquery, a map projection)
+/// counts as reading one.
+fn mentions_variable(expr: &Expression) -> bool {
+    match expr {
+        Expression::Integer(..)
+        | Expression::Float(..)
+        | Expression::String(..)
+        | Expression::True(_)
+        | Expression::False(_)
+        | Expression::Null(_)
+        | Expression::Parameter(..) => false,
+        Expression::List { items, .. } => items.iter().any(mentions_variable),
+        Expression::Map(m) => m.entries.iter().any(|(_, e)| mentions_variable(e)),
+        Expression::FunctionCall { args, .. } => args.iter().any(mentions_variable),
+        Expression::Unary { expr, .. } => mentions_variable(expr),
+        Expression::Binary { lhs, rhs, .. } => mentions_variable(lhs) || mentions_variable(rhs),
+        Expression::Property { base, .. } => mentions_variable(base),
+        Expression::Index { base, index, .. } => {
+            mentions_variable(base) || mentions_variable(index)
+        }
+        _ => true,
+    }
 }
 
 fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
