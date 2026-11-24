@@ -308,9 +308,7 @@ fn rag_context_trace_then_a_failing_call_leaves_nothing() {
         "CREATE CONSTRAINT message_text FOR (m:Message) REQUIRE m.text IS UNIQUE",
     );
     // The first CALL records a :ContextTrace with INCLUDED edges; the second
-    // adds a message whose text the constraint refuses. (A second traced
-    // rag.context would fail earlier, on its full-text search, with
-    // IndexBehindWrites — not the failure this test is about.)
+    // adds a message whose text the constraint refuses.
     assert_failure_leaves_nothing(
         &svc,
         "CALL drevo.rag.context('zqmarrow', {trace: true}) YIELD traceId \

@@ -1969,16 +1969,35 @@ else sees those writes until `COMMIT`.
 
 Inside one, everything a statement can do in auto-commit mode works,
 including full-text, vector and fuzzy search, `keywords()`, `SHOW INDEXES`,
-`SHOW CONSTRAINTS` and auto-embedding of new nodes. Two exceptions:
+`SHOW CONSTRAINTS` and auto-embedding of new nodes.
 
-- **Full-text search covers committed data only.** `fts.search`,
-  `fts.searchRelationships`, `db.index.fulltext.queryNodes`,
-  `drevo.search.hybrid` and `drevo.memory.recall` work until the transaction writes. After that they
-  fail with `Neo.ClientError.Transaction.ForbiddenDueToTransactionType`,
-  because the index cannot rank uncommitted writes. Search before writing, or
-  after `COMMIT`. A hit committed by someone else after `BEGIN` is left out,
-  since it is not in the snapshot. The same rule applies to one auto-commit
-  statement that writes and then searches.
+**Full-text search reads the transaction's own writes.** `fts.search`,
+`fts.searchRelationships`, `db.index.fulltext.queryNodes`,
+`drevo.search.hybrid`, `drevo.memory.recall` and the `drevo.rag.*` procedures
+find what the transaction has created or changed, leave out what it has
+deleted, and rank with the scores the same search gives after `COMMIT`. So one
+unit of work can store a message and then build its context:
+
+```python
+def turn(tx, session_id, question):
+    tx.run(
+        "CALL drevo.memory.addMessage($s, 'user', $q) YIELD node RETURN node.seq",
+        s=session_id, q=question,
+    ).consume()
+    return tx.run(
+        "CALL drevo.rag.context($q) YIELD text RETURN text", q=question
+    ).single()["text"]
+
+with driver.session() as session:
+    context = session.execute_write(turn, "s1", "What is in the prologue?")
+```
+
+The same holds inside one auto-commit statement that writes and then
+searches. A hit committed by someone else after `BEGIN` is left out, since it
+is not in the snapshot.
+
+One exception:
+
 - **Schema commands run in auto-commit mode only.** `CREATE` / `DROP INDEX`,
   `CREATE VECTOR INDEX`, `CREATE` / `DROP CONSTRAINT`,
   `drevo.semantic.register`, `registerRel`, `reindex` and `reindexRel` take

@@ -425,13 +425,17 @@ pub enum ExecError {
         message: String,
     },
     /// A full-text procedure (`fts.search`, `db.index.fulltext.queryNodes`,
-    /// …) ran after its statement or transaction had written. The full-text
-    /// index covers committed data only, so it cannot rank those writes;
-    /// search before writing, or after `COMMIT`.
+    /// …) ran after its statement had written, on an engine with no
+    /// transaction attached ([`NativeQueryContext::tx`]). The full-text index
+    /// covers committed data only, and a transaction is where the statement's
+    /// own writes are read from; a statement run through
+    /// [`NativeService`](crate::native_service::NativeService) always has
+    /// one, so this is an error of the `execute_on_engine*` entry points
+    /// only.
     #[error(
         "`{feature}` searches the full-text index, which covers committed data only, \
-         and this statement or transaction has already written; search before writing \
-         or after COMMIT"
+         and this statement has already written with no transaction to read its \
+         writes from; search before writing"
     )]
     IndexBehindWrites {
         /// Procedure name (`"fts.search"`).
@@ -1323,11 +1327,14 @@ pub struct NativeQueryContext<'a> {
     /// `drevo.tx.commitPrepared`, are refused with
     /// [`ExecError::ForbiddenInTransaction`].
     pub in_transaction: bool,
-    /// The explicit transaction has written in an earlier statement, so the
-    /// full-text index (committed data only) does not describe what this
-    /// statement reads: full-text procedures fail with
-    /// [`ExecError::IndexBehindWrites`].
-    pub tx_has_written: bool,
+    /// The transaction the statement runs in, with its graph. The full-text
+    /// indexes cover committed data only, so every full-text search is
+    /// completed with what this transaction has changed so far
+    /// ([`NativeGraph::tx_changes`](crate::native::NativeGraph::tx_changes)):
+    /// a statement finds what it, or an earlier statement of its
+    /// transaction, wrote. Without one, a full-text search after the
+    /// statement has written fails with [`ExecError::IndexBehindWrites`].
+    pub tx: Option<(&'a crate::native::NativeGraph, crate::native::NativeTxId)>,
     /// Inside an explicit transaction, the nodes it wrote in earlier
     /// statements, when the label / property / path / text indexes are given
     /// for it: they describe the committed graph, which is the transaction's
@@ -2903,9 +2910,9 @@ struct Executor<'a> {
     /// Whether the statement runs inside an explicit transaction
     /// ([`NativeQueryContext::in_transaction`]).
     in_transaction: bool,
-    /// Whether an earlier statement of the explicit transaction wrote
-    /// ([`NativeQueryContext::tx_has_written`]).
-    tx_has_written: bool,
+    /// The statement's transaction and its graph
+    /// ([`NativeQueryContext::tx`]).
+    native_tx: Option<(&'a crate::native::NativeGraph, crate::native::NativeTxId)>,
     /// The signed-in user's privileges ([`NativeQueryContext::restriction`]).
     restriction: Option<Restriction<'a>>,
     /// [`restriction`](Self::restriction) when reads must be narrowed: the
@@ -2957,7 +2964,7 @@ impl<'a> Executor<'a> {
             native_embedder: ctx.embedder,
             native_semantic: ctx.semantic,
             in_transaction: ctx.in_transaction,
-            tx_has_written: ctx.tx_has_written,
+            native_tx: ctx.tx,
             restriction: ctx.restriction,
             read_filter: ctx
                 .restriction
@@ -3351,18 +3358,54 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// The full-text `index` for `feature`, when it describes what this
-    /// statement reads. It covers committed data only, so once the statement
-    /// or its explicit transaction has written it is withheld with
-    /// [`ExecError::IndexBehindWrites`] — full-text has no exact-scan
-    /// fallback that could see those writes.
-    fn full_text_index<T>(&self, index: Option<&'a T>, feature: &str) -> ExecResultT<&'a T> {
-        if self.statement_has_written() || self.tx_has_written {
-            return Err(ExecError::IndexBehindWrites {
+    /// The best `limit` full-text matches of `query` among the nodes this
+    /// statement sees, as `(id, BM25 score)`, best first: the committed
+    /// index, completed with what the statement's transaction has changed so
+    /// far — the hits and scores the search gives once it commits.
+    fn full_text_nodes(
+        &self,
+        feature: &str,
+        query: &str,
+        limit: usize,
+    ) -> ExecResultT<Vec<(u64, f32)>> {
+        let index = self
+            .native_fts
+            .ok_or_else(|| Self::engine_capability(feature))?;
+        Ok(match self.full_text_changes(feature)? {
+            Some(changes) => index.search_with_changes(query, limit, &changes.nodes),
+            None => index.search(query, limit),
+        })
+    }
+
+    /// [`full_text_nodes`](Self::full_text_nodes) for relationships.
+    fn full_text_relationships(
+        &self,
+        feature: &str,
+        query: &str,
+        limit: usize,
+    ) -> ExecResultT<Vec<(u64, f32)>> {
+        let index = self
+            .native_fts_rel
+            .ok_or_else(|| Self::engine_capability(feature))?;
+        Ok(match self.full_text_changes(feature)? {
+            Some(changes) => index.search_with_changes(query, limit, &changes.edges),
+            None => index.search(query, limit),
+        })
+    }
+
+    /// What the statement's transaction has changed so far, for a full-text
+    /// search to read; `None` when that is nothing. A statement that has
+    /// written with no transaction attached is refused with
+    /// [`ExecError::IndexBehindWrites`]: full-text has no exact-scan fallback
+    /// that could see those writes.
+    fn full_text_changes(&self, feature: &str) -> ExecResultT<Option<crate::native::TxChanges>> {
+        match self.native_tx {
+            Some((graph, tx)) => Ok(graph.tx_changes(tx).filter(|c| !c.is_empty())),
+            None if self.statement_has_written() => Err(ExecError::IndexBehindWrites {
                 feature: feature.to_string(),
-            });
+            }),
+            None => Ok(None),
         }
-        index.ok_or_else(|| Self::engine_capability(feature))
     }
 
     /// Embed query text server-side through the native path's attached
@@ -7696,9 +7739,8 @@ impl<'a> Executor<'a> {
     /// (`fts.search`), not per-name indexes, so `indexName` is accepted for
     /// compatibility but not used to select an index; the query runs against the
     /// one FTS index and returns the top matches by BM25 score. Mirrors
-    /// [`Self::proc_fts_search`] (same "index absent after a write in this
-    /// statement" guard), with a fixed result cap since the Neo4j signature
-    /// takes no `k`.
+    /// [`Self::proc_fts_search`] (the transaction's own writes included),
+    /// with a fixed result cap since the Neo4j signature takes no `k`.
     fn proc_db_index_fulltext_query_nodes(
         &self,
         args: &[Expression],
@@ -7711,9 +7753,13 @@ impl<'a> Executor<'a> {
         let _index_name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
         let query = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
 
-        let fts = self.full_text_index(self.native_fts, "db.index.fulltext.queryNodes")?;
+        let hits = self.full_text_nodes(
+            "db.index.fulltext.queryNodes",
+            &query,
+            DEFAULT_FULLTEXT_LIMIT,
+        )?;
         let mut rows = Vec::new();
-        for (id, score) in fts.search(&query, DEFAULT_FULLTEXT_LIMIT) {
+        for (id, score) in hits {
             if let Some(node) = self.engine().get_node(id)? {
                 rows.push(vec![
                     Value::Node(node_to_value(&node)),
@@ -7746,9 +7792,9 @@ impl<'a> Executor<'a> {
         // Over-fetch FTS candidates (the index is graph-wide, not per-session),
         // then keep this session's messages in BM25 order until we have `k`.
         let candidates = k.saturating_mul(8).max(50);
-        let fts = self.full_text_index(self.native_fts, "drevo.memory.recall")?;
+        let hits = self.full_text_nodes("drevo.memory.recall", &query, candidates)?;
         let mut rows = Vec::new();
-        for (id, score) in fts.search(&query, candidates) {
+        for (id, score) in hits {
             if rows.len() >= k {
                 break;
             }
@@ -10689,11 +10735,11 @@ impl<'a> Executor<'a> {
         let k = self.eval_usize(&args[1], &empty)?;
 
         // Answer from the change-feed-fed full-text index, nodes ranked by
-        // descending BM25 score; it is withheld once the statement or its
-        // transaction has written (see `full_text_index`).
-        let fts = self.full_text_index(self.native_fts, "fts.search")?;
+        // descending BM25 score, completed with the transaction's own writes
+        // (see `full_text_nodes`).
+        let hits = self.full_text_nodes("fts.search", &query, k)?;
         let mut rows = Vec::new();
-        for (id, score) in fts.search(&query, k) {
+        for (id, score) in hits {
             if let Some(node) = self.engine().get_node(id)? {
                 rows.push(vec![
                     Value::Node(node_to_value(&node)),
@@ -10792,10 +10838,11 @@ impl<'a> Executor<'a> {
         let k = self.eval_usize(&args[1], &empty)?;
 
         // Answer from the relationship full-text index, edges ranked by
-        // descending BM25 score; withheld after a write, as for `fts.search`.
-        let fts_rel = self.full_text_index(self.native_fts_rel, "fts.searchRelationships")?;
+        // descending BM25 score, completed with the transaction's own writes
+        // as for `fts.search`.
+        let hits = self.full_text_relationships("fts.searchRelationships", &query, k)?;
         let mut rows = Vec::new();
-        for (id, score) in fts_rel.search(&query, k) {
+        for (id, score) in hits {
             if let Some(edge) = self.engine().get_edge(id)? {
                 rows.push(vec![
                     Value::Relationship(edge_to_value(&edge)),
@@ -11022,8 +11069,7 @@ impl<'a> Executor<'a> {
         let mut ids = Vec::new();
         match items {
             HybridItems::Nodes => {
-                let fts = self.full_text_index(self.native_fts, "fts.search")?;
-                for (id, _) in fts.search(query, limit) {
+                for (id, _) in self.full_text_nodes("fts.search", query, limit)? {
                     if ids.len() == depth {
                         break;
                     }
@@ -11040,8 +11086,9 @@ impl<'a> Executor<'a> {
                 }
             }
             HybridItems::Relationships => {
-                let fts = self.full_text_index(self.native_fts_rel, "fts.searchRelationships")?;
-                for (id, _) in fts.search(query, limit) {
+                for (id, _) in
+                    self.full_text_relationships("fts.searchRelationships", query, limit)?
+                {
                     if ids.len() == depth {
                         break;
                     }

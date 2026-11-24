@@ -45,7 +45,7 @@ use std::collections::HashMap;
 use crate::bm25::bm25_idf;
 use crate::engine::GraphEngine;
 use crate::model::{Edge, Node, Properties};
-use crate::native::{NativeGraph, WalOp};
+use crate::native::{Change, NativeGraph, WalOp};
 use crate::tokenizer;
 
 /// BM25 term-frequency saturation, as in [`FtsRanking::default`](crate::model::FtsRanking::default).
@@ -169,69 +169,66 @@ impl NativeFtsIndex {
     /// contains it — so a longer, more specific query concentrates score on the
     /// nodes that match the most of it.
     pub fn search(&self, query: &str, limit: usize) -> Vec<(u64, f32)> {
-        if limit == 0 {
-            return Vec::new();
-        }
-        let n = self.docs.len() as u64;
-        if n == 0 {
-            return Vec::new();
-        }
-        let avgdl = self.total_len as f32 / n as f32;
+        self.corpus().rank(query, limit, &HashMap::new())
+    }
 
-        // Query trigrams, normalised + deduped exactly as the KV store does
-        // (`extract_trigrams`), so candidate selection and scoring line up.
-        let q_trigrams: Vec<String> = tokenizer::extract_trigrams(query, "");
-        if q_trigrams.is_empty() {
-            return Vec::new();
-        }
+    /// [`search`](Self::search) as it will answer once `changes` are
+    /// committed and indexed: the hits and scores a transaction sees for its
+    /// own view, before it commits.
+    ///
+    /// `changes` are the nodes the transaction has created, updated or
+    /// deleted so far ([`NativeGraph::tx_changes`]). A created or updated
+    /// node is matched and ranked by its text in the transaction, a deleted
+    /// node is left out, and the corpus statistics count each of them once,
+    /// as they will after the commit. With no changes this is
+    /// [`search`](Self::search).
+    ///
+    /// ```
+    /// use drevo_core::engine::GraphEngine;
+    /// use drevo_core::model::{NewNode, Properties};
+    /// use drevo_core::native::NativeGraph;
+    /// use drevo_core::native_fts::NativeFtsIndex;
+    ///
+    /// let note = |title: &str| NewNode {
+    ///     kind: "note".to_string(),
+    ///     title: title.to_string(),
+    ///     body: String::new(),
+    ///     body_html: String::new(),
+    ///     properties: Properties::default(),
+    /// };
+    /// let g = NativeGraph::new();
+    /// g.create_node(note("sourdough bread")).unwrap();
+    /// let mut fts = NativeFtsIndex::new();
+    /// fts.sync(&g);
+    ///
+    /// let tx = g.tx_begin();
+    /// let rye = g.tx_engine(tx).unwrap().create_node(note("rye bread")).unwrap();
+    /// // The index holds committed nodes only …
+    /// assert_eq!(fts.search("rye", 10), vec![]);
+    /// // … and the transaction's changes complete it.
+    /// let changes = g.tx_changes(tx).unwrap();
+    /// let hits = fts.search_with_changes("rye", 10, &changes.nodes);
+    /// assert_eq!(hits.len(), 1);
+    /// assert_eq!(hits[0].0, rye.id);
+    /// ```
+    pub fn search_with_changes(
+        &self,
+        query: &str,
+        limit: usize,
+        changes: &[Change<Node>],
+    ) -> Vec<(u64, f32)> {
+        let changed = changed_docs(changes, |n| n.id, Self::node_trigrams);
+        self.corpus().rank(query, limit, &changed)
+    }
 
-        // Conjunctive candidate selection: a document is a candidate only if it
-        // contains *every* query trigram (the intersection of the posting
-        // lists), matching the KV `intersect_trigrams` rule — this approximates
-        // substring matching, so sharing a single incidental trigram does not
-        // make a document match.
-        let mut candidates: Option<Vec<u64>> = None;
-        for trigram in &q_trigrams {
-            let Some(posting) = self.postings.get(trigram) else {
-                return Vec::new(); // a missing trigram → empty intersection
-            };
-            candidates = Some(match candidates {
-                None => posting.keys().copied().collect(),
-                Some(prev) => prev
-                    .into_iter()
-                    .filter(|id| posting.contains_key(id))
-                    .collect(),
-            });
-            if candidates.as_ref().is_some_and(|c| c.is_empty()) {
-                return Vec::new();
-            }
+    /// The indexed documents, for ranking.
+    fn corpus(&self) -> Corpus<'_> {
+        Corpus {
+            postings: &self.postings,
+            docs: &self.docs,
+            doc_len: &self.doc_len,
+            total_len: self.total_len,
         }
-        let candidates = candidates.unwrap_or_default();
-
-        // BM25 over the candidates, summing each query trigram's weight.
-        let mut scores: HashMap<u64, f32> = HashMap::new();
-        for trigram in &q_trigrams {
-            let posting = &self.postings[trigram];
-            let df = posting.len() as u64;
-            let idf = bm25_idf(n, df);
-            for &id in &candidates {
-                let tf = *posting.get(&id).unwrap_or(&0) as f32;
-                let dl = *self.doc_len.get(&id).unwrap_or(&0) as f32;
-                let denom = tf + K1 * (1.0 - B + B * dl / avgdl.max(f32::MIN_POSITIVE));
-                let contribution = idf * (tf * (K1 + 1.0)) / denom.max(f32::MIN_POSITIVE);
-                *scores.entry(id).or_insert(0.0) += contribution;
-            }
-        }
-
-        let mut ranked: Vec<(u64, f32)> = scores.into_iter().collect();
-        // Highest score first; ties broken by ascending id for determinism.
-        ranked.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
-        ranked.truncate(limit);
-        ranked
     }
 
     // ----- maintenance -------------------------------------------------------
@@ -271,17 +268,13 @@ impl NativeFtsIndex {
             self.doc_len.insert(node.id, 0);
             return;
         }
-        let mut freqs: HashMap<String, u32> = HashMap::new();
-        for t in &trigrams {
-            *freqs.entry(t.clone()).or_insert(0) += 1;
-        }
+        let (freqs, dl) = term_frequencies(&trigrams);
         for (t, &tf) in &freqs {
             self.postings
                 .entry(t.clone())
                 .or_default()
                 .insert(node.id, tf);
         }
-        let dl = trigrams.len() as u32;
         self.total_len += u64::from(dl);
         self.doc_len.insert(node.id, dl);
         self.docs.insert(node.id, freqs);
@@ -385,62 +378,33 @@ impl NativeFtsRelIndex {
     /// ranked by descending BM25 score. Identical ranking to
     /// [`NativeFtsIndex::search`], over the edge corpus.
     pub fn search(&self, query: &str, limit: usize) -> Vec<(u64, f32)> {
-        if limit == 0 {
-            return Vec::new();
-        }
-        let n = self.docs.len() as u64;
-        if n == 0 {
-            return Vec::new();
-        }
-        let avgdl = self.total_len as f32 / n as f32;
+        self.corpus().rank(query, limit, &HashMap::new())
+    }
 
-        let q_trigrams: Vec<String> = tokenizer::extract_trigrams(query, "");
-        if q_trigrams.is_empty() {
-            return Vec::new();
-        }
+    /// [`search`](Self::search) as it will answer once `changes` are
+    /// committed and indexed — the relationship twin of
+    /// [`NativeFtsIndex::search_with_changes`]. `changes` are the
+    /// relationships the transaction has created, updated or deleted so far
+    /// ([`NativeGraph::tx_changes`]), those removed with a deleted node
+    /// included.
+    pub fn search_with_changes(
+        &self,
+        query: &str,
+        limit: usize,
+        changes: &[Change<Edge>],
+    ) -> Vec<(u64, f32)> {
+        let changed = changed_docs(changes, |e| e.id, Self::edge_trigrams);
+        self.corpus().rank(query, limit, &changed)
+    }
 
-        // Conjunctive candidate selection: an edge is a candidate only if it
-        // contains every query trigram (matches the KV `intersect_trigrams`).
-        let mut candidates: Option<Vec<u64>> = None;
-        for trigram in &q_trigrams {
-            let Some(posting) = self.postings.get(trigram) else {
-                return Vec::new();
-            };
-            candidates = Some(match candidates {
-                None => posting.keys().copied().collect(),
-                Some(prev) => prev
-                    .into_iter()
-                    .filter(|id| posting.contains_key(id))
-                    .collect(),
-            });
-            if candidates.as_ref().is_some_and(|c| c.is_empty()) {
-                return Vec::new();
-            }
+    /// The indexed documents, for ranking.
+    fn corpus(&self) -> Corpus<'_> {
+        Corpus {
+            postings: &self.postings,
+            docs: &self.docs,
+            doc_len: &self.doc_len,
+            total_len: self.total_len,
         }
-        let candidates = candidates.unwrap_or_default();
-
-        let mut scores: HashMap<u64, f32> = HashMap::new();
-        for trigram in &q_trigrams {
-            let posting = &self.postings[trigram];
-            let df = posting.len() as u64;
-            let idf = bm25_idf(n, df);
-            for &id in &candidates {
-                let tf = *posting.get(&id).unwrap_or(&0) as f32;
-                let dl = *self.doc_len.get(&id).unwrap_or(&0) as f32;
-                let denom = tf + K1 * (1.0 - B + B * dl / avgdl.max(f32::MIN_POSITIVE));
-                let contribution = idf * (tf * (K1 + 1.0)) / denom.max(f32::MIN_POSITIVE);
-                *scores.entry(id).or_insert(0.0) += contribution;
-            }
-        }
-
-        let mut ranked: Vec<(u64, f32)> = scores.into_iter().collect();
-        ranked.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.0.cmp(&b.0))
-        });
-        ranked.truncate(limit);
-        ranked
     }
 
     // ----- maintenance -------------------------------------------------------
@@ -476,17 +440,13 @@ impl NativeFtsRelIndex {
             self.doc_len.insert(edge.id, 0);
             return;
         }
-        let mut freqs: HashMap<String, u32> = HashMap::new();
-        for t in &trigrams {
-            *freqs.entry(t.clone()).or_insert(0) += 1;
-        }
+        let (freqs, dl) = term_frequencies(&trigrams);
         for (t, &tf) in &freqs {
             self.postings
                 .entry(t.clone())
                 .or_default()
                 .insert(edge.id, tf);
         }
-        let dl = trigrams.len() as u32;
         self.total_len += u64::from(dl);
         self.doc_len.insert(edge.id, dl);
         self.docs.insert(edge.id, freqs);
@@ -508,6 +468,170 @@ impl NativeFtsRelIndex {
         if let Some(dl) = self.doc_len.remove(&id) {
             self.total_len -= u64::from(dl);
         }
+    }
+}
+
+/// Each trigram's number of occurrences in a document, and the document's
+/// length (every occurrence counted).
+fn term_frequencies(trigrams: &[String]) -> (HashMap<String, u32>, u32) {
+    let mut freqs: HashMap<String, u32> = HashMap::new();
+    for t in trigrams {
+        *freqs.entry(t.clone()).or_insert(0) += 1;
+    }
+    (freqs, trigrams.len() as u32)
+}
+
+/// A document as a transaction left it: its trigram frequencies and length,
+/// or `None` once deleted.
+type ChangedDoc = Option<(HashMap<String, u32>, u32)>;
+
+/// The documents of the records in `changes`, by record id.
+fn changed_docs<T>(
+    changes: &[Change<T>],
+    id: impl Fn(&T) -> u64,
+    trigrams: impl Fn(&T) -> Vec<String>,
+) -> HashMap<u64, ChangedDoc> {
+    let mut changed = HashMap::with_capacity(changes.len());
+    for change in changes {
+        match (&change.after, &change.before) {
+            (Some(record), _) => {
+                changed.insert(id(record), Some(term_frequencies(&trigrams(record))));
+            }
+            (None, Some(record)) => {
+                changed.insert(id(record), None);
+            }
+            (None, None) => {}
+        }
+    }
+    changed
+}
+
+/// The documents of one index, borrowed for a search.
+struct Corpus<'a> {
+    /// trigram → (document id → term frequency).
+    postings: &'a HashMap<String, HashMap<u64, u32>>,
+    /// document id → its trigram frequencies.
+    docs: &'a HashMap<u64, HashMap<String, u32>>,
+    /// document id → document length.
+    doc_len: &'a HashMap<u64, u32>,
+    /// Sum of every document length.
+    total_len: u64,
+}
+
+impl Corpus<'_> {
+    /// Up to `limit` `(id, score)` pairs for `query`, by descending BM25
+    /// score, over this corpus with every document in `changed` replaced by
+    /// its entry (or removed, for `None`).
+    ///
+    /// The query is trigram-tokenised the same way documents are. A document
+    /// matches only if it contains *every* query trigram — this approximates
+    /// substring matching, so sharing a single incidental trigram does not
+    /// make a document match — and each query trigram then contributes its
+    /// BM25 weight to the document's score.
+    fn rank(
+        &self,
+        query: &str,
+        limit: usize,
+        changed: &HashMap<u64, ChangedDoc>,
+    ) -> Vec<(u64, f32)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        // Corpus size and total length, each changed document counted as the
+        // transaction left it.
+        let mut n = self.docs.len() as u64;
+        let mut total_len = self.total_len;
+        for (id, doc) in changed {
+            if self.docs.contains_key(id) {
+                n -= 1;
+                total_len -= u64::from(self.doc_len.get(id).copied().unwrap_or(0));
+            }
+            if let Some((_, dl)) = doc {
+                n += 1;
+                total_len += u64::from(*dl);
+            }
+        }
+        if n == 0 {
+            return Vec::new();
+        }
+        let avgdl = total_len as f32 / n as f32;
+
+        // Query trigrams, normalised + deduped exactly as the KV store does
+        // (`extract_trigrams`), so candidate selection and scoring line up.
+        let q_trigrams: Vec<String> = tokenizer::extract_trigrams(query, "");
+        if q_trigrams.is_empty() {
+            return Vec::new();
+        }
+        let postings: Vec<Option<&HashMap<u64, u32>>> =
+            q_trigrams.iter().map(|t| self.postings.get(t)).collect();
+
+        // Candidates: the indexed documents holding every query trigram (the
+        // intersection of the posting lists; a trigram with no list leaves
+        // none), less the changed ones, plus the changed documents that hold
+        // every query trigram.
+        let indexed: Option<Vec<&HashMap<u64, u32>>> = postings.iter().copied().collect();
+        let mut candidates: Vec<u64> = match indexed.as_deref().and_then(<[_]>::split_first) {
+            Some((first, rest)) => first
+                .keys()
+                .copied()
+                .filter(|id| rest.iter().all(|list| list.contains_key(id)))
+                .filter(|id| !changed.contains_key(id))
+                .collect(),
+            None => Vec::new(),
+        };
+        candidates.extend(changed.iter().filter_map(|(id, doc)| {
+            let (freqs, _) = doc.as_ref()?;
+            q_trigrams
+                .iter()
+                .all(|t| freqs.contains_key(t))
+                .then_some(*id)
+        }));
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // BM25 over the candidates, summing each query trigram's weight.
+        let mut scores: HashMap<u64, f32> = HashMap::new();
+        for (trigram, posting) in q_trigrams.iter().zip(&postings) {
+            // Documents holding the trigram: the indexed ones that did not
+            // change, plus the changed ones that hold it now.
+            let mut df = posting.map_or(0, |list| list.len() as u64);
+            for (id, doc) in changed {
+                if posting.is_some_and(|list| list.contains_key(id)) {
+                    df -= 1;
+                }
+                if doc
+                    .as_ref()
+                    .is_some_and(|(freqs, _)| freqs.contains_key(trigram))
+                {
+                    df += 1;
+                }
+            }
+            let idf = bm25_idf(n, df);
+            for &id in &candidates {
+                let (tf, dl) = match changed.get(&id) {
+                    Some(Some((freqs, dl))) => (freqs.get(trigram).copied().unwrap_or(0), *dl),
+                    _ => (
+                        posting.and_then(|list| list.get(&id)).copied().unwrap_or(0),
+                        self.doc_len.get(&id).copied().unwrap_or(0),
+                    ),
+                };
+                let (tf, dl) = (tf as f32, dl as f32);
+                let denom = tf + K1 * (1.0 - B + B * dl / avgdl.max(f32::MIN_POSITIVE));
+                let contribution = idf * (tf * (K1 + 1.0)) / denom.max(f32::MIN_POSITIVE);
+                *scores.entry(id).or_insert(0.0) += contribution;
+            }
+        }
+
+        let mut ranked: Vec<(u64, f32)> = scores.into_iter().collect();
+        // Highest score first; ties broken by ascending id for determinism.
+        ranked.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        ranked.truncate(limit);
+        ranked
     }
 }
 
