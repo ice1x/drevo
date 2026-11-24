@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 use crate::cypher::executor::Value;
+use crate::native_fts::FtsMatch;
 
 /// The RRF constant used when the config names none.
 const DEFAULT_RRF_K: f64 = 60.0;
@@ -36,7 +37,7 @@ const DEFAULT_RRF_K: f64 = 60.0;
 const MIN_CANDIDATES: usize = 20;
 
 /// The keys a `drevo.search.hybrid` config map accepts, as listed in errors.
-pub const CONFIG_KEYS: &str = "candidates, rrfK, mode, ftsFilter, weights";
+pub const CONFIG_KEYS: &str = "candidates, rrfK, mode, ftsMode, ftsFilter, weights";
 
 /// One retriever whose ranking is fused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -254,6 +255,9 @@ pub struct HybridConfig {
     pub rrf_k: f64,
     /// The requested mode.
     pub mode: HybridMode,
+    /// Which items the BM25 leg takes: those holding all of the query, or
+    /// any word of it (`ftsMode`).
+    pub fts_match: FtsMatch,
     /// A label (or relationship type) the BM25 leg is restricted to.
     pub fts_filter: Option<String>,
     /// Per-leg weights.
@@ -266,6 +270,7 @@ impl Default for HybridConfig {
             candidates: None,
             rrf_k: DEFAULT_RRF_K,
             mode: HybridMode::Auto,
+            fts_match: FtsMatch::All,
             fts_filter: None,
             weights: LegWeights::default(),
         }
@@ -335,6 +340,7 @@ impl HybridConfig {
                         )
                     })?;
                 }
+                "ftsMode" => config.fts_match = parse_fts_mode(v)?,
                 "ftsFilter" => match v {
                     Value::String(label) => config.fts_filter = Some(label.clone()),
                     other => {
@@ -360,6 +366,41 @@ impl HybridConfig {
     #[must_use]
     pub fn depth(&self, k: usize) -> usize {
         self.candidates.unwrap_or(MIN_CANDIDATES).max(k)
+    }
+}
+
+/// The value of an `ftsMode` key: `'all'` (an item must hold all of the
+/// query) or `'any'` (any word of it).
+///
+/// ```
+/// use drevo::cypher::executor::Value;
+/// use drevo::cypher::hybrid::parse_fts_mode;
+/// use drevo::native_fts::FtsMatch;
+///
+/// assert_eq!(parse_fts_mode(&Value::String("any".into())), Ok(FtsMatch::Any));
+/// assert!(parse_fts_mode(&Value::Integer(1)).is_err());
+/// ```
+///
+/// # Errors
+///
+/// A message naming the accepted values and the one given.
+pub fn parse_fts_mode(value: &Value) -> Result<FtsMatch, String> {
+    match value {
+        Value::String(name) if name == "all" => Ok(FtsMatch::All),
+        Value::String(name) if name == "any" => Ok(FtsMatch::Any),
+        other => Err(format!(
+            "ftsMode must be 'all' or 'any', got {}",
+            describe(other)
+        )),
+    }
+}
+
+/// The `ftsMode` name of `mode`.
+#[must_use]
+pub fn fts_mode_name(mode: FtsMatch) -> &'static str {
+    match mode {
+        FtsMatch::All => "all",
+        FtsMatch::Any => "any",
     }
 }
 
@@ -671,6 +712,7 @@ mod tests {
                 candidates: Some(50),
                 rrf_k: 10.0,
                 mode: HybridMode::Vector,
+                fts_match: FtsMatch::All,
                 fts_filter: Some("Doc".to_string()),
                 weights: LegWeights {
                     fts: 0.5,

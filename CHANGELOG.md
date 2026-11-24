@@ -365,6 +365,22 @@ history and the in-repo issue tracker; format loosely follows
   kept on failure. A `drevo.rag.context` without `session` or `trace` stays a
   read.
 
+- **A question in plain language finds its seeds** (issue #820). The
+  full-text leg required every word of the query, so `drevo.rag.retrieve` /
+  `drevo.rag.context` returned nothing for "who watched the storm from the
+  lighthouse" without an embedder, and with one the seeds came from the
+  vector leg alone. Full text gains an any-word mode — a node matches when it
+  holds any word of the query and ranks by the BM25 weight of the words it
+  holds — as `ftsMode: 'all' | 'any'` in the config of `drevo.rag.*` and
+  `drevo.search.hybrid`, and as an optional third argument of `fts.search` /
+  `fts.searchRelationships` (`{ftsMode: 'any'}`). **Behaviour change:** the
+  graph-RAG procedures default to `'any'`; pass `ftsMode: 'all'` for the old
+  seeds. `fts.search`, `drevo.search.hybrid`, `drevo.community.query`,
+  `drevo.memory.recall` and `db.index.fulltext.queryNodes` keep `'all'`. A
+  context trace records the mode, and a trace recorded before replays as
+  `'all'`. In `drevo-core`: `FtsMatch` and
+  `NativeFtsIndex::search_matching` / `search_matching_with_changes` (and
+  the same on `NativeFtsRelIndex`).
 - **`drevo.community.summarize` writes LLM summaries and runs as a job**
   (issue #804). `mode: 'llm'` was a stub that always failed, and `'auto'`
   always wrote extractive summaries: both now ask the chat model of

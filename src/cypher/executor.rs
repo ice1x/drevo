@@ -183,6 +183,7 @@ use crate::cypher::provenance::{
 use crate::engine::GraphEngine;
 use crate::error::DrevoError;
 use crate::model::{Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties};
+use crate::native_fts::FtsMatch;
 use crate::semantic_index::{IndexMode, SemanticIndex};
 use crate::vector::cosine_similarity;
 
@@ -3367,13 +3368,14 @@ impl<'a> Executor<'a> {
         feature: &str,
         query: &str,
         limit: usize,
+        mode: FtsMatch,
     ) -> ExecResultT<Vec<(u64, f32)>> {
         let index = self
             .native_fts
             .ok_or_else(|| Self::engine_capability(feature))?;
         Ok(match self.full_text_changes(feature)? {
-            Some(changes) => index.search_with_changes(query, limit, &changes.nodes),
-            None => index.search(query, limit),
+            Some(changes) => index.search_matching_with_changes(query, limit, mode, &changes.nodes),
+            None => index.search_matching(query, limit, mode),
         })
     }
 
@@ -3383,14 +3385,60 @@ impl<'a> Executor<'a> {
         feature: &str,
         query: &str,
         limit: usize,
+        mode: FtsMatch,
     ) -> ExecResultT<Vec<(u64, f32)>> {
         let index = self
             .native_fts_rel
             .ok_or_else(|| Self::engine_capability(feature))?;
         Ok(match self.full_text_changes(feature)? {
-            Some(changes) => index.search_with_changes(query, limit, &changes.edges),
-            None => index.search(query, limit),
+            Some(changes) => index.search_matching_with_changes(query, limit, mode, &changes.edges),
+            None => index.search_matching(query, limit, mode),
         })
+    }
+
+    /// The optional config argument of `fts.search` /
+    /// `fts.searchRelationships`: `{ftsMode: 'all' | 'any'}`, `'all'` when
+    /// absent or `null`.
+    fn full_text_config(
+        &self,
+        name: &str,
+        arg: Option<&Expression>,
+        span: Span,
+    ) -> ExecResultT<FtsMatch> {
+        let refuse = |message: String| ExecError::InvalidProcedureCall {
+            name: name.to_string(),
+            message,
+            span,
+        };
+        let config = match arg {
+            Some(arg) => self.eval(arg, &Bindings::new())?,
+            None => Value::Null,
+        };
+        let map = match config {
+            Value::Null => return Ok(FtsMatch::All),
+            Value::Map(map) => map,
+            other => {
+                return Err(refuse(format!(
+                    "the config must be a map, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let mut mode = FtsMatch::All;
+        for (key, value) in &map {
+            match key.as_str() {
+                "ftsMode" if matches!(value, Value::Null) => {}
+                "ftsMode" => {
+                    mode = crate::cypher::hybrid::parse_fts_mode(value).map_err(refuse)?;
+                }
+                other => {
+                    return Err(refuse(format!(
+                        "unknown config key `{other}`; expected ftsMode"
+                    )))
+                }
+            }
+        }
+        Ok(mode)
     }
 
     /// What the statement's transaction has changed so far, for a full-text
@@ -7735,6 +7783,7 @@ impl<'a> Executor<'a> {
             "db.index.fulltext.queryNodes",
             &query,
             DEFAULT_FULLTEXT_LIMIT,
+            FtsMatch::All,
         )?;
         let mut rows = Vec::new();
         for (id, score) in hits {
@@ -7770,7 +7819,8 @@ impl<'a> Executor<'a> {
         // Over-fetch FTS candidates (the index is graph-wide, not per-session),
         // then keep this session's messages in BM25 order until we have `k`.
         let candidates = k.saturating_mul(8).max(50);
-        let hits = self.full_text_nodes("drevo.memory.recall", &query, candidates)?;
+        let hits =
+            self.full_text_nodes("drevo.memory.recall", &query, candidates, FtsMatch::All)?;
         let mut rows = Vec::new();
         for (id, score) in hits {
             if rows.len() >= k {
@@ -10687,7 +10737,7 @@ impl<'a> Executor<'a> {
         ]])
     }
 
-    /// `CALL fts.search(query, k) YIELD node, score` (issue #208) — the top-`k`
+    /// `CALL fts.search(query, k[, config]) YIELD node, score` (issue #208) — the top-`k`
     /// nodes matching `query` in the BM25 full-text index (task `00131`),
     /// ranked by relevance.
     ///
@@ -10715,7 +10765,8 @@ impl<'a> Executor<'a> {
         // Answer from the change-feed-fed full-text index, nodes ranked by
         // descending BM25 score, completed with the transaction's own writes
         // (see `full_text_nodes`).
-        let hits = self.full_text_nodes("fts.search", &query, k)?;
+        let mode = self.full_text_config("fts.search", args.get(2), span)?;
+        let hits = self.full_text_nodes("fts.search", &query, k, mode)?;
         let mut rows = Vec::new();
         for (id, score) in hits {
             if let Some(node) = self.engine().get_node(id)? {
@@ -10802,7 +10853,7 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
-    /// `CALL fts.searchRelationships(query, k) YIELD rel, score` (#227-B) — the
+    /// `CALL fts.searchRelationships(query, k[, config]) YIELD rel, score` (#227-B) — the
     /// top-`k` relationships whose string properties best match `query`, ranked
     /// by BM25. The edge companion of [`Self::proc_fts_search`].
     fn proc_fts_search_relationships(
@@ -10818,7 +10869,8 @@ impl<'a> Executor<'a> {
         // Answer from the relationship full-text index, edges ranked by
         // descending BM25 score, completed with the transaction's own writes
         // as for `fts.search`.
-        let hits = self.full_text_relationships("fts.searchRelationships", &query, k)?;
+        let mode = self.full_text_config("fts.searchRelationships", args.get(2), span)?;
+        let hits = self.full_text_relationships("fts.searchRelationships", &query, k, mode)?;
         let mut rows = Vec::new();
         for (id, score) in hits {
             if let Some(edge) = self.engine().get_edge(id)? {
@@ -10984,6 +11036,7 @@ impl<'a> Executor<'a> {
                 items,
                 query,
                 depth,
+                config.fts_match,
                 config.fts_filter.as_deref(),
                 &mut found,
             )?
@@ -11038,6 +11091,7 @@ impl<'a> Executor<'a> {
         items: HybridItems,
         query: &str,
         depth: usize,
+        mode: FtsMatch,
         filter: Option<&str>,
         found: &mut HashMap<u64, Value>,
     ) -> ExecResultT<Vec<u64>> {
@@ -11047,7 +11101,7 @@ impl<'a> Executor<'a> {
         let mut ids = Vec::new();
         match items {
             HybridItems::Nodes => {
-                for (id, _) in self.full_text_nodes("fts.search", query, limit)? {
+                for (id, _) in self.full_text_nodes("fts.search", query, limit, mode)? {
                     if ids.len() == depth {
                         break;
                     }
@@ -11065,7 +11119,7 @@ impl<'a> Executor<'a> {
             }
             HybridItems::Relationships => {
                 for (id, _) in
-                    self.full_text_relationships("fts.searchRelationships", query, limit)?
+                    self.full_text_relationships("fts.searchRelationships", query, limit, mode)?
                 {
                     if ids.len() == depth {
                         break;
@@ -11455,7 +11509,14 @@ impl<'a> Executor<'a> {
         let config = match trace.properties.get("config") {
             Some(Value::String(json)) => serde_json::from_str::<serde_json::Value>(json)
                 .map_err(|e| e.to_string())
-                .and_then(|json| {
+                .and_then(|mut json| {
+                    // A trace recorded before `ftsMode` existed was
+                    // retrieved with every word required.
+                    if let Some(config) = json.as_object_mut() {
+                        config
+                            .entry("ftsMode")
+                            .or_insert_with(|| serde_json::Value::from("all"));
+                    }
                     crate::rag::config::RagConfig::from_value(
                         &json_to_value(&json),
                         crate::cypher::expand::ceilings(),
@@ -14784,6 +14845,8 @@ fn procedure_optional_args(name: &str) -> usize {
         "apoc.trigger.install"
         | "apoc.trigger.add"
         | "drevo.sequence.create"
+        | "fts.search"
+        | "fts.searchRelationships"
         | NEAREST
         | HYBRID
         | HYBRID_RELS
@@ -14917,8 +14980,8 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.text.fuzzy" => 3,
         // drevo.engine.status() — no arguments.
         "drevo.engine.status" => 0,
-        // fts.search(query, k) / fts.searchRelationships(query, k)
-        "fts.search" | "fts.searchRelationships" => 2,
+        // fts.search(query, k[, config]) / fts.searchRelationships(query, k[, config])
+        "fts.search" | "fts.searchRelationships" => 3,
         // drevo.search.hybrid(query, label, embeddingProperty, k[, config]) and
         // drevo.search.hybridRelationships(query, type, …) (issue #780).
         HYBRID | HYBRID_RELS => 5,
