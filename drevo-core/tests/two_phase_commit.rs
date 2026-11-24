@@ -3,9 +3,9 @@
 //! Design: `docs/rfc-two-phase-commit.md`. `tx_prepare(tx, gid)` validates a
 //! registered transaction and durably records its write set as *prepared*.
 //! While anything is prepared, a **fence** refuses every direct write and
-//! every transaction commit that touches what a prepared transaction wrote or
-//! would break a constraint once it commits (reads keep working), so
-//! `commit_prepared(gid)` can never conflict. Prepared transactions survive a
+//! every transaction commit or prepare that touches what a prepared
+//! transaction wrote or would break a constraint once it commits (reads keep
+//! working), so `commit_prepared(gid)` can never conflict. Prepared transactions survive a
 //! crash and a WAL compaction, are listable, and are resolved by
 //! `commit_prepared` / `rollback_prepared`, possibly after a restart.
 //!
@@ -326,7 +326,10 @@ fn commit_prepared_never_conflicts_whatever_was_attempted_meanwhile() {
                     g.tx_commit(t).is_err()
                 }
                 _ => {
-                    let t = tx_creating(&g, &[&format!("p{round}-{i}")]);
+                    // A prepare that writes `seed` too. (One on other
+                    // records is prepared alongside: `prepare_overlap.rs`.)
+                    let t = g.tx_begin();
+                    g.tx_engine(t).unwrap().delete_node(seed.id).unwrap();
                     g.tx_prepare(t, &format!("other-{i}")).is_err()
                 }
             };
@@ -376,8 +379,18 @@ fn gid_and_state_errors() {
 #[test]
 fn prepare_reports_a_conflict_and_closes_the_transaction() {
     let g = NativeGraph::new();
-    let tx = tx_creating(&g, &["ada"]);
-    g.create_node(node("concurrent")).unwrap(); // the graph moved since begin
+    let seed = g.create_node(node("seed")).unwrap();
+    let rename = |title: &str| NodePatch {
+        title: Some(title.into()),
+        ..NodePatch::default()
+    };
+    let tx = g.tx_begin();
+    g.tx_engine(tx)
+        .unwrap()
+        .update_node(seed.id, rename("mine"))
+        .unwrap();
+    // Someone else wrote the same node since the transaction began.
+    g.update_node(seed.id, rename("theirs")).unwrap();
     assert!(matches!(g.tx_prepare(tx, "g"), Err(PrepareError::Conflict)));
     assert!(gids(&g).is_empty());
     assert!(

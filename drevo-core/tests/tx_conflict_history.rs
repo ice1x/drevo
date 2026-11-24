@@ -212,34 +212,47 @@ fn a_transaction_older_than_the_history_is_counted_as_history() {
 }
 
 #[test]
-fn a_rejected_prepare_is_classified_too() {
+fn a_prepare_is_classified_like_a_commit() {
+    let patch = |html: &str| drevo_core::model::NodePatch {
+        body_html: Some(html.into()),
+        ..Default::default()
+    };
     let g = NativeGraph::new();
     let n1 = g.create_node(note("1")).unwrap();
     let n3 = g.create_node(note("3")).unwrap();
+
+    // A commit to another node: the prepare passes and nothing is counted.
     let a = g.tx_begin();
     g.tx_engine(a)
         .unwrap()
-        .update_node(
-            n1.id,
-            drevo_core::model::NodePatch {
-                body_html: Some("a".into()),
-                ..Default::default()
-            },
-        )
+        .update_node(n1.id, patch("a"))
         .unwrap();
-    g.update_node(
-        n3.id,
-        drevo_core::model::NodePatch {
-            body_html: Some("direct".into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    g.update_node(n3.id, patch("direct")).unwrap();
+    g.tx_prepare(a, "gid-1").unwrap();
+    g.rollback_prepared("gid-1").unwrap();
+    assert_eq!(
+        stats(&g),
+        ConflictStats {
+            overlap: 0,
+            would_pass: 0,
+            history: 0,
+            merged: 0
+        }
+    );
+
+    // A commit to the same node: rejected, and counted as an overlap.
+    let b = g.tx_begin();
+    g.tx_engine(b)
+        .unwrap()
+        .update_node(n1.id, patch("b"))
+        .unwrap();
+    g.update_node(n1.id, patch("direct")).unwrap();
     assert!(matches!(
-        g.tx_prepare(a, "gid-1"),
+        g.tx_prepare(b, "gid-2"),
         Err(PrepareError::Conflict)
     ));
-    assert_eq!(stats(&g).would_pass, 1);
+    assert_eq!(stats(&g).overlap, 1);
+    assert_eq!(stats(&g).would_pass, 0);
 }
 
 #[test]
