@@ -1052,6 +1052,171 @@ fn ci_yml_test_job_frees_the_suite_binaries_before_the_feature_steps() {
     );
 }
 
+/// The `run: |` script of the ci.yml step called `name`, without its
+/// indentation.
+#[cfg(unix)]
+fn ci_yml_step_script(name: &str) -> String {
+    let body = fs::read_to_string(workflows_dir().join("ci.yml")).expect("ci.yml exists");
+    let mut lines = body
+        .lines()
+        .skip_while(|l| l.trim() != format!("- name: {name}"));
+    lines.next().unwrap_or_else(|| panic!("no step `{name}`"));
+    let run = lines
+        .by_ref()
+        .find(|l| l.trim_start().starts_with("run: |"))
+        .unwrap_or_else(|| panic!("step `{name}` has no `run: |`"));
+    let indent = run.len() - run.trim_start().len();
+    lines
+        .take_while(|l| l.trim().is_empty() || l.len() - l.trim_start().len() > indent)
+        .map(|l| l.trim_start())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Run the "Free disk after the full suite" step on a target dir holding
+/// `files` (path under the target dir, executable or not); the paths left.
+#[cfg(unix)]
+fn after_free_disk_step(case: &str, files: &[(&str, bool)]) -> Vec<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let target =
+        std::env::temp_dir().join(format!("drevo_ci_free_disk_{}_{case}", std::process::id()));
+    let _ = fs::remove_dir_all(&target);
+    fs::create_dir_all(&target).unwrap();
+    for (path, executable) in files {
+        let file = target.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"x").unwrap();
+        let mode = if *executable { 0o755 } else { 0o644 };
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    // GitHub runs a step's script with `bash -e`.
+    let out = std::process::Command::new("bash")
+        .arg("-e")
+        .arg("-c")
+        .arg(ci_yml_step_script("Free disk after the full suite"))
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .expect("bash runs");
+    assert!(
+        out.status.success(),
+        "{case}: the step failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut left: Vec<String> = files
+        .iter()
+        .filter(|(path, _)| target.join(path).exists())
+        .map(|(path, _)| (*path).to_string())
+        .collect();
+    left.sort();
+    let _ = fs::remove_dir_all(&target);
+    left
+}
+
+/// cargo 1.100 moved test executables from `debug/deps` to
+/// `debug/build/<package>/<hash>/out`, and `debug/deps` is gone: the step
+/// must free them where they are, and must not fail on a missing directory.
+#[cfg(unix)]
+#[test]
+fn the_free_disk_step_frees_test_executables_where_cargo_1_100_puts_them() {
+    let left = after_free_disk_step(
+        "new_layout",
+        &[
+            (
+                "debug/build/drevo/43f151343986fab3/out/drevo-43f151343986fab3",
+                true,
+            ),
+            (
+                "debug/build/drevo/b64e05888a4ceed6/out/smoke_tests-b64e05888a4ceed6",
+                true,
+            ),
+            (
+                "debug/build/drevo/b64e05888a4ceed6/out/smoke_tests-b64e05888a4ceed6.d",
+                false,
+            ),
+            (
+                "debug/build/drevo/43f151343986fab3/out/libdrevo-43f151343986fab3.rlib",
+                false,
+            ),
+            ("debug/build/drevo/43f151343986fab3/out/libdrevo.so", true),
+            (
+                "debug/build/drevo/43f151343986fab3/out/libdrevo.dylib",
+                true,
+            ),
+            (
+                "debug/build/drevo/43f151343986fab3/fingerprint/invoked.timestamp",
+                false,
+            ),
+            // Build scripts and what they wrote stay: the feature steps
+            // after this one run them again.
+            (
+                "debug/build/quote/29ddd80bdc05a35a/out/build_script_build",
+                true,
+            ),
+            (
+                "debug/build/zstd-sys/6d39511f7096b903/run/out/gen-tool",
+                true,
+            ),
+        ],
+    );
+    assert_eq!(
+        left,
+        [
+            "debug/build/drevo/43f151343986fab3/fingerprint/invoked.timestamp",
+            "debug/build/drevo/43f151343986fab3/out/libdrevo-43f151343986fab3.rlib",
+            "debug/build/drevo/43f151343986fab3/out/libdrevo.dylib",
+            "debug/build/drevo/43f151343986fab3/out/libdrevo.so",
+            "debug/build/drevo/b64e05888a4ceed6/out/smoke_tests-b64e05888a4ceed6.d",
+            "debug/build/quote/29ddd80bdc05a35a/out/build_script_build",
+            "debug/build/zstd-sys/6d39511f7096b903/run/out/gen-tool",
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_free_disk_step_still_frees_test_executables_in_debug_deps() {
+    let left = after_free_disk_step(
+        "old_layout",
+        &[
+            ("debug/deps/drevo-43f151343986fab3", true),
+            ("debug/deps/smoke_tests-b64e05888a4ceed6", true),
+            ("debug/deps/smoke_tests-b64e05888a4ceed6.d", false),
+            ("debug/deps/libdrevo-43f151343986fab3.rlib", false),
+            ("debug/deps/libdrevo-43f151343986fab3.rmeta", false),
+            ("debug/deps/libserde_derive-0123456789abcdef.so", true),
+            (
+                "debug/build/quote-29ddd80bdc05a35a/build-script-build",
+                true,
+            ),
+            (
+                "debug/build/quote-29ddd80bdc05a35a/build_script_build-29ddd80bdc05a35a",
+                true,
+            ),
+            ("debug/build/zstd-sys-6d39511f7096b903/out/gen-tool", true),
+        ],
+    );
+    assert_eq!(
+        left,
+        [
+            "debug/build/quote-29ddd80bdc05a35a/build-script-build",
+            "debug/build/quote-29ddd80bdc05a35a/build_script_build-29ddd80bdc05a35a",
+            "debug/build/zstd-sys-6d39511f7096b903/out/gen-tool",
+            "debug/deps/libdrevo-43f151343986fab3.rlib",
+            "debug/deps/libdrevo-43f151343986fab3.rmeta",
+            "debug/deps/libserde_derive-0123456789abcdef.so",
+            "debug/deps/smoke_tests-b64e05888a4ceed6.d",
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_free_disk_step_passes_on_a_target_dir_with_nothing_to_free() {
+    assert!(after_free_disk_step("empty", &[]).is_empty());
+    let left = after_free_disk_step("only_libs", &[("debug/keep.txt", false)]);
+    assert_eq!(left, ["debug/keep.txt"]);
+}
+
 // ---- bench.yml invariants ------------------------------------------------
 //
 // `bench.yml` runs criterion benches nightly on the self-hosted runner.
