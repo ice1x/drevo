@@ -47,6 +47,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
+      - 'drevo-core/**'
+      - 'drevo-auth/**'
   push:
     branches: [main]
     paths:
@@ -55,6 +57,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'src/**'
+      - 'drevo-core/**'
+      - 'drevo-auth/**'
   workflow_dispatch:
 
 # Cancel an in-flight run when a newer commit lands on the same PR /
