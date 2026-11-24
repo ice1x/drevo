@@ -68,12 +68,63 @@ pub struct NativeFtsIndex {
     total_len: u64,
     /// The change-feed cursor this index has consumed up to.
     cursor: u64,
+    /// A node carrying one of these labels is left out
+    /// ([`without_labels`](Self::without_labels)).
+    skipped_labels: Vec<String>,
 }
 
 impl NativeFtsIndex {
     /// Create an empty index positioned before any change.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create an empty index that leaves out every node carrying one of
+    /// `labels`, as its [`kind`](Node::kind) or as a
+    /// [secondary label](crate::labels::secondary_labels).
+    ///
+    /// Such a node is never a hit and does not count towards the corpus
+    /// statistics, so the other nodes rank exactly as if it were not in the
+    /// graph. Use it to keep an application's bookkeeping records (job
+    /// queues, audit trails) out of its search.
+    ///
+    /// ```
+    /// # use drevo_core::engine::GraphEngine;
+    /// # use drevo_core::model::{NewNode, Properties};
+    /// # use drevo_core::native::NativeGraph;
+    /// # use drevo_core::native_fts::NativeFtsIndex;
+    /// # fn node(kind: &str, title: &str) -> NewNode {
+    /// #     NewNode { kind: kind.into(), title: title.into(), body: String::new(),
+    /// #               body_html: String::new(), properties: Properties::default() }
+    /// # }
+    /// let graph = NativeGraph::new();
+    /// let recipe = graph.create_node(node("Recipe", "rye bread")).unwrap();
+    /// graph.create_node(node("ImportJob", "import of rye bread")).unwrap();
+    ///
+    /// let mut fts = NativeFtsIndex::without_labels(["ImportJob"]);
+    /// fts.sync(&graph);
+    /// let hits = fts.search("rye", 10);
+    /// assert_eq!(hits.len(), 1);
+    /// assert_eq!(hits[0].0, recipe.id);
+    /// ```
+    pub fn without_labels<I, S>(labels: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            skipped_labels: labels.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Whether `node` carries a label this index leaves out.
+    fn skips(&self, node: &Node) -> bool {
+        !self.skipped_labels.is_empty()
+            && (self.skipped_labels.contains(&node.kind)
+                || crate::labels::secondary_labels(node)
+                    .iter()
+                    .any(|label| self.skipped_labels.contains(label)))
     }
 
     /// The change-feed cursor this index has consumed up to.
@@ -217,7 +268,7 @@ impl NativeFtsIndex {
         limit: usize,
         changes: &[Change<Node>],
     ) -> Vec<(u64, f32)> {
-        let changed = changed_docs(changes, |n| n.id, Self::node_trigrams);
+        let changed = changed_docs(changes, |n| n.id, |n| !self.skips(n), Self::node_trigrams);
         self.corpus().rank(query, limit, &changed)
     }
 
@@ -261,6 +312,9 @@ impl NativeFtsIndex {
     /// Insert or replace a node's postings (create and update both route here).
     fn index_node(&mut self, node: &Node) {
         self.remove_node(node.id);
+        if self.skips(node) {
+            return;
+        }
         let trigrams = Self::node_trigrams(node);
         if trigrams.is_empty() {
             // Still track the (empty) document so counts stay consistent.
@@ -393,7 +447,7 @@ impl NativeFtsRelIndex {
         limit: usize,
         changes: &[Change<Edge>],
     ) -> Vec<(u64, f32)> {
-        let changed = changed_docs(changes, |e| e.id, Self::edge_trigrams);
+        let changed = changed_docs(changes, |e| e.id, |_| true, Self::edge_trigrams);
         self.corpus().rank(query, limit, &changed)
     }
 
@@ -489,13 +543,18 @@ type ChangedDoc = Option<(HashMap<String, u32>, u32)>;
 fn changed_docs<T>(
     changes: &[Change<T>],
     id: impl Fn(&T) -> u64,
+    indexed: impl Fn(&T) -> bool,
     trigrams: impl Fn(&T) -> Vec<String>,
 ) -> HashMap<u64, ChangedDoc> {
     let mut changed = HashMap::with_capacity(changes.len());
     for change in changes {
         match (&change.after, &change.before) {
-            (Some(record), _) => {
+            (Some(record), _) if indexed(record) => {
                 changed.insert(id(record), Some(term_frequencies(&trigrams(record))));
+            }
+            // A record the index leaves out is, to a search, a deleted one.
+            (Some(record), _) => {
+                changed.insert(id(record), None);
             }
             (None, Some(record)) => {
                 changed.insert(id(record), None);

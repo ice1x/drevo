@@ -101,7 +101,7 @@ impl ServiceIndexes {
         }
         self.props = NativePropertyIndex::new();
         self.values = NativeValueCache::new();
-        self.fts = NativeFtsIndex::new();
+        self.fts = NativeFtsIndex::without_labels(crate::rag::config::FULL_TEXT_SKIPPED_LABELS);
         self.fts_rel = NativeFtsRelIndex::new();
         self.secondary = on;
         if on {
@@ -127,7 +127,7 @@ impl ServiceIndexes {
             points: NativePointIndex::new(point_specs),
             paths_version: 0,
             values: NativeValueCache::new(),
-            fts: NativeFtsIndex::new(),
+            fts: NativeFtsIndex::without_labels(crate::rag::config::FULL_TEXT_SKIPPED_LABELS),
             fts_rel: NativeFtsRelIndex::new(),
             synced_head: 0,
             secondary,

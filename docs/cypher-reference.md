@@ -1273,6 +1273,13 @@ relevance — the full-text counterpart of `drevo.vector.query`. The `score` is
 the Okapi BM25 relevance. Post-filter with a `WHERE` on any node property and
 `ORDER BY score DESC` as usual.
 
+Full text covers every string property of every node except the server's own
+bookkeeping: `:ContextTrace` (a [context trace](#context-traces) repeats the
+question it answered), `:IngestJob` and `:IngestItem` (a queued item holds the
+text it is about to turn into knowledge). They are never hits and do not count
+towards the scores of other nodes. Conversation memory — `:Message`,
+`:ReasoningTrace` — is searchable.
+
 ```cypher
 CALL fts.search('anxious thoughts about work', 25) YIELD node, score
 RETURN node, score ORDER BY score DESC
@@ -3521,9 +3528,9 @@ goes to each node retrieved but left out, ranked after the written ones:
 `reason: 'budget'` when it did not fit, `'maxNodes'` for the node the expansion
 stopped at when it hit `maxNodes`. `INITIATED_BY` goes to the session's newest
 `:Message` (none when the session has no messages yet). The default
-`excludeLabels` keeps traces out of every `drevo.rag.*` retrieval; full-text
-search indexes them like any node with string properties, so `fts.search` can
-return a trace whose question or text matches.
+`excludeLabels` keeps traces out of every `drevo.rag.*` retrieval, and
+full-text search does not index them: a traced question is not a hit for the
+same question asked again.
 
 ```text
 CALL drevo.rag.traces(session, limit) YIELD trace

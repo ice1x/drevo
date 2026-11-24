@@ -296,6 +296,17 @@ history and the in-repo issue tracker; format loosely follows
   transactions can be prepared at once and resolved in any order, also after
   a restart. In `drevo-core`, `NativeGraph::tx_prepare` returns
   `PrepareError::Conflict` / `PreparedPending` under these rules.
+- **Full-text search leaves the server's bookkeeping out** (issue #819).
+  `fts.search`, `db.index.fulltext.queryNodes`, `drevo.search.hybrid`, the
+  REST `/search/fts` and the Web UI search returned `:ContextTrace` nodes
+  (every traced question was a hit for the same question asked again) and
+  `:IngestItem` nodes (a submitted text was found as its queue rows), and
+  their text shifted the BM25 scores of everything else. `:ContextTrace`,
+  `:IngestJob` and `:IngestItem` are no longer full-text indexed; `:Message`
+  and `:ReasoningTrace` stay searchable, and traces and jobs are read by id
+  as before. An existing store needs nothing: the index is rebuilt when the
+  server starts. In `drevo-core`, `NativeFtsIndex::without_labels(labels)`
+  makes an index that leaves out nodes carrying one of the labels.
 - **Full-text search reads the transaction's own writes** (issue #817).
   `fts.search`, `fts.searchRelationships`, `db.index.fulltext.queryNodes`,
   `drevo.search.hybrid`, `drevo.memory.recall` and the `drevo.rag.*`
