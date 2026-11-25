@@ -263,9 +263,9 @@ fn every_sidecar_is_encrypted_too() {
     }
     for expected in [
         "native.wal",
-        "origin.json",
-        "stamps.jsonl",
-        "sequences.json",
+        "native.wal.origin.json",
+        "native.wal.stamps.jsonl",
+        "native.wal.sequences.json",
     ] {
         assert!(
             seen.iter().any(|n| n == expected),
@@ -323,9 +323,9 @@ fn a_store_is_encrypted_rotated_and_decrypted_in_place() {
     assert!(NativeGraph::open_durable(&wal).is_err());
     for name in [
         "native.wal",
-        "stamps.jsonl",
-        "sequences.json",
-        "origin.json",
+        "native.wal.stamps.jsonl",
+        "native.wal.sequences.json",
+        "native.wal.origin.json",
     ] {
         let bytes = fs::read(tmp.path(name)).unwrap();
         assert!(

@@ -381,8 +381,12 @@ impl Default for SemanticSidecar {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn semantic_sidecar_path(wal_path: &std::path::Path) -> std::path::PathBuf {
-    wal_path.with_file_name("semantic.json")
+    drevo_core::native::sidecar_path(wal_path, SEMANTIC_SIDECAR)
 }
+
+/// The file name of the semantic registrations next to a store's log, after
+/// the log's own name (#826).
+pub(crate) const SEMANTIC_SIDECAR: &str = "semantic.json";
 
 /// The context `semantic.json` is sealed under in an encrypted store.
 #[cfg(not(target_arch = "wasm32"))]
@@ -643,6 +647,15 @@ impl NativeService {
         };
         let last_compact_head = AtomicU64::new(graph.change_head());
         let sidecar = semantic_sidecar_path(path);
+        // A `semantic.json` of the layout before #826 moves to the store's
+        // own name; in a directory shared with other stores it is copied.
+        let read_from = drevo_core::native::adopt_legacy_sidecar(
+            path,
+            SEMANTIC_SIDECAR,
+            drevo_core::native::SharedLegacySidecar::Copy,
+            read_only,
+        )
+        .map_err(DrevoError::Io)?;
         let SemanticSidecar {
             node,
             rel,
@@ -651,7 +664,7 @@ impl NativeService {
             constraints,
             triggers,
             secondary_indexes,
-        } = load_semantic_sidecar(&sidecar).map_err(DrevoError::Io)?;
+        } = load_semantic_sidecar(&read_from).map_err(DrevoError::Io)?;
         // Constraints are schema, not WAL data: install them over the replayed
         // graph. Data written through drevo already satisfies them; if a
         // replicated or imported write broke one, keep serving and say so.
@@ -3575,7 +3588,7 @@ impl NativeService {
                 .map_err(|e| drevo_core::backup::BackupError::Io(std::io::Error::other(e)))?;
             // As the file is stored: sealed for an encrypted store.
             let bytes = sidecar_bytes(SEMANTIC_CONTEXT, bytes)?;
-            extra_files.push(("semantic.json".to_string(), bytes));
+            extra_files.push((SEMANTIC_SIDECAR.to_string(), bytes));
         }
         self.graph.backup_to(
             dir,

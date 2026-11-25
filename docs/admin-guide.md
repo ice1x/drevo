@@ -924,10 +924,19 @@ an opt-in `tracing-opentelemetry` layer if you want spans exported.
 
 Each database is a write-ahead log plus a few sidecars. The default database lives in
 `${DREVO_DATA_DIR}/native.wal`, and every other one in `${DREVO_DATA_DIR}/databases/<name>/`.
-Next to each log sit:
+Next to each log sit its sidecars, named after the log file (`native.wal.origin.json`):
 
-- `origin.json`, `tombstones.json` and `stamps.jsonl`: replica identity and causal stamps;
-- `semantic.json`: index registrations and constraints.
+- `<log>.origin.json`, `<log>.tombstones.json` and `<log>.stamps.jsonl`: replica identity and
+  causal stamps;
+- `<log>.sequences.json`: the sequences;
+- `<log>.semantic.json`: index registrations and constraints.
+
+Two stores whose logs share a directory therefore keep their own sidecars. A store written by an
+earlier version has them under fixed names (`origin.json`, …): it takes them over the first time
+it opens, when no other store's log (with its `<file>.lock`) is in the directory. When there is
+one, those files may be the other store's, so the store starts with a fresh replica identity and
+the lowest stamps, and copies the tombstones, sequences and registrations; the old files stay for
+the other store.
 
 The users (`security.json`), the embeddings settings (`embeddings_config.json`) and the text-to-Cypher settings (`text2cypher_config.json`) are kept in
 the data directory itself. Every acknowledged write is fsynced to the log before it returns; the
@@ -1023,8 +1032,8 @@ with a 256-bit key when one is given. Each log record and each sidecar is sealed
 XChaCha20-Poly1305: the data on disk reads as random bytes, and a changed byte is detected and
 refused. Encrypted:
 
-- every database's log, `origin.json`, `tombstones.json`, `stamps.jsonl`, `semantic.json` and
-  `sequences.json`;
+- every database's log and its sidecars (`.origin.json`, `.tombstones.json`, `.stamps.jsonl`,
+  `.semantic.json`, `.sequences.json`);
 - the server's `database_access.json`, `security.json` (users, password hashes, roles and
   privileges) and `embeddings_config.json` (the embeddings provider and its API key);
 - physical backups, which copy the encrypted files as they are.

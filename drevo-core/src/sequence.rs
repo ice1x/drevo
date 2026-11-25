@@ -14,7 +14,7 @@
 //!
 //! A value, once handed out, is never handed out again — not after a rolled
 //! back transaction (the value is simply skipped) and not after a restart.
-//! A durable store keeps the sequences in `sequences.json` next to its log
+//! A durable store keeps the sequences next to its log (`<log>.sequences.json`)
 //! and reserves values in blocks: each time a block is used up, the end of
 //! the next one is written to the file before any of its values is returned.
 //! A restart resumes after the reserved block, so it may skip unused values
