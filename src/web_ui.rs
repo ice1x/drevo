@@ -1088,10 +1088,20 @@ mod tests {
     #[test]
     fn embedded_app_js_renders_overview_on_load() {
         // On load the canvas must auto-render a bounded sample of the graph
-        // (not sit empty), fetched once from /export/json and cached.
+        // (not sit empty), fetched once from /export/overview and cached:
+        // what the overview draws, not the whole dump with its embeddings
+        // (#846).
         assert!(
-            APP_JS.contains("/export/json"),
-            "app.js must fetch the graph dump from /export/json for the overview"
+            APP_JS.contains("apiGet(\"/export/overview\")"),
+            "app.js must fetch the overview from /export/overview"
+        );
+        assert!(
+            !APP_JS.contains("apiGet(\"/export/json\")"),
+            "app.js must not download the whole graph dump"
+        );
+        assert!(
+            APP_JS.contains("loadFullNode(") && APP_JS.contains("apiGet(`/nodes/${"),
+            "the inspector must fetch a node's full properties when it is opened"
         );
         assert!(
             APP_JS.contains("loadOverview"),

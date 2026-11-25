@@ -117,8 +117,9 @@ impl Server {
     }
 }
 
-const GRAPH_READS: [&str; 6] = [
+const GRAPH_READS: [&str; 7] = [
     "/export/json",
+    "/export/overview",
     "/export/graphml",
     "/nodes",
     "/edges",
@@ -215,7 +216,13 @@ async fn without_logins_every_route_is_open() {
     let state = NativeApiState::new(Arc::new(NativeService::in_memory()))
         .with_security(Security::new(users).without_login());
     let app = build_native_router(state);
-    for uri in ["/export/json", "/nodes", "/storage/bloat", "/problems"] {
+    for uri in [
+        "/export/json",
+        "/export/overview",
+        "/nodes",
+        "/storage/bloat",
+        "/problems",
+    ] {
         let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
         let status = app.clone().oneshot(req).await.unwrap().status();
         assert_ne!(status, StatusCode::FORBIDDEN, "{uri}");

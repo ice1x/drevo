@@ -100,8 +100,11 @@
   const $slowMsg = document.getElementById("settings-slowquery-msg");
 
   // ── Graph overview state ─────────────────────────────────────────────
-  // The whole graph dump is fetched once from /export/json and cached;
-  // the on-load overview and the kind-chip filters all render bounded
+  // What the overview draws — every node and relationship with its kind,
+  // title and small property values — is fetched once from /export/overview
+  // and cached; large values (bodies, embeddings) stay on the server until
+  // a node is opened in the inspector (#846). The on-load overview and the
+  // kind-chip filters all render bounded
   // samples from this cache, so changing the node limit or switching
   // kinds never re-hits the network. The cache is re-fetched (via
   // `loadOverview`) after a graph write from this UI, on database switch,
@@ -1531,6 +1534,7 @@
       lastTapId = id;
       lastTapAt = now;
       renderInspector(node.data("raw"));
+      loadFullNode(node);
       focusNeighbourhood(node);
     });
     // Tapping a relationship inspects it — the sidebar shows its type,
@@ -2319,8 +2323,36 @@
   }
 
   // ── Inspector ──────────────────────────────────────────────────────
+  // The node the inspector shows, so a late answer for another one is not
+  // drawn over it.
+  let inspectedNodeId = null;
+
+  // A node of the overview comes without its body and its large properties.
+  // Fetch the whole node when it is opened and show it if it is still the
+  // one in the inspector.
+  async function loadFullNode(node) {
+    const raw = node.data("raw");
+    if (!raw || raw.body !== undefined) return;
+    try {
+      const full = await apiGet(`/nodes/${raw.id}`);
+      node.data("raw", full);
+      if (inspectedNodeId === raw.id) renderInspector(full);
+    } catch (_) {
+      // The node may be gone, or the server away: what the overview had
+      // stays in the inspector.
+    }
+  }
+
+  // Properties the overview left out because they are large.
+  function addOmittedRow(item) {
+    if (Array.isArray(item.omitted) && item.omitted.length > 0) {
+      addRow("not shown", item.omitted.join(", "), "Large values are left out of the overview");
+    }
+  }
+
   function renderInspector(node) {
     if (!node) return clearInspector();
+    inspectedNodeId = node.id;
     $inspectorBody.innerHTML = "";
     const kindBadge = document.createElement("div");
     kindBadge.className = "inspector-kind";
@@ -2338,6 +2370,7 @@
     for (const k of Object.keys(props).sort()) {
       addValueRow(k, props[k]);
     }
+    addOmittedRow(node);
   }
   // Inspect a relationship. Edges carry a different wire shape than
   // nodes ({id, kind, from_id, to_id, weight, created_at, properties}),
@@ -2345,6 +2378,7 @@
   // `renderInspector` (which assumes node fields like `title`).
   function renderEdgeInspector(edge) {
     if (!edge) return clearInspector();
+    inspectedNodeId = null;
     $inspectorBody.innerHTML = "";
     const kindBadge = document.createElement("div");
     kindBadge.className = "inspector-kind";
@@ -2368,6 +2402,7 @@
     for (const k of Object.keys(props).sort()) {
       addValueRow(k, props[k]);
     }
+    addOmittedRow(edge);
   }
   // Human label for an endpoint id — the node's label if it is currently
   // on the canvas, otherwise `#<id>`.
@@ -2439,6 +2474,7 @@
     vEl.appendChild(link);
   }
   function clearInspector() {
+    inspectedNodeId = null;
     $inspectorBody.innerHTML =
       '<p class="inspector-empty">Click a node in the canvas to view its properties.</p>';
   }
@@ -2483,7 +2519,7 @@
     markStale(false);
     status("Loading graph overview…");
     try {
-      const dump = await apiGet("/export/json");
+      const dump = await apiGet("/export/overview");
       graphCache = { nodes: dump.nodes || [], edges: dump.edges || [] };
       degreeById.clear();
       for (const e of graphCache.edges) {
@@ -2900,7 +2936,7 @@
     });
   }
 
-  // Explicit "refresh from server": re-fetch /export/json and rebuild the
+  // Explicit "refresh from server": re-fetch /export/overview and rebuild the
   // cache, so a graph mutated by another client (e.g. over Bolt) shows its
   // current state without a full page reload (issue #433).
   if ($graphRefresh) {

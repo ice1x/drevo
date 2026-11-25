@@ -283,6 +283,9 @@ pub mod native_api;
 /// property, value cache, full-text) tailed off the change-feed. The
 /// step past the read mirror on the track toward retiring redb.
 pub mod native_service;
+/// What the Web UI's graph overview draws: nodes and relationships with
+/// their small property values (`GET /export/overview`).
+pub mod overview;
 /// Logging in to the gRPC API and the Arrow Flight endpoint with
 /// `authorization` metadata.
 #[cfg(any(feature = "grpc", feature = "arrow-flight"))]

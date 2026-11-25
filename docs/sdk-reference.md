@@ -241,6 +241,7 @@ curl -H "Authorization: Bearer $token" http://localhost:8080/databases
 | `GET` | `/facets?kind=&property=&k=&collapse=` | Faceted aggregation. |
 | `GET` | `/export/json` / `POST /import/json` | Full-graph dump / load. |
 | `GET` | `/export/graphml` | GraphML 1.0 export. |
+| `GET` | `/export/overview` | Every node (`id`, `kind`, `title`) and relationship (`id`, `from_id`, `to_id`, `kind`, `weight`) with the property values of up to 256 bytes of JSON; the keys of larger values (embeddings, long texts) are listed under `omitted`. What the Web UI's overview loads. |
 | `GET` | `/ui` | Embedded Cytoscape.js graph explorer. |
 
 ---

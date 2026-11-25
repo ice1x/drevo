@@ -353,6 +353,16 @@ history and the in-repo issue tracker; format loosely follows
   package, version, licence and copyright line, followed by the licence
   text; it is embedded in the binary and served at
   `GET /ui/vendor/LICENSES.txt`.
+- **Web UI: the overview no longer downloads the whole graph dump** (issue
+  #846). On every page load and every Refresh the browser fetched
+  `GET /export/json` — 115 MB for a store of 4582 nodes, 67 MB of it
+  embeddings — to draw a sample of 50 nodes. It now fetches the new
+  `GET /export/overview`: every node and relationship with its kind, title
+  and the property values of up to 256 bytes of JSON, the keys of larger
+  values listed under `omitted`. On the same store that is 3.3 MB. A node's
+  full properties are fetched (`GET /nodes/{id}`) when it is opened in the
+  inspector; a relationship's inspector names the values it does not show.
+  `/export/overview` needs the same privilege as `/export/json`.
 - **Web UI: the node limit reaches 5000 and the field shows the value in
   use** (issue #822). **Show … nodes** accepted any number, drew at most
   2000 and kept showing what was typed. The limit is now 5000, and a value

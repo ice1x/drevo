@@ -1550,6 +1550,16 @@ impl NativeService {
             .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
     }
 
+    /// What the Web UI's graph overview draws, as compact JSON: every node
+    /// and relationship with its kind, title and small property values (see
+    /// [`crate::overview`]).
+    pub fn export_overview(&self) -> Result<String, DrevoError> {
+        use crate::engine::GraphEngine;
+        let dump = GraphEngine::export_dump(&self.graph)?;
+        serde_json::to_string(&crate::overview::overview(&dump))
+            .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))
+    }
+
     /// Keep the latest `changes` committed changes in the change feed, and as
     /// many named events, for event subscribers to resume from (default
     /// [`Self::DEFAULT_EVENT_HISTORY`]). Older history is dropped now and

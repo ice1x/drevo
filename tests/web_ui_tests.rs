@@ -1054,19 +1054,24 @@ async fn ui_serves_the_vendored_force_simulation_library() {
 }
 
 #[tokio::test]
-async fn ui_overview_dependency_export_json_is_reachable() {
-    // The on-load graph overview fetches /export/json once and renders a
-    // bounded sample client-side. Lock that the endpoint the UI depends on
-    // is wired and returns the {nodes, edges} dump shape.
+async fn ui_overview_dependency_export_overview_is_reachable() {
+    // The on-load graph overview fetches /export/overview once and renders a
+    // bounded sample client-side (#846). Lock that the endpoint the UI
+    // depends on is wired, returns the {nodes, edges} shape, and that app.js
+    // asks for it rather than for the whole dump.
     let app = make_app();
-    let (status, ct, bytes) = get(&app, "/export/json").await;
+    let (status, ct, bytes) = get(&app, "/export/overview").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(ct.contains("json"), "export must be JSON, got `{ct}`");
+    assert!(ct.contains("json"), "the overview must be JSON, got `{ct}`");
     let body = String::from_utf8(bytes).expect("utf-8");
     assert!(
         body.contains("\"nodes\"") && body.contains("\"edges\""),
-        "export dump must carry nodes + edges arrays the overview reads"
+        "the overview must carry the nodes + edges arrays the UI reads"
     );
+    let (_, _, appjs) = get(&app, "/ui/app.js").await;
+    let appjs = String::from_utf8(appjs).expect("utf-8");
+    assert!(appjs.contains("apiGet(\"/export/overview\")"));
+    assert!(!appjs.contains("apiGet(\"/export/json\")"));
 }
 
 // ── Non-UI routes unchanged ────────────────────────────────────────────
