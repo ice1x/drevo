@@ -331,7 +331,7 @@
         <h2>Graph</h2>
         <label class="limit-control">
           Show
-          <input type="number" id="node-limit" min="1" max="2000" step="10"
+          <input type="number" id="node-limit" min="1" max="5000" step="10"
                  value="50" autocomplete="off" />
           nodes
           <button type="button" id="graph-refresh" class="graph-refresh"
@@ -385,6 +385,12 @@
            node hover (task 00093). -->
       <div class="graph-canvas" id="cy" role="tabpanel">
         <div id="cy-tooltip" class="cy-tooltip" role="tooltip" aria-hidden="true"></div>
+        <!-- Shown while a large graph is being laid out. -->
+        <div id="layout-progress" class="layout-progress" role="progressbar"
+             aria-label="Laying out the graph" aria-valuemin="0" aria-valuemax="100" hidden>
+          <span class="layout-progress-bar"></span>
+          <span class="layout-progress-text"></span>
+        </div>
         <!-- Node menu: opened by a right-click on a node. -->
         <div id="node-menu" class="node-menu" role="menu" aria-label="Node actions" hidden>
           <button type="button" role="menuitem" data-action="expand">Expand neighbours</button>
@@ -425,7 +431,14 @@
        load before app.js, which reads window.DrevoGraphMath. -->
   <script src="/ui/graph_math.js"></script>
   <!-- The layout of a large graph (unit-tested by big_layout.test.js);
-       app.js reads window.DrevoBigLayout. -->
+       app.js reads window.DrevoBigLayout. It arranges the nodes with
+       d3-force (v3.0.0, with d3-dispatch, d3-quadtree and d3-timer v3.0.1,
+       which set the global `d3`) and moves overlapping ones apart with
+       WebCola, loaded above. All vendored same-origin, like Cytoscape. -->
+  <script src="/ui/vendor/d3-dispatch.min.js"></script>
+  <script src="/ui/vendor/d3-quadtree.min.js"></script>
+  <script src="/ui/vendor/d3-timer.min.js"></script>
+  <script src="/ui/vendor/d3-force.min.js"></script>
   <script src="/ui/big_layout.js"></script>
   <!-- Table / JSON result helpers (unit-tested in results_view.test.js); they
        label nodes through DrevoGraphMath, and app.js reads

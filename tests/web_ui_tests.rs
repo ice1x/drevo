@@ -1010,6 +1010,50 @@ async fn ui_serves_vendored_javascript_bundles() {
 }
 
 #[tokio::test]
+async fn ui_serves_the_vendored_force_simulation_library() {
+    // d3-force and the three d3 modules it needs (#823, #824): small files,
+    // each starting with its d3 banner.
+    let app = make_app();
+    for (path, banner) in [
+        (
+            "/ui/vendor/d3-dispatch.min.js",
+            "// https://d3js.org/d3-dispatch/ v3.0.1",
+        ),
+        (
+            "/ui/vendor/d3-quadtree.min.js",
+            "// https://d3js.org/d3-quadtree/ v3.0.1",
+        ),
+        (
+            "/ui/vendor/d3-timer.min.js",
+            "// https://d3js.org/d3-timer/ v3.0.1",
+        ),
+        (
+            "/ui/vendor/d3-force.min.js",
+            "// https://d3js.org/d3-force/ v3.0.0",
+        ),
+    ] {
+        let (status, ct, bytes) = get(&app, path).await;
+        assert_eq!(status, StatusCode::OK, "{path} must be served");
+        assert!(
+            ct.contains("javascript"),
+            "{path} must have a JavaScript content-type, got `{ct}`"
+        );
+        let body = String::from_utf8(bytes).expect("utf-8");
+        assert!(body.starts_with(banner), "{path} must be the vendored file");
+        assert!(body.len() > 1_500, "{path} body looks truncated");
+    }
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    let force = idx
+        .find("/ui/vendor/d3-force.min.js")
+        .expect("index.html must load d3-force");
+    let layout = idx
+        .find("/ui/big_layout.js")
+        .expect("index.html must load big_layout.js");
+    assert!(force < layout, "d3-force must load before big_layout.js");
+}
+
+#[tokio::test]
 async fn ui_overview_dependency_export_json_is_reachable() {
     // The on-load graph overview fetches /export/json once and renders a
     // bounded sample client-side. Lock that the endpoint the UI depends on

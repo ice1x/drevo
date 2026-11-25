@@ -59,3 +59,33 @@ fn the_notices_name_each_package_and_carry_the_licence_text() {
         "LICENSES.txt must carry the MIT permission notice"
     );
 }
+
+#[test]
+fn the_notices_cover_the_d3_modules_and_carry_the_isc_text() {
+    let notices = notices();
+    for package in [
+        "d3-force 3.0.0",
+        "d3-quadtree 3.0.1",
+        "d3-dispatch 3.0.1",
+        "d3-timer 3.0.1",
+    ] {
+        assert!(
+            notices.contains(package),
+            "LICENSES.txt must name {package}"
+        );
+    }
+    assert!(
+        notices.matches("Copyright 2010-2021 Mike Bostock").count() >= 4,
+        "each d3 module comes with its copyright line"
+    );
+    assert!(
+        notices.contains(
+            "Permission to use, copy, modify, and/or distribute this software for any purpose"
+        ),
+        "LICENSES.txt must carry the ISC permission notice"
+    );
+    assert!(
+        notices.matches("Copyright").count() >= 10,
+        "every package comes with its copyright line"
+    );
+}

@@ -384,6 +384,22 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             "/ui/vendor/cytoscape-cola.js",
             get(crate::web_ui::serve_vendor_cytoscape_cola),
         )
+        .route(
+            "/ui/vendor/d3-dispatch.min.js",
+            get(crate::web_ui::serve_vendor_d3_dispatch),
+        )
+        .route(
+            "/ui/vendor/d3-quadtree.min.js",
+            get(crate::web_ui::serve_vendor_d3_quadtree),
+        )
+        .route(
+            "/ui/vendor/d3-timer.min.js",
+            get(crate::web_ui::serve_vendor_d3_timer),
+        )
+        .route(
+            "/ui/vendor/d3-force.min.js",
+            get(crate::web_ui::serve_vendor_d3_force),
+        )
         // Real backups are tens of megabytes; axum's default 2 MiB body
         // limit would make a restore of drevo's own export impossible, so
         // this route raises it (1 GiB) from day one.

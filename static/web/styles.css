@@ -698,6 +698,36 @@ body {
 }
 
 /* Hover tooltip (task 00093). */
+/* Progress of a large-graph layout: a thin bar along the top of the canvas
+   with the percentage next to it. */
+.layout-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  height: 3px;
+  background: transparent;
+  pointer-events: none;
+}
+.layout-progress[hidden] {
+  display: none;
+}
+.layout-progress-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent, #4f8cff);
+  transition: width 120ms linear;
+}
+.layout-progress-text {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  font-size: 12px;
+  color: var(--muted, #8a93a6);
+}
+
 #cy-tooltip {
   position: absolute;
   top: 0;
