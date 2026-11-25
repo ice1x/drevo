@@ -261,6 +261,15 @@ history and the in-repo issue tracker; format loosely follows
   service running) `maxWalk: 300` cut the longest chain from 7,869 s to
   300 s at p50 147 ms against 124 ms unbounded.
 
+- **drevo-core: `VersionVector::covers` and `VersionVector::iter`** (issue
+  #799). A sync host can now tell whether its vector has observed everything
+  another one has — `mine.covers(&base)` is true when, for every origin in
+  `base`, `mine` has an equal or later clock — and list a vector's entries as
+  `(OriginId, Hlc)` pairs. A host that merges a delta only when its vector
+  covers the delta's base no longer loses the writes of a push it missed;
+  before, the only way to compare two vectors was to decode their private
+  layout.
+
 ### Changed
 
 - **The Web UI's Storage panel follows the graph** (issue #777). While the

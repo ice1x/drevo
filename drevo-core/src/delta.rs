@@ -126,6 +126,39 @@ impl VersionVector {
     pub fn is_empty(&self) -> bool {
         self.max.is_empty()
     }
+
+    /// Whether this vector has observed everything `other` has: for every
+    /// origin in `other`, an equal or later [`Hlc`]. A sync host merges a
+    /// delta only when its vector covers the one the delta was computed
+    /// against; otherwise it missed writes in between and must ask for them
+    /// first, or `delta_since` would never resend them.
+    ///
+    /// ```
+    /// use drevo_core::delta::VersionVector;
+    /// use drevo_core::hlc::Hlc;
+    /// use drevo_core::lww::{OriginId, Stamp};
+    ///
+    /// let mut mine = VersionVector::new();
+    /// mine.observe(Stamp::new(Hlc::new(10, 0), OriginId(1)));
+    /// let mut base = VersionVector::new();
+    /// base.observe(Stamp::new(Hlc::new(20, 0), OriginId(1)));
+    /// assert!(!mine.covers(&base)); // the writes from 10 to 20 are missing
+    /// assert!(base.covers(&mine));
+    /// assert!(mine.covers(&VersionVector::new()));
+    /// ```
+    #[must_use]
+    pub fn covers(&self, other: &VersionVector) -> bool {
+        other
+            .max
+            .iter()
+            .all(|(origin, hlc)| self.max.get(origin).is_some_and(|mine| mine >= hlc))
+    }
+
+    /// The origins observed, each with the greatest [`Hlc`] seen from it, in
+    /// no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (OriginId, Hlc)> + '_ {
+        self.max.iter().map(|(origin, hlc)| (*origin, *hlc))
+    }
 }
 
 /// An edge on the wire, carrying its endpoints by `uuid` so a receiver can remap
