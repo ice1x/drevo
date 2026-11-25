@@ -55,14 +55,26 @@
 set -euo pipefail
 
 # Optionally load persistent deploy config (image tag, embeddings proxy vars,
-# API key) from one file so a normal restart stays a single command. Anything
-# already exported in the shell still wins over the file.
+# API key) from one file so a normal restart stays a single command. A DREVO_*
+# variable exported in the shell wins over the file, also when it is exported
+# empty (`DREVO_AUTH= scripts/drevo-restart.sh` leaves that setting out for one
+# restart): the shell's values are put back once the file has been read.
 ENV_FILE="${DREVO_ENV_FILE:-$HOME/.drevo.env}"
 if [ -f "$ENV_FILE" ]; then
+  SHELL_ENV=()
+  for _v in $(compgen -e); do
+    case "$_v" in
+      DREVO_*) SHELL_ENV+=("${_v}=${!_v}") ;;
+    esac
+  done
   set -a
   # shellcheck disable=SC1090
   . "$ENV_FILE"
   set +a
+  for _kv in ${SHELL_ENV[@]+"${SHELL_ENV[@]}"}; do
+    # shellcheck disable=SC2163  # each item is NAME=value
+    export "$_kv"
+  done
 fi
 
 NAME="${DREVO_NAME:-drevo}"
