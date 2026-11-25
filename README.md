@@ -174,9 +174,12 @@ docker run -d --name drevo --restart unless-stopped \
 ```
 
 The container bind-mounts the host folder to `/data` and serves `<folder>/drevo.redb`.
-The Web UI is **fully self-contained** — Cytoscape.js is vendored and served from
-`/ui/vendor/`, so the graph renders with no CDN access (works offline / behind privacy
-browsers). Type a query → **Search** → click a result to draw its 2-hop subgraph.
+The Web UI is **fully self-contained** — Cytoscape.js and the layout libraries are
+vendored and served from `/ui/vendor/`, so the graph renders with no CDN access (works
+offline / behind privacy browsers). Type a query → **Search** → click a result to draw its
+2-hop subgraph. The overview shows up to 5000 nodes (**Show … nodes**): from 250 nodes on
+the layout is computed in short steps with a progress bar, and no node or title is left on
+top of another.
 
 ### 2. Attach the MCP server
 

@@ -353,6 +353,30 @@ history and the in-repo issue tracker; format loosely follows
   package, version, licence and copyright line, followed by the licence
   text; it is embedded in the binary and served at
   `GET /ui/vendor/LICENSES.txt`.
+- **Web UI: the node limit reaches 5000 and the field shows the value in
+  use** (issue #822). **Show … nodes** accepted any number, drew at most
+  2000 and kept showing what was typed. The limit is now 5000, and a value
+  above it, below 1 or not a number is replaced in the field by the one
+  used.
+- **Web UI: a large overview no longer freezes the tab** (issue #823). From
+  250 nodes on the graph was laid out by fcose in one call: 2.1 s for 500
+  nodes and 13.9 s for 2000, with no repaint and no clicks, and again on
+  every double-click expand. Such a graph is now arranged by d3-force in
+  short steps between which the tab paints and answers, with a progress bar
+  on the canvas. On a copy of a real store: 500 nodes in 0.7 s, 2000 nodes
+  (8224 relationships) in 3–5 s, 4582 nodes (10 894 relationships) in
+  7–9 s, with no pause longer than about a second. Expanding a node of a
+  large graph fits the new nodes in and leaves the others where they are.
+  Graphs under 250 nodes keep the fcose layout. d3-force 3.0.0 and its
+  three modules (d3-dispatch, d3-quadtree, d3-timer 3.0.1; ISC) are
+  vendored under `static/web/vendor/` and listed in `LICENSES.txt`.
+- **Web UI: nodes and titles of a large overview no longer overlap** (issue
+  #824). About half of the circles of a 2000-node overview lay on another
+  one, and the titles covered both. The layout now places each node as the
+  box of its circle and its title, at the size it is drawn with, and
+  finishes with WebCola's overlap removal: on the same copy no two boxes
+  overlap at 500, 2000 and 4582 nodes. The labels of the eight most
+  connected nodes still grow when zoomed out, as before.
 - **`scripts/drevo-restart.sh` forwards every server setting that needs
   only its value** (issue #840). The script passed on a hand-kept list, and
   22 settings the server reads were not on it: `DREVO_READ_ONLY`,

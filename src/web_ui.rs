@@ -12,6 +12,7 @@
 //! - `GET /ui` → `index.html` (`text/html; charset=utf-8`)
 //! - `GET /ui/app.js` → `app.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/graph_math.js` → `graph_math.js` (`text/javascript; charset=utf-8`)
+//! - `GET /ui/big_layout.js` → `big_layout.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/report.js` → `report.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/transactions_view.js` → `transactions_view.js` (`text/javascript; charset=utf-8`)
 //! - `GET /ui/backups_view.js` → `backups_view.js` (`text/javascript; charset=utf-8`)
@@ -26,6 +27,8 @@
 //! - `GET /ui/vendor/layout-base.js` → fcose dep
 //! - `GET /ui/vendor/cose-base.js` → fcose dep
 //! - `GET /ui/vendor/cytoscape-fcose.js` → fcose physics layout extension
+//! - `GET /ui/vendor/d3-dispatch.min.js`, `d3-quadtree.min.js`, `d3-timer.min.js`,
+//!   `d3-force.min.js` → the force simulation behind the layout of a large graph
 //!
 //! Cytoscape.js and its `fcose` layout extension are **vendored** under
 //! `static/web/vendor/` and baked into the binary alongside the rest of
@@ -69,6 +72,12 @@ const APP_JS: &str = include_str!("../static/web/app.js");
 /// embedded at compile time. Unit-tested separately by `graph_math.test.js`
 /// (`node --test`, the `web-assets` CI job).
 const GRAPH_MATH_JS: &str = include_str!("../static/web/graph_math.js");
+
+/// `big_layout.js` body — the layout of a large graph (a force simulation
+/// computed in short steps, then a pass that leaves no two nodes or titles
+/// overlapping), used by `app.js`. Unit-tested by `big_layout.test.js`
+/// under `node --test`.
+const BIG_LAYOUT_JS: &str = include_str!("../static/web/big_layout.js");
 
 /// `report.js` body — pure helpers for problem toasts and the "Report a
 /// problem" GitHub issue (#552), used by `app.js`. Unit-tested by
@@ -138,6 +147,20 @@ const VENDOR_COLA: &str = include_str!("../static/web/vendor/cola.min.js");
 /// compile time. Registers the `cola` layout; needs the `cola` global first.
 const VENDOR_CYTOSCAPE_COLA: &str = include_str!("../static/web/vendor/cytoscape-cola.js");
 
+/// `d3-force@3.0.0` — the force simulation `big_layout.js` arranges a large
+/// graph with, embedded at compile time. It needs the three modules below
+/// loaded first.
+const VENDOR_D3_FORCE: &str = include_str!("../static/web/vendor/d3-force.min.js");
+
+/// `d3-dispatch@3.0.1` — events of the d3-force simulation.
+const VENDOR_D3_DISPATCH: &str = include_str!("../static/web/vendor/d3-dispatch.min.js");
+
+/// `d3-quadtree@3.0.1` — the spatial index d3-force finds nearby nodes with.
+const VENDOR_D3_QUADTREE: &str = include_str!("../static/web/vendor/d3-quadtree.min.js");
+
+/// `d3-timer@3.0.1` — the timer of the d3-force simulation.
+const VENDOR_D3_TIMER: &str = include_str!("../static/web/vendor/d3-timer.min.js");
+
 /// `GET /ui` → serve the HTML shell.
 pub async fn serve_index() -> Response {
     asset_response(INDEX_HTML, "text/html; charset=utf-8")
@@ -151,6 +174,11 @@ pub async fn serve_app_js() -> Response {
 /// `GET /ui/graph_math.js` → serve the pure geometry helpers `app.js` depends on.
 pub async fn serve_graph_math_js() -> Response {
     asset_response(GRAPH_MATH_JS, "text/javascript; charset=utf-8")
+}
+
+/// `GET /ui/big_layout.js` → serve the large-graph layout `app.js` depends on.
+pub async fn serve_big_layout_js() -> Response {
+    asset_response(BIG_LAYOUT_JS, "text/javascript; charset=utf-8")
 }
 
 /// `GET /ui/report.js` → serve the problem-report helpers `app.js` depends on.
@@ -236,6 +264,26 @@ pub async fn serve_vendor_cola() -> Response {
 /// `GET /ui/vendor/cytoscape-cola.js` → serve the vendored cola adapter.
 pub async fn serve_vendor_cytoscape_cola() -> Response {
     vendor_response(VENDOR_CYTOSCAPE_COLA)
+}
+
+/// `GET /ui/vendor/d3-force.min.js` → serve the vendored force simulation.
+pub async fn serve_vendor_d3_force() -> Response {
+    vendor_response(VENDOR_D3_FORCE)
+}
+
+/// `GET /ui/vendor/d3-dispatch.min.js` → serve a module d3-force needs.
+pub async fn serve_vendor_d3_dispatch() -> Response {
+    vendor_response(VENDOR_D3_DISPATCH)
+}
+
+/// `GET /ui/vendor/d3-quadtree.min.js` → serve a module d3-force needs.
+pub async fn serve_vendor_d3_quadtree() -> Response {
+    vendor_response(VENDOR_D3_QUADTREE)
+}
+
+/// `GET /ui/vendor/d3-timer.min.js` → serve a module d3-force needs.
+pub async fn serve_vendor_d3_timer() -> Response {
+    vendor_response(VENDOR_D3_TIMER)
 }
 
 /// Redirect `GET /ui/` (trailing slash) to `/ui` so links inside
@@ -630,6 +678,122 @@ mod tests {
         assert!(
             APP_JS.contains("new EventSource(Live.eventsUrl(currentDb))"),
             "app.js must follow GET /events for the database being viewed"
+        );
+    }
+
+    // A large overview (#822, #823, #824): the layout comes from
+    // big_layout.js, computed in slices so the tab stays responsive, and the
+    // node limit reaches 5000.
+    #[test]
+    fn embedded_big_layout_module_is_dom_free_and_loaded_before_app_js() {
+        assert!(
+            BIG_LAYOUT_JS.contains("DrevoBigLayout")
+                && BIG_LAYOUT_JS.contains("function createLayout")
+                && BIG_LAYOUT_JS.contains("function overlappingPairs"),
+            "big_layout.js must export createLayout on DrevoBigLayout"
+        );
+        assert!(
+            !BIG_LAYOUT_JS.contains("document") && !BIG_LAYOUT_JS.contains("window."),
+            "big_layout.js must stay DOM-free so it is unit-testable under node"
+        );
+        let big = INDEX_HTML
+            .find("/ui/big_layout.js")
+            .expect("index.html must load big_layout.js");
+        let appjs = INDEX_HTML
+            .find("/ui/app.js")
+            .expect("index.html must load app.js");
+        assert!(big < appjs, "big_layout.js must load before app.js");
+    }
+
+    // The force simulation behind the large-graph layout is vendored like
+    // the other libraries: four d3 files, loaded before big_layout.js.
+    #[test]
+    fn embedded_force_simulation_library_is_present_and_loaded_in_order() {
+        for (name, body, version) in [
+            ("d3-dispatch", VENDOR_D3_DISPATCH, "v3.0.1"),
+            ("d3-quadtree", VENDOR_D3_QUADTREE, "v3.0.1"),
+            ("d3-timer", VENDOR_D3_TIMER, "v3.0.1"),
+            ("d3-force", VENDOR_D3_FORCE, "v3.0.0"),
+        ] {
+            assert!(
+                body.starts_with(&format!("// https://d3js.org/{name}/ {version} ")),
+                "{name} {version} must be vendored unmodified"
+            );
+        }
+        assert!(
+            VENDOR_D3_FORCE.contains("forceSimulation") && VENDOR_D3_FORCE.contains("forceCollide"),
+            "d3-force bundle missing or truncated"
+        );
+        let at = |path: &str| {
+            INDEX_HTML
+                .find(path)
+                .unwrap_or_else(|| panic!("index.html must load {path}"))
+        };
+        let force = at("/ui/vendor/d3-force.min.js");
+        for dependency in [
+            "/ui/vendor/d3-dispatch.min.js",
+            "/ui/vendor/d3-quadtree.min.js",
+            "/ui/vendor/d3-timer.min.js",
+        ] {
+            assert!(
+                at(dependency) < force,
+                "{dependency} must load before d3-force"
+            );
+        }
+        let layout = at("/ui/big_layout.js");
+        assert!(force < layout, "d3-force must load before big_layout.js");
+        assert!(
+            at("/ui/vendor/cola.min.js") < layout,
+            "WebCola (overlap removal) must load before big_layout.js"
+        );
+        assert!(
+            BIG_LAYOUT_JS.contains("d3.forceSimulation(") && BIG_LAYOUT_JS.contains("cola.Solver("),
+            "big_layout.js must take the positions from d3-force and WebCola"
+        );
+    }
+
+    #[test]
+    fn embedded_app_js_lays_out_a_large_graph_in_slices() {
+        assert!(
+            APP_JS.contains("DrevoBigLayout.isLargeGraph("),
+            "app.js must pick the layout by graph size"
+        );
+        assert!(
+            APP_JS.contains("DrevoBigLayout.createLayout("),
+            "app.js must lay a large graph out with big_layout.js"
+        );
+        assert!(
+            APP_JS.contains("DrevoBigLayout.nodeBox("),
+            "the layout must be given each node's circle and title box"
+        );
+        assert!(
+            APP_JS.contains("layout.step(1)") && APP_JS.contains("LAYOUT_SLICE_MS"),
+            "the layout must be computed in time slices, not in one call"
+        );
+        assert!(
+            INDEX_HTML.contains("id=\"layout-progress\""),
+            "the canvas must show the progress of a running layout"
+        );
+    }
+
+    #[test]
+    fn embedded_node_limit_reaches_5000_and_shows_the_value_used() {
+        assert!(
+            INDEX_HTML.contains("id=\"node-limit\" min=\"1\" max=\"5000\""),
+            "the node limit field must allow 5000 nodes"
+        );
+        assert!(
+            GRAPH_MATH_JS.contains("const MAX_NODE_LIMIT = 5000;"),
+            "graph_math.js must hold the maximum node limit"
+        );
+        assert!(
+            APP_JS.contains("DrevoGraphMath.clampNodeLimit($nodeLimit.value)")
+                && APP_JS.contains("$nodeLimit.value = String(limit)"),
+            "app.js must write the limit it uses back into the field"
+        );
+        assert!(
+            !APP_JS.contains("Math.min(n, 2000)"),
+            "the limit must not be cut to 2000 in app.js"
         );
     }
 

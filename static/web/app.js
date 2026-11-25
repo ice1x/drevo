@@ -1148,12 +1148,130 @@
 
   function runLayout(animate, randomize) {
     if (!cy) return;
+    stopBigLayout();
+    // fcose computes its whole layout in one call and blocks the tab for
+    // seconds from a few hundred nodes on; a large graph goes to
+    // big_layout.js, which works in slices.
+    if (DrevoBigLayout.isLargeGraph(cy.nodes().length)) {
+      runBigLayout(randomize === true);
+      return;
+    }
     // A hierarchy lays out crossing-free with breadthfirst; anything with a
     // cycle uses the (tightened) fcose force layout.
     const opts = isForest()
       ? breadthfirstOptions(animate)
       : fcoseOptions(animate, randomize);
-    cy.layout(opts).run();
+    const layout = cy.layout(opts);
+    layout.one("layoutstop", markPlaced);
+    layout.run();
+  }
+
+  // ── Layout of a large graph ────────────────────────────────────────────
+  // big_layout.js computes the positions one unit of work at a time. Each
+  // slice below works for LAYOUT_SLICE_MS and then yields, so the tab keeps
+  // painting and answering clicks; the canvas shows the picture forming and
+  // a progress bar. Drawing thousands of nodes takes longer than a slice, so
+  // the picture is refreshed every LAYOUT_PAINT_MS per thousand nodes.
+  const LAYOUT_SLICE_MS = 12;
+  const LAYOUT_PAINT_MS = 400;
+  const $layoutProgress = document.getElementById("layout-progress");
+  let bigLayoutRun = null;
+
+  // Nodes a finished layout has placed keep their position when the graph
+  // grows (double-click expand); the mark goes away with the element.
+  function markPlaced() {
+    if (cy) cy.nodes().forEach((n) => n.scratch("_drevoPlaced", true));
+  }
+
+  function showLayoutProgress(fraction) {
+    if (!$layoutProgress) return;
+    const percent = Math.round(fraction * 100);
+    $layoutProgress.hidden = false;
+    $layoutProgress.setAttribute("aria-valuenow", String(percent));
+    $layoutProgress.querySelector(".layout-progress-bar").style.width = `${percent}%`;
+    $layoutProgress.querySelector(".layout-progress-text").textContent =
+      `Laying out ${cy.nodes().length} nodes… ${percent}%`;
+  }
+
+  function hideLayoutProgress() {
+    if ($layoutProgress) $layoutProgress.hidden = true;
+  }
+
+  function stopBigLayout() {
+    if (!bigLayoutRun) return;
+    bigLayoutRun.cancelled = true;
+    bigLayoutRun = null;
+    hideLayoutProgress();
+  }
+
+  // Width of a node's title as Cytoscape draws it (11px, default font).
+  let titleRuler = null;
+  function titleWidth(text) {
+    if (!text) return 0;
+    if (!titleRuler) {
+      titleRuler = document.createElement("canvas").getContext("2d");
+      titleRuler.font = "11px Helvetica Neue, Helvetica, sans-serif";
+    }
+    // The halo around the letters is part of what must not be covered.
+    return Math.ceil(titleRuler.measureText(String(text)).width) + 5;
+  }
+
+  // `fresh`: lay the whole graph out anew. Otherwise the nodes an earlier
+  // layout placed stay where they are and only the new ones are fitted in.
+  function runBigLayout(fresh) {
+    const nodes = cy.nodes().map((n) => {
+      // The size the node is drawn with once refreshEmphasis has run: it
+      // follows the node's connections on the canvas.
+      const size = DrevoGraphMath.nodeSize(n.degree(false));
+      const node = {
+        id: n.id(),
+        ...DrevoBigLayout.nodeBox(size, titleWidth(n.data("title"))),
+      };
+      if (!fresh && n.scratch("_drevoPlaced")) {
+        const at = n.position();
+        node.x = at.x;
+        node.y = at.y;
+      }
+      return node;
+    });
+    const edges = cy.edges().map((e) => ({ source: e.source().id(), target: e.target().id() }));
+    const layout = DrevoBigLayout.createLayout(nodes, edges);
+    const run = { cancelled: false };
+    bigLayoutRun = run;
+    showLayoutProgress(0);
+
+    const paint = () => {
+      const positions = layout.positions();
+      cy.batch(() => {
+        for (const p of positions) cy.getElementById(p.id).position({ x: p.x, y: p.y });
+      });
+      cy.fit(undefined, 28);
+    };
+    const paintEvery = LAYOUT_PAINT_MS * Math.max(1, nodes.length / 1000);
+    let painted = performance.now();
+    const slice = () => {
+      if (run.cancelled) return;
+      const started = performance.now();
+      let done = false;
+      do {
+        done = layout.step(1);
+      } while (!done && performance.now() - started < LAYOUT_SLICE_MS);
+      if (done) {
+        paint();
+        markPlaced();
+        hideLayoutProgress();
+        bigLayoutRun = null;
+        return;
+      }
+      showLayoutProgress(layout.progress());
+      if (started - painted >= paintEvery) {
+        paint();
+        painted = performance.now();
+      }
+      // A timer, not an animation frame: a hidden tab still gets its layout.
+      setTimeout(slice, 0);
+    };
+    setTimeout(slice, 0);
   }
 
   // ── Live force simulation for drag (cola) ──────────────────────────────
@@ -2126,6 +2244,7 @@
     if (!cy) return;
     overviewShown = false;
     stopLiveLayout(); // don't leave a cola sim running on removed elements
+    stopBigLayout(); // nor a layout placing them
     cy.elements().remove();
     const { nodes, edges } = toElements(subgraph, rootId);
     cy.add(nodes);
@@ -2351,9 +2470,12 @@
 
   /** Read the configurable sample size, clamped to a sane range. */
   function currentLimit() {
-    const n = parseInt($nodeLimit && $nodeLimit.value, 10);
-    if (!Number.isFinite(n) || n < 1) return 50;
-    return Math.min(n, 2000);
+    if (!$nodeLimit) return 50;
+    const limit = DrevoGraphMath.clampNodeLimit($nodeLimit.value);
+    // Show the value in use: a number above the maximum, or not a number,
+    // must not stay in the field as if it had been applied.
+    $nodeLimit.value = String(limit);
+    return limit;
   }
 
   /** Fetch the graph once, build the degree map, draw the first sample. */

@@ -3,8 +3,9 @@ Third-party libraries in this directory
 
 drevo's Web UI uses the JavaScript libraries below. They are redistributed
 unmodified inside every copy of drevo-server and served under /ui/vendor/.
-Each is released under the MIT License; its copyright notice follows, and the
-permission notice at the end of this file applies to each of them.
+Each is released under the MIT License or the ISC License, as the table says;
+its copyright notice follows, and the permission notices at the end of this
+file apply to the libraries under that licence.
 
 File                  Package                 Licence  Source
 --------------------  ----------------------  -------  ------------------------------------------------
@@ -14,6 +15,10 @@ cose-base.js          cose-base 2.2.0         MIT      https://github.com/iVis-a
 cytoscape-fcose.js    cytoscape-fcose 2.2.0   MIT      https://github.com/iVis-at-Bilkent/cytoscape.js-fcose
 cola.min.js           webcola 3.4.0           MIT      https://github.com/tgdwyer/WebCola
 cytoscape-cola.js     cytoscape-cola 2.5.1    MIT      https://github.com/cytoscape/cytoscape.js-cola
+d3-force.min.js       d3-force 3.0.0          ISC      https://github.com/d3/d3-force
+d3-quadtree.min.js    d3-quadtree 3.0.1       ISC      https://github.com/d3/d3-quadtree
+d3-dispatch.min.js    d3-dispatch 3.0.1       ISC      https://github.com/d3/d3-dispatch
+d3-timer.min.js       d3-timer 3.0.1          ISC      https://github.com/d3/d3-timer
 
 
 Copyright notices
@@ -37,6 +42,18 @@ webcola 3.4.0 (cola.min.js)
 cytoscape-cola 2.5.1 (cytoscape-cola.js)
     Copyright (c) 2016-2018, 2020-2021, The Cytoscape Consortium.
 
+d3-force 3.0.0 (d3-force.min.js)
+    Copyright 2010-2021 Mike Bostock
+
+d3-quadtree 3.0.1 (d3-quadtree.min.js)
+    Copyright 2010-2021 Mike Bostock
+
+d3-dispatch 3.0.1 (d3-dispatch.min.js)
+    Copyright 2010-2021 Mike Bostock
+
+d3-timer 3.0.1 (d3-timer.min.js)
+    Copyright 2010-2021 Mike Bostock
+
 
 The MIT License
 ---------------
@@ -58,3 +75,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+The ISC License
+---------------
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.

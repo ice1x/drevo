@@ -172,7 +172,20 @@
     return Math.max(11, Math.min(44, Math.round(11 / z)));
   }
 
+  // The largest overview sample the node limit field accepts.
+  const MAX_NODE_LIMIT = 5000;
+
+  // The sample size actually used for what was typed into the field: a
+  // whole number from 1 to MAX_NODE_LIMIT, 50 when it is not a number.
+  function clampNodeLimit(raw) {
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1) return 50;
+    return Math.min(n, MAX_NODE_LIMIT);
+  }
+
   return {
+    MAX_NODE_LIMIT,
+    clampNodeLimit,
     hubIds,
     nodeSize,
     labelFontSize,
