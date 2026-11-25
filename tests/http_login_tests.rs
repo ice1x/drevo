@@ -141,6 +141,7 @@ async fn everything_else_needs_a_login() {
     for (method, uri, body) in [
         ("POST", "/cypher", cypher("RETURN 1")),
         ("GET", "/export/json", None),
+        ("GET", "/export/overview", None),
         ("GET", "/nodes/1", None),
         ("GET", "/databases", None),
         ("GET", "/metrics", None),

@@ -278,6 +278,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         )
         .route("/search/fts", post(search_fts))
         .route("/export/json", get(export_json))
+        .route("/export/overview", get(export_overview))
         .route("/databases", get(list_databases).post(create_database))
         .route("/databases/{name}", delete(drop_database))
         .route("/nodes/{id}", get(get_node))
@@ -567,6 +568,19 @@ async fn search_fts(
 async fn export_json(State(state): State<NativeApiState>) -> Result<Response, ApiError> {
     let dump = state.service.export_json()?;
     Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
+}
+
+/// `GET /export/overview` — what the Web UI's graph overview draws: every
+/// node and relationship with its kind, title and small property values;
+/// large values are left out and named (see [`crate::overview`]).
+async fn export_overview(State(state): State<NativeApiState>) -> Result<Response, ApiError> {
+    let overview = state.service.export_overview()?;
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        overview,
+    )
+        .into_response())
 }
 
 /// Lift a [`RegistryError`] into the HTTP error envelope: invalid name → 400,
