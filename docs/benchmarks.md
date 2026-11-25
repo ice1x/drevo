@@ -174,12 +174,15 @@ under load. **Illustrative — re-run on your hardware before quoting them.**
 
 | Workload | p50 | p95 | p99 | max |
 |----------|----:|----:|----:|----:|
-| `NativeService::timetable` | 61 ms | 95 ms | 113 ms | 154 ms |
-| `CALL drevo.path.timetable` (stops looked up by an indexed property) | 65 ms | 99 ms | 115 ms | 158 ms |
+| `NativeService::timetable` | 67 ms | 102 ms | 110 ms | 144 ms |
+| `NativeService::timetable_arrive_by` (`arriveBy` = the forward query's latest arrival) | 74 ms | 112 ms | 122 ms | 146 ms |
+| `CALL drevo.path.timetable` (stops looked up by an indexed property) | 72 ms | 114 ms | 143 ms | 241 ms |
 
-931 of the 1,000 queries find a journey within two hours; the fastest uses
-0 / 1 / 2 / 3 / 4 transfers in 182 / 315 / 239 / 143 / 52 of them. Cypher and
-the native call return the same arrivals for every query. A query keeps only
+Run of 2026-11-25. 931 of the 1,000 queries find a journey within two hours;
+the fastest uses 0 / 1 / 2 / 3 / 4 transfers in 182 / 315 / 239 / 143 / 52
+of them. Asked the other way — be there by `departAt + 2 h`, leave as late as
+possible — the same 931 find one, at 1.1× the time of the forward search.
+Cypher and the native call return the same arrivals for every query. A query keeps only
 what it reads — the stops it reaches and their labels — and frees it when it
 returns; nothing is kept between queries.
 

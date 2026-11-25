@@ -8,6 +8,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **`drevo.path.timetable`: `arriveBy` — be there by a time, leave as late
+  as possible** (issue #776). `arriveBy` (seconds after midnight of the query
+  date) replaces `departAt`; giving both, or neither, is refused. Each row is
+  a journey that leaves later than every journey with fewer transfers, the
+  latest first; `arriveAt` is the real arrival, `maxDuration` bounds
+  `arriveBy − departAt`, and transfer time, footpaths, `maxWalk` and `days`
+  mean the same as with `departAt`. The search is the forward one run on the
+  timetable seen in a mirror of time (every hop from its end stop to its
+  start stop, times negated), so both directions share one implementation;
+  on random networks it agrees with a brute-force search for every number of
+  transfers. Rust API: `drevo::timetable::latest_departures`,
+  `NativeService::timetable_arrive_by`.
 - **`drevo.rag.evaluate` / `drevo.rag.evaluateSummary`: does the graph help
   on this corpus?** (issue #790). Given questions and the nodes their context
   should hold (`{query, expected: [id | {name, label}]}`, a name matching a

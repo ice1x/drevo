@@ -588,6 +588,515 @@ fn a_standalone_call_returns_all_columns() {
     assert!(r.rows.is_empty());
 }
 
+// ── arriveBy: be there by a time, leave as late as possible (#776) ─────────
+
+/// The options for "arrive by `t`": no `departAt`, the rest as [`opts`].
+fn by(t: i64, overrides: &[(&str, &str)]) -> String {
+    let t = t.to_string();
+    let mut all = vec![("departAt", "null"), ("arriveBy", t.as_str())];
+    all.extend_from_slice(overrides);
+    opts(&all)
+}
+
+#[test]
+fn arrive_by_gives_the_journey_that_leaves_latest() {
+    let svc = city();
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("D", 0)], &by(1400, &[])),
+        vec![(
+            1400,
+            1000,
+            1,
+            legs(&["access ->A", "ride A>C #11", "ride C>D #22", "egress D>-"])
+        )],
+        "tram 22 reaches D at 1400; it leaves C at 1300, which trip 11 (C 1200) makes; trip 12 leaves A too late",
+    );
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("D", 0)], &by(2400, &[])),
+        vec![(
+            2400,
+            2000,
+            1,
+            legs(&["access ->A", "ride A>C #12", "ride C>D #23", "egress D>-"])
+        )],
+        "by 2400 the later pair of trips is the answer, which leaving at 900 never returns",
+    );
+}
+
+#[test]
+fn arrive_by_reports_the_real_arrival_when_it_is_earlier() {
+    let svc = city();
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("D", 0)], &by(1500, &[])),
+        vec![(
+            1400,
+            1000,
+            1,
+            legs(&["access ->A", "ride A>C #11", "ride C>D #22", "egress D>-"])
+        )],
+        "nothing reaches D between 1400 and 1500: arriveAt is when the tram gets there",
+    );
+}
+
+#[test]
+fn arrive_by_keeps_the_minimum_transfer_time() {
+    let svc = city();
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("D", 0)], &by(1399, &[])),
+        vec![],
+        "tram 21 (D 1330) leaves C at 1230, 30 s after trip 11 arrives: not with a 60 s transfer",
+    );
+    assert_eq!(
+        plan(
+            &svc,
+            &[("A", 0)],
+            &[("D", 0)],
+            &by(1399, &[("minTransfer", "0")])
+        ),
+        vec![(
+            1330,
+            1000,
+            1,
+            legs(&["access ->A", "ride A>C #11", "ride C>D #21", "egress D>-"])
+        )],
+    );
+}
+
+#[test]
+fn arrive_by_counts_the_walk_from_the_last_stop_and_to_the_first() {
+    let svc = city();
+    let q = query(
+        &[("A", 100)],
+        &[("D", 50)],
+        &by(1450, &[]),
+        "arriveAt, departAt, [l IN legs | [l.mode, l.depart, l.arrive]] AS times",
+    );
+    let rows = run_ok(&svc, &q).rows;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!((int(&rows[0][0]), int(&rows[0][1])), (1450, 900));
+    let Value::List(times) = &rows[0][2] else {
+        panic!("{rows:?}")
+    };
+    let times: Vec<(String, i64, i64)> = times
+        .iter()
+        .map(|t| match t {
+            Value::List(t) => (
+                strings(&Value::List(vec![t[0].clone()]))[0].clone(),
+                int(&t[1]),
+                int(&t[2]),
+            ),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        times,
+        vec![
+            ("access".to_string(), 900, 1000),
+            ("ride".to_string(), 1000, 1200),
+            ("ride".to_string(), 1300, 1400),
+            ("egress".to_string(), 1400, 1450),
+        ]
+    );
+    assert_eq!(
+        plan(&svc, &[("A", 100)], &[("D", 50)], &by(1449, &[])),
+        vec![],
+        "50 s from D to the destination: the tram at 1400 is one second late",
+    );
+}
+
+#[test]
+fn arrive_by_walks_between_rides() {
+    let svc = city();
+    run_ok(
+        &svc,
+        "MATCH (c:Stop {name: 'C'}), (e:Stop {name: 'E'}), (d:Stop {name: 'D'}) \
+         CREATE (c)-[:WALK {s: 120}]->(e), \
+                (e)-[:HOP {dep: [1330], arr: [1380], trip: [31], svc: [1]}]->(d)",
+    );
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("D", 0)], &by(1380, &[])),
+        vec![(
+            1380,
+            1000,
+            1,
+            legs(&[
+                "access ->A",
+                "ride A>C #11",
+                "walk C>E",
+                "ride E>D #31",
+                "egress D>-"
+            ])
+        )],
+        "trip 31 leaves E at 1330; the 120 s walk from C starts by 1210, after trip 11 arrives at 1200",
+    );
+    assert_eq!(
+        plan(
+            &svc,
+            &[("A", 0)],
+            &[("D", 0)],
+            &by(1380, &[("walk", "null")])
+        ),
+        vec![],
+        "without footpaths nothing reaches D by 1380",
+    );
+}
+
+#[test]
+fn arrive_by_a_change_over_a_footpath_takes_at_least_the_transfer_time() {
+    let svc = city();
+    run_ok(
+        &svc,
+        "MATCH (c:Stop {name: 'C'}), (e:Stop {name: 'E'}), (d:Stop {name: 'D'}) \
+         CREATE (c)-[:WALK {s: 0}]->(e), \
+                (e)-[:HOP {dep: [1230, 1300], arr: [1280, 1350], trip: [31, 32], svc: [1, 1]}]->(d)",
+    );
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("D", 0)], &by(1280, &[])),
+        vec![],
+        "trip 31 leaves E at 1230: with a 60 s transfer the walk from C starts by 1170, before trip 11 is there",
+    );
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("D", 0)], &by(1350, &[])),
+        vec![(
+            1350,
+            1000,
+            1,
+            legs(&[
+                "access ->A",
+                "ride A>C #11",
+                "walk C>E",
+                "ride E>D #32",
+                "egress D>-"
+            ])
+        )],
+    );
+    let tight = plan(
+        &svc,
+        &[("A", 0)],
+        &[("D", 0)],
+        &by(1280, &[("minTransfer", "0")]),
+    );
+    assert_eq!(
+        tight.iter().map(|r| (r.0, r.1)).collect::<Vec<_>>(),
+        vec![(1280, 1000)],
+        "without a transfer time trip 31 is caught: {tight:?}"
+    );
+}
+
+#[test]
+fn arrive_by_max_walk_bounds_a_chain_of_footpaths() {
+    let svc = city_with_a_chain();
+    assert_eq!(
+        plan(&svc, &[("A", 0)], &[("F", 0)], &by(1400, &[])),
+        vec![(
+            1400,
+            1000,
+            0,
+            legs(&[
+                "access ->A",
+                "ride A>C #11",
+                "walk C>E",
+                "walk E>F",
+                "egress F>-"
+            ])
+        )],
+        "without a bound the 200 s chain from C reaches F at 1400"
+    );
+    assert_eq!(
+        plan(
+            &svc,
+            &[("A", 0)],
+            &[("F", 0)],
+            &by(1400, &[("maxWalk", "150")])
+        ),
+        vec![],
+        "with 150 s of walking at most, the chain is too long and the tram is too late"
+    );
+    assert_eq!(
+        plan(
+            &svc,
+            &[("A", 0)],
+            &[("F", 0)],
+            &by(1500, &[("maxWalk", "150")])
+        ),
+        vec![(
+            1500,
+            1000,
+            1,
+            legs(&[
+                "access ->A",
+                "ride A>C #11",
+                "ride C>D #22",
+                "walk D>F",
+                "egress F>-"
+            ])
+        )],
+    );
+}
+
+#[test]
+fn arrive_by_max_walk_bounds_the_footpaths_before_the_end_too() {
+    let svc = city_with_a_chain();
+    assert_eq!(
+        plan(&svc, &[("C", 0)], &[("F", 0)], &by(1100, &[])),
+        vec![(
+            1100,
+            900,
+            0,
+            legs(&["access ->C", "walk C>E", "walk E>F", "egress F>-"])
+        )],
+        "a walk-only journey over the chain, leaving as late as it can"
+    );
+    assert_eq!(
+        plan(
+            &svc,
+            &[("C", 0)],
+            &[("F", 0)],
+            &by(1100, &[("maxWalk", "150")])
+        ),
+        vec![],
+        "the chain is over the bound and no ride arrives by 1100"
+    );
+}
+
+#[test]
+fn arrive_by_uses_a_trip_of_the_previous_service_day_after_midnight() {
+    let svc = NativeService::in_memory();
+    run_ok(
+        &svc,
+        "CREATE (:Stop {name: 'N1'})-[:HOP {dep: [87000], arr: [87600], trip: [91], svc: [7]}]->(:Stop {name: 'N2'})",
+    );
+    let days = (
+        "days",
+        "[{offset: 0, services: [1]}, {offset: -86400, services: [7]}]",
+    );
+    assert_eq!(
+        plan(&svc, &[("N1", 0)], &[("N2", 0)], &by(1200, &[days])),
+        vec![(
+            1200,
+            600,
+            0,
+            legs(&["access ->N1", "ride N1>N2 #91", "egress N2>-"])
+        )],
+    );
+    assert_eq!(
+        plan(&svc, &[("N1", 0)], &[("N2", 0)], &by(1199, &[days])),
+        vec![]
+    );
+    assert_eq!(
+        plan(&svc, &[("N1", 0)], &[("N2", 0)], &by(1200, &[])),
+        vec![]
+    );
+}
+
+/// A direct trip, a pair of trips and three trips from Q1 to Q4, each
+/// leaving later than the one before:
+///
+/// ```text
+///   trip 71  Q1 1000 ───────────────────────────────→ Q4 3000
+///   trip 81  Q1 1500 → Q2 1600    trip 82  Q2 1700 → Q4 3000
+///   trip 91  Q1 2000 → Q3 2100    trip 92  Q3 2200 → Q5 2300    trip 93  Q5 2400 → Q4 2900
+/// ```
+fn later_with_more_changes() -> NativeService {
+    let svc = NativeService::in_memory();
+    run_ok(
+        &svc,
+        "CREATE (q1:Stop {name: 'Q1'}), (q2:Stop {name: 'Q2'}), (q3:Stop {name: 'Q3'}), \
+                (q4:Stop {name: 'Q4'}), (q5:Stop {name: 'Q5'}), \
+         (q1)-[:HOP {dep: [1000], arr: [3000], trip: [71], svc: [1]}]->(q4), \
+         (q1)-[:HOP {dep: [1500], arr: [1600], trip: [81], svc: [1]}]->(q2), \
+         (q2)-[:HOP {dep: [1700], arr: [3000], trip: [82], svc: [1]}]->(q4), \
+         (q1)-[:HOP {dep: [2000], arr: [2100], trip: [91], svc: [1]}]->(q3), \
+         (q3)-[:HOP {dep: [2200], arr: [2300], trip: [92], svc: [1]}]->(q5), \
+         (q5)-[:HOP {dep: [2400], arr: [2900], trip: [93], svc: [1]}]->(q4)",
+    );
+    svc
+}
+
+#[test]
+fn arrive_by_later_departures_with_more_transfers_come_back_too() {
+    let svc = later_with_more_changes();
+    let rows = plan(&svc, &[("Q1", 0)], &[("Q4", 0)], &by(3000, &[]));
+    let summary: Vec<(i64, i64, i64)> = rows.iter().map(|r| (r.1, r.0, r.2)).collect();
+    assert_eq!(
+        summary,
+        vec![(2000, 2900, 2), (1500, 3000, 1), (1000, 3000, 0)],
+        "one journey per number of transfers, the latest departure first: {rows:?}"
+    );
+    assert_eq!(
+        rows[0].3,
+        legs(&[
+            "access ->Q1",
+            "ride Q1>Q3 #91",
+            "ride Q3>Q5 #92",
+            "ride Q5>Q4 #93",
+            "egress Q4>-"
+        ])
+    );
+    assert_eq!(
+        rows[2].3,
+        legs(&["access ->Q1", "ride Q1>Q4 #71", "egress Q4>-"])
+    );
+}
+
+#[test]
+fn arrive_by_max_transfers_and_max_duration_cut_journeys() {
+    let svc = later_with_more_changes();
+    let departures = |options: &str| -> Vec<(i64, i64)> {
+        plan(&svc, &[("Q1", 0)], &[("Q4", 0)], options)
+            .iter()
+            .map(|r| (r.1, r.2))
+            .collect()
+    };
+    assert_eq!(
+        departures(&by(3000, &[("maxTransfers", "1")])),
+        vec![(1500, 1), (1000, 0)]
+    );
+    assert_eq!(
+        departures(&by(3000, &[("maxTransfers", "0")])),
+        vec![(1000, 0)]
+    );
+    assert_eq!(
+        departures(&by(3000, &[("maxDuration", "1500")])),
+        vec![(2000, 2), (1500, 1)],
+        "maxDuration bounds arriveBy − departAt: leaving at 1000 is 2000 s before the deadline"
+    );
+    assert_eq!(
+        departures(&by(3000, &[("maxDuration", "999")])),
+        vec![],
+        "even the latest journey leaves 1000 s before the deadline"
+    );
+    assert_eq!(
+        departures(&by(3000, &[("maxDuration", "1000")])),
+        vec![(2000, 2)]
+    );
+}
+
+#[test]
+fn arrive_by_the_best_of_several_start_and_end_stops() {
+    let svc = city();
+    assert_eq!(
+        plan(&svc, &[("A", 0), ("B", 300)], &[("D", 60), ("C", 500)], &by(1700, &[])),
+        vec![(
+            1700,
+            1000,
+            0,
+            legs(&["access ->A", "ride A>C #11", "egress C>-"])
+        )],
+        "leaving A at 1000 on trip 11 serves both ends; the tram adds a transfer and no later departure"
+    );
+    assert_eq!(
+        plan(
+            &svc,
+            &[("A", 0), ("B", 300)],
+            &[("D", 60), ("C", 500)],
+            &by(1699, &[])
+        ),
+        vec![(
+            1460,
+            1000,
+            1,
+            legs(&["access ->A", "ride A>C #11", "ride C>D #22", "egress D>-"])
+        )],
+        "one second earlier the 500 s walk from C is too long: the tram to D is the way"
+    );
+}
+
+#[test]
+fn arrive_by_a_walk_only_journey_leaves_as_late_as_it_can() {
+    let svc = city();
+    assert_eq!(
+        plan(&svc, &[("A", 100)], &[("A", 50)], &by(1050, &[])),
+        vec![(1050, 900, 0, legs(&["access ->A", "egress A>-"]))],
+    );
+}
+
+#[test]
+fn arrive_by_follows_hops_in_their_direction_only() {
+    let svc = city();
+    assert_eq!(plan(&svc, &[("D", 0)], &[("A", 0)], &by(5000, &[])), vec![]);
+}
+
+#[test]
+fn arrive_by_and_depart_at_exclude_each_other() {
+    let svc = city();
+    let call = |options: &str| {
+        format!(
+            "MATCH (a:Stop {{name: 'A'}}) \
+             CALL drevo.path.timetable([{{node: a, cost: 0}}], [{{node: a, cost: 0}}], {options}) \
+             YIELD arriveAt RETURN arriveAt"
+        )
+    };
+    let both = fails(&svc, &call("{departAt: 900, arriveBy: 1400, days: []}"));
+    assert_refused(both, "departAt and arriveBy");
+    let neither = fails(&svc, &call("{days: []}"));
+    assert_refused(neither, "departAt or arriveBy");
+    assert_refused(
+        fails(&svc, &call("{arriveBy: 'noon', days: []}")),
+        "arriveBy must be a whole number of seconds",
+    );
+    assert_refused(
+        fails(&svc, &call("{arriveBy: 1400, days: [], speed: 3}")),
+        "arriveBy",
+    );
+    let ok = run_ok(&svc, &call("{arriveBy: 1400, days: []}"));
+    assert_eq!(
+        ok.rows.len(),
+        1,
+        "a start that is also the end: {:?}",
+        ok.rows
+    );
+}
+
+#[test]
+fn the_service_call_for_arrive_by_agrees_with_the_procedure() {
+    use drevo::timetable::{Endpoint, ServiceDay, TimetableOptions};
+    let svc = later_with_more_changes();
+    let id = |name: &str| -> u64 {
+        let r = run_ok(
+            &svc,
+            &format!("MATCH (s:Stop {{name: '{name}'}}) RETURN id(s)"),
+        );
+        u64::try_from(int(&r.rows[0][0])).unwrap()
+    };
+    let options = TimetableOptions {
+        days: vec![ServiceDay {
+            offset: 0,
+            services: vec![1],
+        }],
+        min_transfer: 60,
+        ..TimetableOptions::default()
+    };
+    let journeys = svc
+        .timetable_arrive_by(
+            &[Endpoint {
+                node: id("Q1"),
+                cost: 0,
+            }],
+            &[Endpoint {
+                node: id("Q4"),
+                cost: 0,
+            }],
+            3000,
+            &options,
+        )
+        .expect("plan");
+    let native: Vec<(i64, i64, usize)> = journeys
+        .iter()
+        .map(|j| (j.depart_at, j.arrive_at, j.transfers))
+        .collect();
+    assert_eq!(
+        native,
+        vec![(2000, 2900, 2), (1500, 3000, 1), (1000, 3000, 0)]
+    );
+    let rows = plan(&svc, &[("Q1", 0)], &[("Q4", 0)], &by(3000, &[]));
+    let cypher: Vec<(i64, i64, usize)> = rows
+        .iter()
+        .map(|r| (r.1, r.0, usize::try_from(r.2).unwrap()))
+        .collect();
+    assert_eq!(native, cypher);
+}
+
 fn assert_refused(err: ExecError, needle: &str) {
     let text = err.to_string();
     assert!(

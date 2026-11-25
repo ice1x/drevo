@@ -268,8 +268,9 @@ The only stop within 400 seconds is `C`, at cost `100.0` over the footpath
 `CALL drevo.path.timetable(starts, ends, options) YIELD arriveAt, departAt,
 transfers, legs` plans a public-transport journey: leave at a given time from
 near one place, arrive as early as possible near another, riding buses and
-trams, changing between them and walking between stops. It runs once per
-input row.
+trams, changing between them and walking between stops. With `arriveBy`
+instead of `departAt` it answers the other question: be there by a given
+time, leave as late as possible. It runs once per input row.
 
 The timetable lives in the graph. Stops are nodes. A **hop** relationship runs
 from a stop to the next stop of a trip pattern (one stop sequence of a line)
@@ -291,13 +292,14 @@ gives those costs.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `departAt` | required | when the journey starts, in seconds after midnight of the query date |
+| `departAt` | one of the two is required | when the journey starts, in seconds after midnight of the query date |
+| `arriveBy` | one of the two is required | when to be at the destination at the latest, on the same clock; giving both is refused |
 | `days` | required | the service days whose trips may run, each `{offset, services}`: seconds added to its trips' times (`0` today, `-86400` yesterday, for its trips past midnight) and the service ids running that day |
 | `hops` | `{relType: 'HOP', dep: 'dep', arr: 'arr', trip: 'trip', service: 'svc'}` | the hop relationship type and its list properties |
 | `walk` | none (no walking between stops) | `{relTypes: ['WALK'], cost: 's'}`: footpath relationship types and their seconds property |
 | `minTransfer` | `0` | seconds a change of vehicles takes at least, at one stop or over footpaths |
 | `maxTransfers` | `4` | the most vehicle changes in a journey |
-| `maxDuration` | none | journeys arriving later than `departAt` plus this are not returned |
+| `maxDuration` | none | journeys arriving later than `departAt` plus this — with `arriveBy`, leaving earlier than `arriveBy` minus this — are not returned |
 | `maxWalk` | none | the most seconds of footpaths in a row — between two rides, or after the start cost; a longer chain is not followed |
 
 Staying on the same trip from hop to hop is one ride. Boarding needs the
@@ -348,9 +350,39 @@ Leaving at 07:55 (`28500`), the journey walks 4 minutes to Central, rides trip
 11 from 08:00 to Park at 08:10, walks 3 minutes to the Zoo stop and 1 more to
 the destination: `arriveAt` is `29640`, `departAt` `28560`, no transfers.
 
+With `arriveBy` each row is a journey that **leaves later** than every
+journey with fewer transfers, and rows are ordered by `departAt`, the latest
+first. `arriveAt` is when the destination is really reached, which may be
+before `arriveBy`. Transfer time, footpaths, `maxWalk` and `days` mean the
+same as with `departAt`. On the timetable above, to be at the destination by
+08:20:
+
+```cypher
+CREATE (a:Stop {name: 'Central'}), (b:Stop {name: 'Market'}),
+       (c:Stop {name: 'Park'}), (d:Stop {name: 'Zoo'}),
+       (a)-[:HOP {dep: [28800, 29400], arr: [29100, 29700], trip: [11, 12], svc: [1, 1]}]->(b),
+       (b)-[:HOP {dep: [29160, 29760], arr: [29400, 30000], trip: [11, 12], svc: [1, 1]}]->(c),
+       (c)-[:WALK {s: 180}]->(d)
+WITH a, d
+CALL drevo.path.timetable([{node: a, cost: 240}], [{node: d, cost: 60}], {
+  arriveBy: 30000,
+  days: [{offset: 0, services: [1]}],
+  walk: {relTypes: ['WALK'], cost: 's'},
+  minTransfer: 60
+})
+YIELD arriveAt, departAt, transfers, legs
+RETURN arriveAt, departAt, transfers, [l IN legs WHERE l.mode = 'ride' | l.trip] AS trips
+```
+
+Trip 12 reaches Park at 08:20 (`30000`), four minutes too late for the walk
+that follows, so the answer is trip 11: `departAt` is `28560` (07:56), `arriveAt`
+`29640` (08:14), `trips` `[11]`.
+
 The search runs in rounds, one more ride per round (RAPTOR). A query reads
 only the stops it reaches, so its cost grows with the part of the network
 within reach of `departAt + maxDuration`, not with the size of the graph.
+`arriveBy` runs the same rounds backwards from the destination, over the
+trips by their arrival.
 
 ### Nearest nodes to a point
 

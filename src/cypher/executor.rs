@@ -6807,8 +6807,8 @@ impl<'a> Executor<'a> {
     /// `CALL drevo.path.timetable(starts, ends, options) YIELD arriveAt,
     /// departAt, transfers, legs` — public-transport journeys from any of
     /// `starts` to any of `ends`, one row per journey that arrives earlier
-    /// than every journey with fewer transfers, ordered by arrival; once per
-    /// input row. `starts` and `ends` are lists of `{node, cost}` maps; the
+    /// than every journey with fewer transfers, ordered by arrival — or, with
+    /// `arriveBy`, that leaves later, the latest first; once per input row. `starts` and `ends` are lists of `{node, cost}` maps; the
     /// options map is described at
     /// [`timetable_options`].
     fn run_timetable(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
@@ -6823,8 +6823,8 @@ impl<'a> Executor<'a> {
         for row in prior {
             let starts = timetable_endpoints(&self.eval(&c.args[0], &row)?, "start", c.span)?;
             let ends = timetable_endpoints(&self.eval(&c.args[1], &row)?, "end", c.span)?;
-            let options = timetable_options(&self.eval(&c.args[2], &row)?, c.span)?;
-            let found = self.plan_journeys(&starts, &ends, &options, c.span)?;
+            let (options, arrive_by) = timetable_options(&self.eval(&c.args[2], &row)?, c.span)?;
+            let found = self.plan_journeys(&starts, &ends, &options, arrive_by, c.span)?;
             for out_row in self.visible_rows(found)? {
                 let Some(items) = &items else {
                     standalone.push(out_row);
@@ -6864,32 +6864,39 @@ impl<'a> Executor<'a> {
     }
 
     /// One `drevo.path.timetable` search over the statement's view of the
-    /// graph, as `[arriveAt, departAt, transfers, legs]` rows.
+    /// graph, as `[arriveAt, departAt, transfers, legs]` rows: the earliest
+    /// arrivals after `options.depart_at`, or the latest departures that are
+    /// there by `arrive_by` when it is given.
     fn plan_journeys(
         &self,
         starts: &[crate::timetable::Endpoint],
         ends: &[crate::timetable::Endpoint],
         options: &crate::timetable::TimetableOptions,
+        arrive_by: Option<i64>,
         span: Span,
     ) -> ExecResultT<Vec<Vec<Value>>> {
         use crate::timetable::LegMode;
         let engine = self.engine();
-        let journeys =
-            match crate::timetable::earliest_arrivals(starts, ends, options, &|id, dir, f| {
-                engine
-                    .for_each_edge_of(id, dir, f)
-                    .map_err(DrevoError::from)
-            }) {
-                Ok(journeys) => journeys,
-                Err(DrevoError::InvalidArgument(message)) => {
-                    return Err(ExecError::InvalidProcedureCall {
-                        name: TIMETABLE.into(),
-                        message,
-                        span,
-                    });
-                }
-                Err(e) => return Err(ExecError::Storage(e)),
-            };
+        let edges_of = |id, dir, f: &mut dyn FnMut(&Edge)| {
+            engine
+                .for_each_edge_of(id, dir, f)
+                .map_err(DrevoError::from)
+        };
+        let planned = match arrive_by {
+            Some(t) => crate::timetable::latest_departures(starts, ends, t, options, &edges_of),
+            None => crate::timetable::earliest_arrivals(starts, ends, options, &edges_of),
+        };
+        let journeys = match planned {
+            Ok(journeys) => journeys,
+            Err(DrevoError::InvalidArgument(message)) => {
+                return Err(ExecError::InvalidProcedureCall {
+                    name: TIMETABLE.into(),
+                    message,
+                    span,
+                });
+            }
+            Err(e) => return Err(ExecError::Storage(e)),
+        };
         let node = |id: Option<u64>| -> ExecResultT<Value> {
             let Some(id) = id else {
                 return Ok(Value::Null);
@@ -14034,7 +14041,10 @@ fn timetable_seconds(v: &Value) -> Option<i64> {
 /// The options map of `drevo.path.timetable`:
 ///
 /// - `departAt` — when the journey starts, in seconds after midnight of the
-///   query date (required);
+///   query date;
+/// - `arriveBy` — when to be at the destination at the latest, on the same
+///   clock; exactly one of `departAt` and `arriveBy` is required, and
+///   `arriveBy` comes back as the second value;
 /// - `days` — the service days whose trips may run, each `{offset, services}`:
 ///   seconds added to its trips' times (`0` today, `-86400` yesterday) and
 ///   the service ids running that day (required);
@@ -14046,11 +14056,14 @@ fn timetable_seconds(v: &Value) -> Option<i64> {
 /// - `minTransfer` — seconds a change of vehicles takes at least, at one stop
 ///   or over footpaths (default 0);
 /// - `maxTransfers` — the most vehicle changes (default 4);
-/// - `maxDuration` — journeys arriving later than `departAt` plus this are
-///   not returned;
+/// - `maxDuration` — journeys arriving later than `departAt` plus this, or
+///   leaving earlier than `arriveBy` minus this, are not returned;
 /// - `maxWalk` — the most seconds of footpaths in a row, between rides or
 ///   after the start (no bound when absent).
-fn timetable_options(value: &Value, span: Span) -> ExecResultT<crate::timetable::TimetableOptions> {
+fn timetable_options(
+    value: &Value,
+    span: Span,
+) -> ExecResultT<(crate::timetable::TimetableOptions, Option<i64>)> {
     use crate::timetable::{HopFields, ServiceDay, TimetableOptions, WalkFields};
     let refuse = |message: String| ExecError::InvalidProcedureCall {
         name: TIMETABLE.into(),
@@ -14073,11 +14086,13 @@ fn timetable_options(value: &Value, span: Span) -> ExecResultT<crate::timetable:
     };
     let mut options = TimetableOptions::default();
     let mut depart_at = None;
+    let mut arrive_by = None;
     let mut days = None;
     for (key, v) in map {
         match (key.as_str(), v) {
             (_, Value::Null) => {}
             ("departAt", v) => depart_at = Some(seconds("departAt", v)?),
+            ("arriveBy", v) => arrive_by = Some(seconds("arriveBy", v)?),
             ("days", Value::List(items)) => {
                 let mut list = Vec::with_capacity(items.len());
                 for item in items {
@@ -14211,18 +14226,31 @@ fn timetable_options(value: &Value, span: Span) -> ExecResultT<crate::timetable:
             }
             (unknown, _) => {
                 return Err(refuse(format!(
-                    "unknown option `{unknown}`; expected departAt, days, hops, walk, \
-                     minTransfer, maxTransfers, maxDuration or maxWalk"
+                    "unknown option `{unknown}`; expected departAt, arriveBy, days, hops, \
+                     walk, minTransfer, maxTransfers, maxDuration or maxWalk"
                 )));
             }
         }
     }
-    options.depart_at = depart_at.ok_or_else(|| {
-        refuse("departAt is required: seconds after midnight of the query date".into())
-    })?;
+    match (depart_at, arrive_by) {
+        (Some(t), None) => options.depart_at = t,
+        (None, Some(_)) => {}
+        (Some(_), Some(_)) => {
+            return Err(refuse(
+                "departAt and arriveBy exclude each other: give the time to leave or the time \
+                 to be there, not both"
+                    .into(),
+            ));
+        }
+        (None, None) => {
+            return Err(refuse(
+                "departAt or arriveBy is required: seconds after midnight of the query date".into(),
+            ));
+        }
+    }
     options.days = days
         .ok_or_else(|| refuse("days is required: the service days whose trips may run".into()))?;
-    Ok(options)
+    Ok((options, arrive_by))
 }
 
 /// The options map of `drevo.path.weighted`:
