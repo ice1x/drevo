@@ -92,12 +92,16 @@ fn run(
             ),
             other => format!("{}: {other}", wal.display()),
         })?;
-        rekey_file(
-            &wal.with_file_name("semantic.json"),
-            SEMANTIC_CONTEXT,
-            from.as_ref(),
-            to.as_ref(),
-        )?;
+        // `semantic.json` under its name from before #826 moves first, so the
+        // file the store reads is the one rekeyed.
+        let semantic = drevo_core::native::adopt_legacy_sidecar(
+            wal,
+            crate::native_service::SEMANTIC_SIDECAR,
+            drevo_core::native::SharedLegacySidecar::Copy,
+            false,
+        )
+        .map_err(|e| format!("{}: {e}", wal.display()))?;
+        rekey_file(&semantic, SEMANTIC_CONTEXT, from.as_ref(), to.as_ref())?;
     }
     for (file, context) in [
         (ACCESS_FILE, ACCESS_CONTEXT),

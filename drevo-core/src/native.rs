@@ -1726,10 +1726,142 @@ fn mint_origin() -> OriginId {
     OriginId(u64::from_be_bytes(tail))
 }
 
+/// The sidecar `name` of the store whose log is `wal_path`: the log's file
+/// name, a dot and `name`, next to it (`a.gbk` → `a.gbk.origin.json`), as the
+/// lock (`a.gbk.lock`). Two stores whose logs share a directory therefore
+/// keep their own sidecars.
+///
+/// ```
+/// use std::path::{Path, PathBuf};
+/// assert_eq!(
+///     drevo_core::native::sidecar_path(Path::new("/data/a.gbk"), "origin.json"),
+///     PathBuf::from("/data/a.gbk.origin.json"),
+/// );
+/// ```
+#[must_use]
+pub fn sidecar_path(wal_path: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let mut file = wal_path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    file.push(".");
+    file.push(name);
+    wal_path.with_file_name(file)
+}
+
+/// What a store does with a sidecar under its old, fixed name (`origin.json`,
+/// as earlier versions named it) in a directory that also holds other
+/// stores, where it may be theirs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedLegacySidecar {
+    /// Leave it: the store starts without it (an origin, the stamps).
+    Ignore,
+    /// Copy it: taking another store's file only makes this one more
+    /// careful (tombstones, sequences).
+    Copy,
+}
+
+/// The path to read sidecar `name` of the store whose log is `wal_path`
+/// from, after bringing a sidecar under its old, fixed name in the directory
+/// (`origin.json`, as earlier versions named it) to [`sidecar_path`] when
+/// that is missing.
+///
+/// When the directory holds no other store (no other `<file>.lock` next to an
+/// existing `<file>`), the old file is this store's and is renamed. Otherwise
+/// it may be another store's, and `shared` decides: ignored, or copied. A
+/// read-only store moves nothing: it reads the old file where renaming or
+/// copying would have taken it over.
+///
+/// # Errors
+///
+/// An I/O error renaming or copying the old file.
+pub fn adopt_legacy_sidecar(
+    wal_path: &std::path::Path,
+    name: &str,
+    shared: SharedLegacySidecar,
+    read_only: bool,
+) -> std::io::Result<std::path::PathBuf> {
+    let new = sidecar_path(wal_path, name);
+    let legacy = wal_path.with_file_name(name);
+    if new.exists() || !legacy.is_file() {
+        return Ok(new);
+    }
+    let alone = !holds_other_stores(wal_path);
+    match (alone, shared, read_only) {
+        (true, _, true) | (false, SharedLegacySidecar::Copy, true) => Ok(legacy),
+        (true, _, false) => {
+            std::fs::rename(&legacy, &new)?;
+            Ok(new)
+        }
+        (false, SharedLegacySidecar::Copy, false) => {
+            std::fs::copy(&legacy, &new)?;
+            Ok(new)
+        }
+        (false, SharedLegacySidecar::Ignore, _) => Ok(new),
+    }
+}
+
+/// Whether the directory of `wal_path` holds another store: a `<file>.lock`
+/// whose `<file>` exists, other than this store's.
+fn holds_other_stores(wal_path: &std::path::Path) -> bool {
+    let Some(dir) = wal_path.parent() else {
+        return false;
+    };
+    let dir = if dir.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        dir
+    };
+    let mine = wal_path.file_name();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name.strip_suffix(".lock").is_some_and(|log| {
+            mine.is_none_or(|m| m.to_string_lossy() != log) && dir.join(log).is_file()
+        })
+    })
+}
+
+/// The sidecars of the engine, each with what a store does with its old copy
+/// in a shared directory ([`adopt_legacy_sidecar`]).
+#[cfg(not(target_arch = "wasm32"))]
+const ENGINE_SIDECARS: [(&str, SharedLegacySidecar); 4] = [
+    (ORIGIN_SIDECAR, SharedLegacySidecar::Ignore),
+    (STAMPS_SIDECAR, SharedLegacySidecar::Ignore),
+    (TOMBSTONES_SIDECAR, SharedLegacySidecar::Copy),
+    (SEQUENCES_SIDECAR, SharedLegacySidecar::Copy),
+];
+#[cfg(not(target_arch = "wasm32"))]
+const ORIGIN_SIDECAR: &str = "origin.json";
+#[cfg(not(target_arch = "wasm32"))]
+const STAMPS_SIDECAR: &str = "stamps.jsonl";
+#[cfg(not(target_arch = "wasm32"))]
+const TOMBSTONES_SIDECAR: &str = "tombstones.json";
+#[cfg(not(target_arch = "wasm32"))]
+const SEQUENCES_SIDECAR: &str = "sequences.json";
+
+/// Bring the engine's sidecars from their old, fixed names to their
+/// per-store names; the paths to read them from, in the order of
+/// [`ENGINE_SIDECARS`].
+#[cfg(not(target_arch = "wasm32"))]
+fn adopt_engine_sidecars(
+    wal_path: &std::path::Path,
+    read_only: bool,
+) -> std::io::Result<[std::path::PathBuf; 4]> {
+    let mut paths: [std::path::PathBuf; 4] = Default::default();
+    for (slot, (name, shared)) in paths.iter_mut().zip(ENGINE_SIDECARS) {
+        *slot = adopt_legacy_sidecar(wal_path, name, shared, read_only)?;
+    }
+    Ok(paths)
+}
+
 /// The replica-identity sidecar path, next to the WAL file.
 #[cfg(not(target_arch = "wasm32"))]
 fn origin_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
-    wal_path.with_file_name("origin.json")
+    sidecar_path(wal_path, ORIGIN_SIDECAR)
 }
 
 /// Load the persisted replica origin from `sidecar`, or mint and persist a new
@@ -1772,16 +1904,10 @@ fn persist_origin(
     crate::sealed_file::write(sidecar, key, crate::sealed_file::ORIGIN, json.as_bytes())
 }
 
-/// The sequences sidecar path, next to the WAL file.
-#[cfg(not(target_arch = "wasm32"))]
-fn sequence_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
-    wal_path.with_file_name("sequences.json")
-}
-
 /// The tombstone-checkpoint sidecar path, next to the WAL file.
 #[cfg(not(target_arch = "wasm32"))]
 fn tombstone_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
-    wal_path.with_file_name("tombstones.json")
+    sidecar_path(wal_path, TOMBSTONES_SIDECAR)
 }
 
 /// The exclusive-open lock sidecar path: the WAL path with a `.lock` suffix
@@ -1971,12 +2097,6 @@ fn persist_tombstones(
 ) -> std::io::Result<()> {
     let json = serde_json::to_vec(entries).map_err(std::io::Error::other)?;
     crate::sealed_file::write(sidecar, key, crate::sealed_file::TOMBSTONES, &json)
-}
-
-/// The stamp-log sidecar path, next to the WAL file.
-#[cfg(not(target_arch = "wasm32"))]
-fn stamp_log_sidecar(wal_path: &std::path::Path) -> std::path::PathBuf {
-    wal_path.with_file_name("stamps.jsonl")
 }
 
 /// Read the stamp log at `path`: the greatest stamp per target. A missing
@@ -4272,6 +4392,11 @@ impl NativeGraph {
         } else {
             Some(acquire_exclusive_lock(&lock_sidecar(path))?)
         };
+        // Sidecars under their old, fixed names move to their per-store
+        // names (only now: under the lock, so no other opener of this log
+        // races).
+        let [origin_path, stamps_path, tombstones_path, sequences_path] =
+            adopt_engine_sidecars(path, read_only)?;
         let mut inner = Inner::default();
         // Replay the log record by record, a chunk at a time, so opening a
         // store never holds the whole log in memory.
@@ -4347,9 +4472,9 @@ impl NativeGraph {
         // Stable replica identity persisted next to the WAL (issue #389),
         // reused across restarts so a peer's writes keep a stable provenance.
         let origin = if read_only {
-            load_origin(&origin_sidecar(path), seal_key.as_deref()).unwrap_or_else(mint_origin)
+            load_origin(&origin_path, seal_key.as_deref()).unwrap_or_else(mint_origin)
         } else {
-            load_or_mint_origin(&origin_sidecar(path), seal_key.as_deref())
+            load_or_mint_origin(&origin_path, seal_key.as_deref())
         };
         // Live stamps from the stamp log (issue #612), restricted to the entities
         // that exist; an entity without one gets the lowest stamp. Then compact
@@ -4357,13 +4482,13 @@ impl NativeGraph {
         // set from now on only live in memory).
         let stamps = recover_stamps(
             &inner,
-            load_stamp_log(&stamp_log_sidecar(path), seal_key.as_deref()),
+            load_stamp_log(&stamps_path, seal_key.as_deref()),
             origin,
         );
         let stamp_log = if read_only {
             None
         } else {
-            StampLog::rewrite(stamp_log_sidecar(path), &stamps, seal_key.clone()).ok()
+            StampLog::rewrite(stamps_path, &stamps, seal_key.clone()).ok()
         };
         let mut clock = HlcClock::new();
         if let Some(latest) = stamps.values().max() {
@@ -4372,9 +4497,8 @@ impl NativeGraph {
         }
         // A damaged sequence file fails the open: starting over could hand
         // out values again.
-        let sequences =
-            crate::sequence::Sequences::open_sealed(&sequence_sidecar(path), seal_key.clone())
-                .map_err(|e| CoreError::Backend(e.to_string()))?;
+        let sequences = crate::sequence::Sequences::open_sealed(&sequences_path, seal_key.clone())
+            .map_err(|e| CoreError::Backend(e.to_string()))?;
         sequences.set_read_only(read_only);
         Ok(NativeGraph {
             inner: RwLock::new(Arc::new(inner)),
@@ -4396,10 +4520,7 @@ impl NativeGraph {
             stamps: RwLock::new(stamps),
             // Restore the tombstone checkpoint so deletes survive a restart and a
             // peer cannot resurrect a deleted entity on the next sync (issue #389).
-            tombstones: RwLock::new(load_tombstones(
-                &tombstone_sidecar(path),
-                seal_key.as_deref(),
-            )),
+            tombstones: RwLock::new(load_tombstones(&tombstones_path, seal_key.as_deref())),
             stamp_log: std::sync::Mutex::new(stamp_log),
             // Hold the exclusive-open lock for this handle's lifetime (#455).
             _lock: lock,

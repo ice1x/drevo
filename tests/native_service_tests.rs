@@ -527,8 +527,8 @@ fn origin_id_persists_across_a_restart() {
     };
     // The sidecar is written next to the WAL.
     assert!(
-        dir.path().join("origin.json").exists(),
-        "origin.json sidecar must be persisted next to the WAL"
+        dir.path().join("native.wal.origin.json").exists(),
+        "the origin sidecar must be persisted next to the WAL, named after it"
     );
 
     // Reopening the same data dir reuses the same identity.
@@ -644,4 +644,49 @@ fn update_bumps_recency_and_survives_a_restart() {
     assert_eq!(recent[0].id, first_id, "updated node leads after reopen");
     assert_eq!(recent[1].id, second_id);
     assert!(recent[0].updated_at > recent[0].created_at);
+}
+
+// ── Sidecars named after the log (issue #826) ───────────────────────────────
+
+#[test]
+fn a_store_takes_over_its_registrations_under_the_old_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("native.wal");
+    {
+        let service = NativeService::open(&path).expect("open");
+        run(
+            &service,
+            "CREATE CONSTRAINT ticket_key FOR (t:Ticket) REQUIRE t.key IS UNIQUE",
+        );
+    }
+    let new = dir.path().join("native.wal.semantic.json");
+    let old = dir.path().join("semantic.json");
+    assert!(new.exists(), "the registrations are named after the log");
+    // As an earlier version left them.
+    std::fs::rename(&new, &old).unwrap();
+    let service = NativeService::open(&path).expect("reopen");
+    let rows = run(&service, "SHOW CONSTRAINTS").rows;
+    assert_eq!(rows.len(), 1, "the constraint is taken over: {rows:?}");
+    assert!(
+        new.exists() && !old.exists(),
+        "the file moved to its new name"
+    );
+}
+
+#[test]
+fn two_services_in_one_directory_keep_their_own_registrations() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = NativeService::open(dir.path().join("a.wal")).expect("open a");
+    let b = NativeService::open(dir.path().join("b.wal")).expect("open b");
+    run(
+        &a,
+        "CREATE CONSTRAINT ticket_key FOR (t:Ticket) REQUIRE t.key IS UNIQUE",
+    );
+    assert_ne!(a.origin_id(), b.origin_id());
+    drop((a, b));
+    let b = NativeService::open(dir.path().join("b.wal")).expect("reopen b");
+    assert!(
+        run(&b, "SHOW CONSTRAINTS").rows.is_empty(),
+        "B does not see A's constraint"
+    );
 }

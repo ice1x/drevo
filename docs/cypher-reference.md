@@ -1634,7 +1634,7 @@ RETURN b.key
   statement leaves a gap: its value is not handed out again.
 - A sequence counts from `start` (default 1) by `step` (default 1; negative
   counts down).
-- Sequences are kept in `sequences.json` next to the database's log. Values are
+- Sequences are kept next to the database's log, in `<log>.sequences.json`. Values are
   reserved in blocks of 1000, and a restart resumes after the reserved block:
   it may skip numbers but never repeats one. Backups include the file.
 

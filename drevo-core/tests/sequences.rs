@@ -85,7 +85,7 @@ fn a_reopened_store_never_reissues_a_value() {
             .last()
             .unwrap()
     };
-    assert!(tmp.path("sequences.json").exists());
+    assert!(tmp.path("native.wal.sequences.json").exists());
     let g = NativeGraph::open_durable(&wal).unwrap();
     let next = g.sequence_next("invoice").unwrap();
     assert!(next > last);
@@ -135,7 +135,7 @@ fn a_damaged_sequence_file_fails_the_open() {
     let tmp = TmpDir::new();
     let wal = tmp.path("native.wal");
     drop(NativeGraph::open_durable(&wal).unwrap());
-    fs::write(tmp.path("sequences.json"), b"{broken").unwrap();
+    fs::write(tmp.path("native.wal.sequences.json"), b"{broken").unwrap();
     assert!(NativeGraph::open_durable(&wal).is_err());
 }
 

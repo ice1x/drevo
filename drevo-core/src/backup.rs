@@ -482,7 +482,17 @@ pub fn restore<P: AsRef<Path>>(chain: &[P], wal_path: &Path) -> Result<RestoreRe
         .iter()
         .filter(|f| f.name != WAL_FILE && f.name != WAL_TAIL_FILE)
         .collect();
-    let target = |name: &str| wal_path.with_file_name(name);
+    // The engine's sidecars go to their per-store names next to the log (a
+    // backup keeps them under their plain names, whatever the log was
+    // called); an extra file of the layers above comes back under its own
+    // name, for those layers to place.
+    let target = |name: &str| {
+        if [ORIGIN_FILE, TOMBSTONES_FILE, STAMPS_FILE, SEQUENCES_FILE].contains(&name) {
+            crate::native::sidecar_path(wal_path, name)
+        } else {
+            wal_path.with_file_name(name)
+        }
+    };
     for path in
         std::iter::once(wal_path.to_path_buf()).chain(sidecars.iter().map(|f| target(&f.name)))
     {

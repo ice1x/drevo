@@ -37,7 +37,7 @@ impl TmpDir {
         self.0.join("native.wal")
     }
     fn stamp_log(&self) -> PathBuf {
-        self.0.join("stamps.jsonl")
+        self.0.join("native.wal.stamps.jsonl")
     }
 }
 impl Drop for TmpDir {
@@ -253,7 +253,7 @@ fn store_without_a_stamp_log_still_seeds_a_fresh_peer() {
         g.create_node(node("other")).unwrap();
         n.uuid
     };
-    fs::remove_file(dir.stamp_log()).expect("stamps are kept in stamps.jsonl");
+    fs::remove_file(dir.stamp_log()).expect("stamps are kept in native.wal.stamps.jsonl");
 
     let g = NativeGraph::open_durable(dir.wal()).unwrap();
     let fresh = NativeGraph::new();

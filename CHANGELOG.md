@@ -303,6 +303,19 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Two stores whose logs share a directory keep their own identity and
+  stamps** (issue #826). A durable store's sidecars were named after the
+  directory (`origin.json`, `stamps.jsonl`, `tombstones.json`,
+  `sequences.json`, `semantic.json`), so two stores side by side (`a.gbk`,
+  `b.gbk`) shared one replica origin, and node 1 of one store took the later
+  stamp of node 1 of the other on open — which decides Last-Writer-Wins in
+  delta sync. The sidecars are now named after the log file
+  (`a.gbk.origin.json`, …), as the lock already was. A store written before
+  takes over its fixed-name files when it is alone in its directory; next to
+  another store's log it starts with a fresh origin and the lowest stamps and
+  copies the tombstones, sequences and registrations. A restore writes the
+  engine's sidecars under the restored log's name. drevo-core: `native::sidecar_path`,
+  `native::adopt_legacy_sidecar`.
 - **Procedure arguments read the row** (issue #818). `UNWIND $questions AS q
   CALL drevo.rag.context(q) YIELD text RETURN q, text`, `MATCH (m:Message)
   WITH m.text AS q CALL drevo.rag.retrieve(q) …`, `fts.search(q, k)`,
