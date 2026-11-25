@@ -402,6 +402,11 @@ pub struct CypherRequest {
     /// server's statement timeout caps it.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// `"read"` runs the statement with READ access: a write, a schema
+    /// change or a procedure with effects outside the transaction is refused
+    /// (#825). `"write"` or absent: no restriction beyond privileges.
+    #[serde(default)]
+    pub access: Option<String>,
 }
 
 /// Mutation counters surfaced from [`executor::ExecStats`].

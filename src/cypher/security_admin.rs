@@ -184,6 +184,22 @@ pub enum SecurityCommand {
     ShowSupportedPrivileges,
 }
 
+impl SecurityCommand {
+    /// Whether the command only shows users, roles or privileges, so a READ
+    /// session may run it (#825).
+    #[must_use]
+    pub fn only_reads(&self) -> bool {
+        matches!(
+            self,
+            Self::ShowUsers
+                | Self::ShowCurrentUser
+                | Self::ShowRoles { .. }
+                | Self::ShowPrivileges { .. }
+                | Self::ShowSupportedPrivileges
+        )
+    }
+}
+
 /// Classify `input`: `None` when it is not a user-management command (it goes
 /// to the graph parser), `Some(Err(message))` for a malformed one, and
 /// `Some(Ok(command))` otherwise. A message never contains a password.

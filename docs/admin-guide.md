@@ -1016,6 +1016,49 @@ beforehand, or set `DREVO_AUTH=none`.
 docker run -d -p 8080:8080 -e DREVO_READ_ONLY=true -v drevo_data:/data:ro ice1x/drevo
 ```
 
+### Read-only sessions
+
+A client can ask for READ access for one session, transaction or statement, whatever the
+database allows. A READ statement may read, search and call the procedures that only read. It
+may not:
+
+- write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`) or change the schema
+  (indexes, constraints);
+- call a procedure that writes or acts outside the transaction: the chat-model procedures
+  (`drevo.extract.*`, `drevo.cypher.fromText`, LLM community summaries), `drevo.semantic.embed`,
+  `drevo.rag.context` (it records a trace), the `drevo.memory.*` writers, `drevo.events.post`,
+  triggers, sequences, prepared transactions, `dbms.killConnections`,
+  `dbms.terminateTransactions`;
+- send text to the embedding service: a search that would embed its query text, such as
+  `drevo.semantic.query`, is refused; a vector search with a given vector, a full-text search
+  and a hybrid search without an embedder run;
+- change users, roles, privileges or databases (`SHOW …` runs).
+
+Refusals use Neo4j's `Neo.ClientError.Statement.AccessMode` (HTTP 403), before anything runs, so
+no model or service is called. The procedures a READ session may call are listed in
+`drevo::cypher::executor::READ_PROCEDURES`; a procedure added later is refused until it is listed.
+A statement that passes runs in a transaction that is then rolled back, so nothing it does
+reaches the graph.
+
+- **Bolt:** the `mode` the drivers send on `BEGIN` and `RUN`. With the Neo4j Python driver:
+
+  ```python
+  with driver.session(default_access_mode=neo4j.READ_ACCESS) as session:
+      session.run("MATCH (n) RETURN count(n)").single()  # runs
+      session.run("CREATE (:X)")  # Neo.ClientError.Statement.AccessMode
+  ```
+
+- **HTTP:** `"access": "read"` in the `POST /cypher` body (`"write"` or absent: as before):
+
+  ```bash
+  curl -X POST http://localhost:8080/cypher -H 'content-type: application/json' \
+       -d '{"query": "MATCH (t:Ticket) RETURN count(t)", "access": "read"}'
+  ```
+
+READ access is a guard the client asks for, for example to let an agent run its own statements;
+it is not a privilege. To keep a user from writing, grant them no write privileges
+([Roles and privileges](#roles-and-privileges)).
+
 ### Encryption at rest
 
 A server built with the `encryption` feature (the Docker image has it) encrypts every database

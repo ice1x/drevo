@@ -479,6 +479,9 @@ mod codes {
         "Neo.ClientError.Transaction.ForbiddenDueToTransactionType";
     /// The signed-in user lacks the privilege for the statement.
     pub const FORBIDDEN: &str = "Neo.ClientError.Security.Forbidden";
+    /// A write, schema change or procedure with outside effects in a READ
+    /// session or transaction (#825).
+    pub const ACCESS_MODE: &str = "Neo.ClientError.Statement.AccessMode";
     /// A write to a read-only database; not retried by drivers.
     pub const FORBIDDEN_ON_READ_ONLY_DATABASE: &str =
         "Neo.ClientError.General.ForbiddenOnReadOnlyDatabase";
@@ -583,6 +586,8 @@ struct ActiveTx {
     /// When the transaction has to finish: the client's `tx_timeout` from
     /// `BEGIN`, capped by the server's statement timeout.
     deadline: Option<Deadline>,
+    /// The access the driver asked for with `mode` on `BEGIN` (#825).
+    access: crate::cypher::executor::Access,
 }
 
 /// Maps the optional `db` selector carried on `RUN` / `BEGIN` to the concrete
@@ -1159,6 +1164,15 @@ impl<'a> Session<'a> {
                 }];
             }
         };
+        let access = match extract_access(&extra) {
+            Ok(access) => access,
+            Err(msg) => {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(codes::REQUEST_INVALID, &msg),
+                }];
+            }
+        };
         let id = crate::transactions::scope(self.caller(), "", || service.begin_tx_with(isolation));
         let database = self.database_name(extract_db(&extra));
         self.native_tx = Some(ActiveTx {
@@ -1166,6 +1180,7 @@ impl<'a> Session<'a> {
             id,
             database,
             deadline,
+            access,
         });
         self.timed_out = None;
         self.state = State::TxReady;
@@ -1451,10 +1466,39 @@ impl<'a> Session<'a> {
                 }];
             }
         };
+        // READ access (#825): from the transaction's `BEGIN`, or this RUN's
+        // own `mode` in auto-commit.
+        let access = if in_tx {
+            self.native_tx
+                .as_ref()
+                .map_or(crate::cypher::executor::Access::Write, |tx| tx.access)
+        } else {
+            match extract_access(&extra) {
+                Ok(access) => access,
+                Err(msg) => {
+                    self.state = State::Failed;
+                    return vec![ServerMessage::Failure {
+                        metadata: failure_metadata(codes::REQUEST_INVALID, &msg),
+                    }];
+                }
+            }
+        };
         // User-management commands (`CREATE USER`, `SHOW USERS`, …) are not
         // graph queries: they change the server's users at once and cannot be
         // rolled back, so they run in auto-commit mode only.
         if let Some(parsed) = crate::cypher::security_admin::parse(&query) {
+            if access == crate::cypher::executor::Access::Read
+                && !parsed.as_ref().is_ok_and(|c| c.only_reads())
+            {
+                self.state = State::Failed;
+                return vec![ServerMessage::Failure {
+                    metadata: failure_metadata(
+                        codes::ACCESS_MODE,
+                        "a READ session or transaction may not change users, roles or \
+                         privileges; open it for writing to do so",
+                    ),
+                }];
+            }
             return self.handle_security_command(parsed, &cypher_params, in_tx);
         }
         // Parse.
@@ -1492,15 +1536,17 @@ impl<'a> Session<'a> {
                         id,
                         database,
                         deadline,
+                        access,
                     }) => crate::transactions::scope(caller, &query, || {
                         with_deadline(*deadline, || {
-                            service.execute_in_tx_as(
+                            service.execute_in_tx_with_access(
                                 *id,
                                 &ast,
                                 cypher_params,
                                 context.as_ref().map(|context| {
                                     crate::cypher::executor::Restriction { context, database }
                                 }),
+                                *access,
                             )
                         })
                     }),
@@ -1529,7 +1575,7 @@ impl<'a> Session<'a> {
                     .map(|limit| Deadline::client(limit, service.statement_timeout()));
                 crate::transactions::scope(caller, &query, || {
                     with_deadline(deadline, || {
-                        service.execute_as(
+                        service.execute_with_access(
                             &ast,
                             cypher_params,
                             context
@@ -1538,6 +1584,7 @@ impl<'a> Session<'a> {
                                     context,
                                     database: &database,
                                 }),
+                            access,
                         )
                     })
                 })
@@ -2311,6 +2358,8 @@ fn exec_error_metadata(e: &ExecError) -> BTreeMap<String, Value> {
         ExecError::TriggerFailed { .. } => codes::TRANSACTION_HOOK_FAILED,
         // A missing privilege (#636).
         ExecError::Forbidden { .. } => codes::FORBIDDEN,
+        // A write in a READ session or transaction (#825).
+        ExecError::AccessMode { .. } => codes::ACCESS_MODE,
     };
     failure_metadata(code, &format!("{e}"))
 }
@@ -2368,6 +2417,22 @@ fn extract_isolation(
 /// when the caller passes `session(database="…")`. An absent, empty, or
 /// non-string value means "the session default database" — returned as `None`
 /// so the resolver falls back to the default.
+/// The access a `BEGIN` or `RUN` asks for (#825): drivers send `mode: "r"`
+/// for a READ session or transaction and omit it, or send `"w"`, for writing.
+fn extract_access(
+    extra: &BTreeMap<String, Value>,
+) -> Result<crate::cypher::executor::Access, String> {
+    use crate::cypher::executor::Access;
+    match extra.get("mode") {
+        None | Some(Value::Null) => Ok(Access::Write),
+        Some(Value::String(m)) if m == "r" => Ok(Access::Read),
+        Some(Value::String(m)) if m == "w" => Ok(Access::Write),
+        Some(other) => Err(format!(
+            "mode must be \"r\" (read) or \"w\" (write), got {other:?}"
+        )),
+    }
+}
+
 fn extract_db(extra: &BTreeMap<String, Value>) -> Option<&str> {
     match extra.get("db") {
         Some(Value::String(s)) if !s.is_empty() => Some(s.as_str()),

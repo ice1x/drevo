@@ -418,6 +418,15 @@ pub enum ExecError {
         /// Source span of the offending `CALL` or schema command.
         span: Span,
     },
+    /// The session or transaction asked for READ access (Bolt `mode: "r"`,
+    /// `POST /cypher` `access: "read"`) and the statement writes, changes the
+    /// schema or calls a procedure with effects outside the transaction
+    /// (#825). Bolt reports `Neo.ClientError.Statement.AccessMode`.
+    #[error("{message}")]
+    AccessMode {
+        /// What was refused and why.
+        message: String,
+    },
     /// The signed-in user lacks the privilege for a write, a schema command, a
     /// procedure or the database itself. Nothing of the statement is kept.
     #[error("{message}")]
@@ -565,6 +574,7 @@ impl ExecError {
             | Self::EngineCapability { .. }
             | Self::IndexBehindWrites { .. }
             | Self::Forbidden { .. }
+            | Self::AccessMode { .. }
             | Self::Timeout { .. }
             | Self::ClientTimeout { .. }
             | Self::Terminated
@@ -1345,6 +1355,193 @@ pub struct NativeQueryContext<'a> {
     /// The signed-in user's privileges and the database the statement runs
     /// in (#636); `None` checks nothing.
     pub restriction: Option<Restriction<'a>>,
+    /// What the client allows the statement to do (#825): with
+    /// [`Access::Read`] a write, a schema change, a procedure not in
+    /// [`READ_PROCEDURES`] and embedding text are refused with
+    /// [`ExecError::AccessMode`].
+    pub access: Access,
+}
+
+/// What a statement may do: everything (`Write`, the default) or only read
+/// (`Read`), as a client asks with Bolt's `mode: "r"` or `POST /cypher`'s
+/// `access: "read"` (#825).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Access {
+    /// Read, write and call any procedure the user may call.
+    #[default]
+    Write,
+    /// Read only: no write, no schema change, no procedure with effects
+    /// outside the transaction.
+    Read,
+}
+
+/// The procedures a READ session or transaction may call (#825): they read
+/// the graph or the server's state and act on nothing outside the
+/// transaction. Every other procedure — one that writes, changes the schema,
+/// calls a chat model, posts events, changes triggers, sequences, prepared
+/// transactions or connections — is refused, and so is any procedure added
+/// later until it is listed here. A listed procedure that would embed text
+/// through the embedding service is refused when it tries to.
+pub const READ_PROCEDURES: &[&str] = &[
+    "apoc.trigger.list",
+    "db.index.fulltext.queryNodes",
+    "db.index.vector.queryNodes",
+    "db.index.vector.queryRelationships",
+    "db.labels",
+    "db.propertyKeys",
+    "db.relationshipTypes",
+    "db.showConstraints",
+    "db.showIndexes",
+    "dbms.listConnections",
+    "dbms.showTransactions",
+    "drevo.betweenness",
+    "drevo.closeness",
+    "drevo.community.of",
+    "drevo.community.query",
+    "drevo.community.stale",
+    "drevo.engine.status",
+    "drevo.entity.aliases",
+    "drevo.entity.candidates",
+    "drevo.extract.chunks",
+    "drevo.extract.status",
+    "drevo.graph.expand",
+    "drevo.indexes.secondary",
+    "drevo.info",
+    "drevo.ingest.errors",
+    "drevo.ingest.list",
+    "drevo.ingest.status",
+    "drevo.louvain",
+    "drevo.memory.evidence",
+    "drevo.memory.factsAt",
+    "drevo.memory.getConversation",
+    "drevo.memory.recall",
+    "drevo.memory.recallSemantic",
+    "drevo.memory.recallVector",
+    "drevo.pagerank",
+    "drevo.pagerank.personalized",
+    "drevo.path.reachable",
+    "drevo.path.timetable",
+    "drevo.path.weighted",
+    "drevo.rag.evaluate",
+    "drevo.rag.evaluateSummary",
+    "drevo.rag.explain",
+    "drevo.rag.replay",
+    "drevo.rag.retrieve",
+    "drevo.rag.traces",
+    "drevo.ricciCurvature",
+    "drevo.scc",
+    "drevo.search.hybrid",
+    "drevo.search.hybridRelationships",
+    "drevo.semantic.info",
+    "drevo.semantic.query",
+    "drevo.semantic.queryRel",
+    "drevo.semantic.status",
+    "drevo.sequence.list",
+    "drevo.spatial.nearest",
+    "drevo.stableMatching",
+    "drevo.text.fuzzy",
+    "drevo.triangles",
+    "drevo.tx.listPrepared",
+    "drevo.vector.query",
+    "drevo.wcc",
+    "fts.search",
+    "fts.searchRelationships",
+];
+
+/// Why a READ session may not run `query`, checked before it runs: the first
+/// clause that writes or changes the schema, or the first procedure not in
+/// [`READ_PROCEDURES`], in any `UNION` arm. `None` when the statement only
+/// reads.
+#[must_use]
+pub fn read_access_refusal(query: &Query) -> Option<String> {
+    let clauses = query
+        .parts
+        .iter()
+        .flat_map(|part| part.query.clauses.iter());
+    for clause in clauses {
+        let refused = match clause {
+            Clause::Create(_) => Some("write to the graph (CREATE)".to_string()),
+            Clause::Merge(_) => Some("write to the graph (MERGE)".to_string()),
+            Clause::Set(_) => Some("write to the graph (SET)".to_string()),
+            Clause::Remove(_) => Some("write to the graph (REMOVE)".to_string()),
+            Clause::Delete(_) => Some("write to the graph (DELETE)".to_string()),
+            Clause::Foreach(_) => Some("write to the graph (FOREACH)".to_string()),
+            Clause::CreateVectorIndex(_)
+            | Clause::CreatePathIndex(_)
+            | Clause::DropIndex(_)
+            | Clause::CreateConstraint(_)
+            | Clause::DropConstraint(_)
+            | Clause::SchemaNoop(_) => Some("change the schema".to_string()),
+            Clause::Call(call) => {
+                let name = call.name.join(".");
+                (!READ_PROCEDURES.contains(&name.as_str())).then(|| refused_procedure(&name))
+            }
+            Clause::Match(_)
+            | Clause::With(_)
+            | Clause::Return(_)
+            | Clause::Unwind(_)
+            | Clause::Search(_) => None,
+        };
+        if let Some(what) = refused {
+            return Some(read_refusal(&what));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod read_procedures_tests {
+    use super::*;
+
+    #[test]
+    fn every_read_procedure_is_a_procedure_and_listed_once() {
+        for name in READ_PROCEDURES {
+            assert!(
+                procedure_columns(name).is_some(),
+                "READ_PROCEDURES lists `{name}`, which is not a procedure"
+            );
+        }
+        let mut sorted = READ_PROCEDURES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted, READ_PROCEDURES,
+            "keep the list sorted and without repeats"
+        );
+    }
+
+    #[test]
+    fn writing_procedures_are_not_read_procedures() {
+        for name in [
+            "drevo.memory.addMessage",
+            "drevo.rag.context",
+            "drevo.extract.entities",
+            "drevo.extract.ingest",
+            "drevo.semantic.embed",
+            "drevo.semantic.register",
+            "drevo.events.post",
+            "apoc.trigger.install",
+            "drevo.sequence.create",
+            "drevo.tx.prepare",
+            "dbms.killConnections",
+            "dbms.terminateTransactions",
+            "drevo.cypher.fromText",
+            "drevo.community.summarize",
+            "drevo.entity.merge",
+            "drevo.ingest.submit",
+        ] {
+            assert!(!READ_PROCEDURES.contains(&name), "{name}");
+        }
+    }
+}
+
+/// The message of an [`ExecError::AccessMode`]: the session may not `what`.
+fn read_refusal(what: &str) -> String {
+    format!("a READ session or transaction may not {what}; open it for writing to do so")
+}
+
+fn refused_procedure(name: &str) -> String {
+    format!("call `{name}`, which writes or acts outside the transaction")
 }
 
 /// Who runs a statement, and where: the session's
@@ -1384,6 +1581,12 @@ pub fn execute_on_engine_with_context(
             return Err(ExecError::Forbidden {
                 message: format!("access to database '{}' is not allowed", r.database),
             });
+        }
+    }
+    // A READ statement that writes is refused before anything runs (#825).
+    if ctx.access == Access::Read {
+        if let Some(message) = read_access_refusal(query) {
+            return Err(ExecError::AccessMode { message });
         }
     }
     execute_inner(query, engine, ctx, params)
@@ -2916,6 +3119,8 @@ struct Executor<'a> {
     native_tx: Option<(&'a crate::native::NativeGraph, crate::native::NativeTxId)>,
     /// The signed-in user's privileges ([`NativeQueryContext::restriction`]).
     restriction: Option<Restriction<'a>>,
+    /// What the client allows ([`NativeQueryContext::access`]).
+    access: Access,
     /// [`restriction`](Self::restriction) when reads must be narrowed: the
     /// user may not see every node, relationship or property (#636).
     read_filter: Option<Restriction<'a>>,
@@ -2967,6 +3172,7 @@ impl<'a> Executor<'a> {
             in_transaction: ctx.in_transaction,
             native_tx: ctx.tx,
             restriction: ctx.restriction,
+            access: ctx.access,
             read_filter: ctx
                 .restriction
                 .filter(|r| !r.context.reads_everything(r.database)),
@@ -3255,6 +3461,11 @@ impl<'a> Executor<'a> {
     /// MANAGEMENT`.
     fn guard_procedure(&self, name: &str) -> ExecResultT<()> {
         use drevo_auth::privileges::Action;
+        if self.access == Access::Read && !READ_PROCEDURES.contains(&name) {
+            return Err(ExecError::AccessMode {
+                message: read_refusal(&refused_procedure(name)),
+            });
+        }
         let Some(r) = self.restriction else {
             return Ok(());
         };
@@ -3461,6 +3672,15 @@ impl<'a> Executor<'a> {
     /// no KV secondary embedder to fall back to.
     #[cfg(feature = "http")]
     fn embed_query_text(&self, proc_name: &str, text: &str, span: Span) -> ExecResultT<Vec<f32>> {
+        // The embedding service is outside the transaction: a READ session
+        // does not send it text (#825).
+        if self.access == Access::Read && self.native_embedder.is_some() {
+            return Err(ExecError::AccessMode {
+                message: read_refusal(&format!(
+                    "embed text through the embedding service (`{proc_name}`)"
+                )),
+            });
+        }
         let embed_err = |e: crate::embeddings::EmbeddingsError| ExecError::InvalidProcedureCall {
             name: proc_name.to_string(),
             message: e.to_string(),
