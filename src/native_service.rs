@@ -933,6 +933,51 @@ impl NativeService {
         result
     }
 
+    /// [`execute_as`](Self::execute_as) with the access the client asked for
+    /// (#825). With [`Access::Read`](crate::cypher::executor::Access::Read) a
+    /// statement that writes, changes the schema, calls a procedure outside
+    /// [`READ_PROCEDURES`](crate::cypher::executor::READ_PROCEDURES) or would
+    /// embed text is refused before it runs. What passes runs in a
+    /// transaction that is always rolled back, and one that wrote all the
+    /// same is refused: nothing a READ statement does reaches the graph.
+    ///
+    /// # Errors
+    ///
+    /// As [`execute_as`](Self::execute_as), and
+    /// [`ExecError::AccessMode`] for a READ statement that would write.
+    pub fn execute_with_access(
+        &self,
+        query: &Query,
+        params: HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        access: crate::cypher::executor::Access,
+    ) -> Result<ExecResult, ExecError> {
+        if access == crate::cypher::executor::Access::Write {
+            return self.execute_as(query, params, restriction);
+        }
+        if let Some(message) = crate::cypher::executor::read_access_refusal(query) {
+            return Err(ExecError::AccessMode { message });
+        }
+        #[cfg(feature = "http")]
+        let watch = crate::problems::SlowWatch::start(&params);
+        let tx = self.begin_tx();
+        let result = self.execute_in_open_tx(tx, query, params, restriction, access);
+        let wrote = self.graph.tx_write_count(tx).unwrap_or(0) > 0;
+        self.rollback_tx(tx);
+        #[cfg(feature = "http")]
+        if let Some(watch) = watch {
+            watch.finish(&self.database_name(), false);
+        }
+        if wrote && result.is_ok() {
+            return Err(ExecError::AccessMode {
+                message: "a READ session or transaction may not write to the graph; the \
+                          statement wrote and was rolled back"
+                    .to_string(),
+            });
+        }
+        result
+    }
+
     /// Run a statement of the server's own (the ingest scheduler's) as
     /// [`execute`](Self::execute) does, without listing it among the running
     /// statements.
@@ -1219,6 +1264,7 @@ impl NativeService {
             tx: Some((&self.graph, tx)),
             tx_written: overlay,
             restriction,
+            access: crate::cypher::executor::Access::Write,
         }
     }
 
@@ -1759,10 +1805,56 @@ impl NativeService {
     ) -> Result<ExecResult, ExecError> {
         #[cfg(feature = "http")]
         let watch = crate::problems::SlowWatch::start(&params);
-        let result = self.execute_in_open_tx(tx, query, params, restriction);
+        let result = self.execute_in_open_tx(
+            tx,
+            query,
+            params,
+            restriction,
+            crate::cypher::executor::Access::Write,
+        );
         #[cfg(feature = "http")]
         if let Some(watch) = watch {
             watch.finish(&self.database_name(), true);
+        }
+        result
+    }
+
+    /// [`execute_in_tx_as`](Self::execute_in_tx_as) with the access the
+    /// client asked for (#825).
+    ///
+    /// # Errors
+    ///
+    /// As [`execute_in_tx_as`](Self::execute_in_tx_as).
+    pub fn execute_in_tx_with_access(
+        &self,
+        tx: crate::native::NativeTxId,
+        query: &Query,
+        params: HashMap<String, Value>,
+        restriction: Option<Restriction<'_>>,
+        access: crate::cypher::executor::Access,
+    ) -> Result<ExecResult, ExecError> {
+        if access == crate::cypher::executor::Access::Write {
+            return self.execute_in_tx_as(tx, query, params, restriction);
+        }
+        if let Some(message) = crate::cypher::executor::read_access_refusal(query) {
+            return Err(ExecError::AccessMode { message });
+        }
+        let before = self.graph.tx_write_count(tx).unwrap_or(0);
+        #[cfg(feature = "http")]
+        let watch = crate::problems::SlowWatch::start(&params);
+        let result = self.execute_in_open_tx(tx, query, params, restriction, access);
+        #[cfg(feature = "http")]
+        if let Some(watch) = watch {
+            watch.finish(&self.database_name(), true);
+        }
+        if result.is_ok() && self.graph.tx_write_count(tx).unwrap_or(0) > before {
+            // The transaction now holds a write it may not commit.
+            self.rollback_tx(tx);
+            return Err(ExecError::AccessMode {
+                message: "a READ session or transaction may not write to the graph; the \
+                          statement wrote and the transaction was rolled back"
+                    .to_string(),
+            });
         }
         result
     }
@@ -1775,6 +1867,7 @@ impl NativeService {
         query: &Query,
         params: HashMap<String, Value>,
         restriction: Option<Restriction<'_>>,
+        access: crate::cypher::executor::Access,
     ) -> Result<ExecResult, ExecError> {
         let Some(engine) = self.graph.tx_engine(tx) else {
             return Err(ExecError::Storage(DrevoError::Io(std::io::Error::other(
@@ -1847,6 +1940,7 @@ impl NativeService {
                                 in_transaction: true,
                                 tx: Some((&self.graph, tx)),
                                 restriction,
+                                access,
                             };
                             execute_on_engine_with_context(query, &engine, &ctx, params)
                         })
@@ -1967,6 +2061,7 @@ impl NativeService {
                         tx: Some((&self.graph, tx)),
                         tx_written: None,
                         restriction: None,
+                        access: crate::cypher::executor::Access::Write,
                     };
                     execute_on_engine_with_context(query, &engine, &ctx, params)
                 })
@@ -3924,6 +4019,7 @@ impl NativeService {
             tx: None,
             tx_written: None,
             restriction,
+            access: crate::cypher::executor::Access::Write,
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }

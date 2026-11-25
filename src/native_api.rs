@@ -1217,10 +1217,20 @@ async fn cypher(
         query,
         params,
         timeout_ms,
+        access,
     }) = body?;
     let query =
         query.ok_or_else(|| ApiError::BadRequest("field 'query' is required".to_string()))?;
     let params = params.unwrap_or_default();
+    let access = match access.as_deref() {
+        None | Some("write") => crate::cypher::executor::Access::Write,
+        Some("read") => crate::cypher::executor::Access::Read,
+        Some(other) => {
+            return Err(ApiError::BadRequest(format!(
+                "access must be 'read' or 'write', got '{other}'"
+            )));
+        }
+    };
     let signed_in = signed_in.map(|axum::Extension(user)| user);
 
     let parsed = crate::cypher::security_admin::parse(&query);
@@ -1238,6 +1248,14 @@ async fn cypher(
         return Err(credentials_expired());
     }
     if let Some(parsed) = parsed {
+        if access == crate::cypher::executor::Access::Read
+            && !parsed.as_ref().is_ok_and(|c| c.only_reads())
+        {
+            return Err(access_mode(
+                "a READ session or transaction may not change users, roles or privileges; \
+                 open it for writing to do so",
+            ));
+        }
         return run_security_command(&state, parsed, &params, signed_in.as_ref(), &origin)
             .map(Json);
     }
@@ -1253,6 +1271,7 @@ async fn cypher(
         timeout: timeout_ms
             .filter(|&ms| ms > 0)
             .map(std::time::Duration::from_millis),
+        access,
     };
     if let Some(command) = crate::cypher::admin::parse(&query) {
         return handle_admin_cypher(&state, command, params, &caller).map(Json);
@@ -1344,6 +1363,8 @@ async fn rag_context(
         user: signed_in.as_ref().map(|u| u.name.as_str()),
         context: context.as_ref(),
         timeout,
+        // `drevo.rag.context` records a trace: it writes.
+        access: crate::cypher::executor::Access::Write,
     };
     let params = serde_json::Map::from_iter([
         ("query".to_string(), serde_json::Value::String(query)),
@@ -1412,6 +1433,8 @@ struct Caller<'a> {
     context: Option<&'a drevo_auth::privileges::SecurityContext>,
     /// The statement's own time limit (`timeout_ms`), if the client set one.
     timeout: Option<std::time::Duration>,
+    /// The access the client asked for (`access`, #825).
+    access: crate::cypher::executor::Access,
 }
 
 fn run_cypher_on(
@@ -1441,7 +1464,7 @@ fn run_cypher_on(
     });
     let result = crate::transactions::scope(who, query, || {
         crate::cypher::executor::deadline::with_deadline(deadline, || {
-            service.execute_as(&ast, params, restriction)
+            service.execute_with_access(&ast, params, restriction, caller.access)
         })
     })
     .map_err(|e| {
@@ -1469,6 +1492,8 @@ fn run_cypher_on(
             crate::cypher::executor::ExecError::PreparedTransactionUnresolved {
                 reason, ..
             } => unresolved_error(reason, format!("Cypher execution error: {e}")),
+            // A write in a READ statement (#825): 403 with Neo4j's code.
+            crate::cypher::executor::ExecError::AccessMode { message } => access_mode(&message),
             // A missing privilege (#636): 403 with Neo4j's code.
             crate::cypher::executor::ExecError::Forbidden { message } => {
                 caller
@@ -1706,6 +1731,19 @@ fn handle_admin_cypher(
 ) -> Result<CypherResponse, ApiError> {
     use crate::cypher::admin::AdminCommand;
     let context = caller.context;
+    // Only `SHOW DATABASES` and `USE` (whose statement is checked as any
+    // other) leave the server as it was (#825).
+    if caller.access == crate::cypher::executor::Access::Read
+        && matches!(
+            command,
+            AdminCommand::CreateDatabase { .. } | AdminCommand::AlterDatabaseAccess { .. }
+        )
+    {
+        return Err(access_mode(
+            "a READ session or transaction may not create or alter databases; open it for \
+             writing to do so",
+        ));
+    }
     match command {
         AdminCommand::ShowDatabases => Ok(show_databases_response(state, context)),
         AdminCommand::CreateDatabase { .. }
@@ -1797,6 +1835,15 @@ fn security_error(e: crate::security::SecurityError) -> ApiError {
 }
 
 /// 403 for a missing privilege, with Neo4j's code (#636).
+/// 403 for a write in a READ statement (#825), with Neo4j's code.
+fn access_mode(message: &str) -> ApiError {
+    ApiError::Coded {
+        status: StatusCode::FORBIDDEN,
+        code: "Neo.ClientError.Statement.AccessMode",
+        message: message.to_string(),
+    }
+}
+
 fn forbidden(message: String) -> ApiError {
     ApiError::Coded {
         status: StatusCode::FORBIDDEN,

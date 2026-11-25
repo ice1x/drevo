@@ -269,6 +269,19 @@ history and the in-repo issue tracker; format loosely follows
   covers the delta's base no longer loses the writes of a push it missed;
   before, the only way to compare two vectors was to decode their private
   layout.
+- **READ access per session, transaction or statement** (issue #825). The Bolt
+  `mode: "r"` the drivers send (`session(default_access_mode=READ)`) and
+  `"access": "read"` on `POST /cypher` now restrict the statement to
+  reading: a write, a schema change, user / role / database administration,
+  a procedure outside `READ_PROCEDURES` (the chat-model, embedding, event,
+  trigger, sequence, prepared-transaction and memory-writing procedures,
+  `drevo.rag.context`, `dbms.killConnections`, …) and embedding query text
+  are refused with `Neo.ClientError.Statement.AccessMode` (HTTP 403) before
+  they run, so no model is called. A statement that passes runs in a
+  transaction that is rolled back. Before, drevo ignored the mode: a client
+  that rolled back an agent's "read" still let it call a chat model, which
+  costs money and sends data out. Rust API: `Access`,
+  `NativeService::execute_with_access`, `execute_in_tx_with_access`.
 
 ### Changed
 
