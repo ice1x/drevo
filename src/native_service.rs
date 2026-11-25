@@ -386,6 +386,7 @@ fn semantic_sidecar_path(wal_path: &std::path::Path) -> std::path::PathBuf {
 
 /// The file name of the semantic registrations next to a store's log, after
 /// the log's own name (#826).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SEMANTIC_SIDECAR: &str = "semantic.json";
 
 /// The context `semantic.json` is sealed under in an encrypted store.
