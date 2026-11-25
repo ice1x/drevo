@@ -368,6 +368,15 @@ history and the in-repo issue tracker; format loosely follows
   restart**. Settings that also need a mount or a published port are named
   in the script header. A test fails when the server gains a setting the
   script neither forwards nor excepts with a reason.
+- **`scripts/drevo-restart.sh`: a variable exported in the shell wins over
+  the environment file** (issue #844). The script said so and did the
+  opposite: it read `~/.drevo.env` after the shell's environment, so
+  `DREVO_IMAGE=ice1x/drevo:X scripts/drevo-restart.sh` restarted on the image
+  named in the file and reported success; the same held for the ports, the
+  container name and every forwarded setting. The shell's `DREVO_*` values
+  are now put back after the file is read. A variable exported empty leaves
+  that setting out for the one restart; a variable set only in the file is
+  used as before.
 - **A failing statement that calls a writing procedure leaves nothing
   behind** (issue #796). In plain auto-commit (no triggers, no
   authentication) the `drevo.memory.*` writers (`addMessage`,

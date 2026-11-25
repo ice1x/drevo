@@ -132,6 +132,15 @@ fn the_restart_script_forwards_the_extraction_and_ingest_settings() {
 /// nothing else of the caller's, against a stub `docker` and a stub `curl`
 /// (the health check), and return the arguments `docker run` was given.
 fn restart_run_arguments(settings: &[(&str, &str)]) -> String {
+    restart_run_arguments_with_env_file(settings, None)
+}
+
+/// [`restart_run_arguments`] with an env file holding `env_file` (the file
+/// the script reads its persistent settings from), or with none.
+fn restart_run_arguments_with_env_file(
+    settings: &[(&str, &str)],
+    env_file: Option<&str>,
+) -> String {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("docker.log");
     let stub = |name: &str, body: String| {
@@ -153,6 +162,14 @@ fn restart_run_arguments(settings: &[(&str, &str)]) -> String {
         dir.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    let env_path = match env_file {
+        Some(content) => {
+            let path = dir.path().join("settings.env");
+            fs::write(&path, content).unwrap();
+            path
+        }
+        None => dir.path().join("no-such.env"),
+    };
     let out = Command::new("bash")
         .arg(repo_root().join("scripts/drevo-restart.sh"))
         .env_clear()
@@ -160,7 +177,7 @@ fn restart_run_arguments(settings: &[(&str, &str)]) -> String {
         .env("HOME", dir.path())
         .env("DREVO_DOCKER", &docker)
         .env("DREVO_DATA_DIR", dir.path().join("data"))
-        .env("DREVO_ENV_FILE", dir.path().join("no-such.env"))
+        .env("DREVO_ENV_FILE", &env_path)
         .envs(settings.iter().copied())
         .output()
         .expect("run the restart script");
@@ -355,6 +372,141 @@ fn a_restart_passes_the_transaction_and_access_settings_to_the_container() {
             "#840: `-e {wanted}` is not passed to docker run: {args:?}"
         );
     }
+}
+
+/// Does `docker run` get `-e <var>=<value>`?
+fn passes_setting(args: &str, var: &str, value: &str) -> bool {
+    let args: Vec<&str> = args.lines().collect();
+    let wanted = format!("{var}={value}");
+    args.windows(2).any(|w| w[0] == "-e" && w[1] == wanted)
+}
+
+/// Is `var` handed to the container at all?
+fn passes_variable(args: &str, var: &str) -> bool {
+    let prefix = format!("{var}=");
+    args.lines().any(|a| a.starts_with(&prefix))
+}
+
+#[test]
+fn a_setting_exported_in_the_shell_wins_over_the_env_file() {
+    let args = restart_run_arguments_with_env_file(
+        &[("DREVO_EXTRACT_MODEL", "model-from-shell")],
+        Some("DREVO_EXTRACT_MODEL=model-from-file\n"),
+    );
+    assert!(
+        passes_setting(&args, "DREVO_EXTRACT_MODEL", "model-from-shell"),
+        "#844: the value exported in the shell is not the one passed: {args}"
+    );
+    assert!(
+        !args.contains("model-from-file"),
+        "#844: the env file's value reached docker run: {args}"
+    );
+}
+
+#[test]
+fn the_image_named_in_the_shell_wins_over_the_env_file() {
+    let args = restart_run_arguments_with_env_file(
+        &[("DREVO_IMAGE", "example/drevo:from-shell")],
+        Some("DREVO_IMAGE=example/drevo:from-file\n"),
+    );
+    assert_eq!(
+        args.lines().last(),
+        Some("example/drevo:from-shell"),
+        "#844: the container is not started from the image named in the shell: {args}"
+    );
+}
+
+#[test]
+fn the_name_and_the_ports_from_the_shell_win_over_the_env_file() {
+    let args = restart_run_arguments_with_env_file(
+        &[
+            ("DREVO_NAME", "name-from-shell"),
+            ("DREVO_HTTP_PORT", "18080"),
+            ("DREVO_BOLT_PORT_HOST", "17687"),
+        ],
+        Some("DREVO_NAME=name-from-file\nDREVO_HTTP_PORT=28080\nDREVO_BOLT_PORT_HOST=27687\n"),
+    );
+    let args: Vec<&str> = args.lines().collect();
+    for wanted in [
+        ["--name", "name-from-shell"],
+        ["-p", "18080:8080"],
+        ["-p", "17687:7687"],
+    ] {
+        assert!(
+            args.windows(2).any(|w| w == wanted),
+            "#844: `{} {}` is not passed to docker run: {args:?}",
+            wanted[0],
+            wanted[1]
+        );
+    }
+}
+
+#[test]
+fn a_setting_only_in_the_env_file_is_still_passed() {
+    let args = restart_run_arguments_with_env_file(
+        &[("DREVO_EXTRACT_MODEL", "model-from-shell")],
+        Some("DREVO_IMAGE=example/drevo:from-file\nDREVO_INGEST_WORKERS=3\nexport DREVO_SLOW_QUERY_MS=250\n"),
+    );
+    assert!(passes_setting(&args, "DREVO_INGEST_WORKERS", "3"), "{args}");
+    assert!(
+        passes_setting(&args, "DREVO_SLOW_QUERY_MS", "250"),
+        "{args}"
+    );
+    assert!(
+        passes_setting(&args, "DREVO_EXTRACT_MODEL", "model-from-shell"),
+        "{args}"
+    );
+    assert_eq!(
+        args.lines().last(),
+        Some("example/drevo:from-file"),
+        "{args}"
+    );
+}
+
+#[test]
+fn a_shell_value_with_spaces_quotes_and_shell_characters_arrives_unchanged() {
+    let value = r#"{"team a": "it's $HOME \ * `x`", "b": "c=d"}"#;
+    let args = restart_run_arguments_with_env_file(
+        &[("DREVO_OIDC_ROLE_MAP", value)],
+        Some("DREVO_OIDC_ROLE_MAP='{\"from\": \"file\"}'\n"),
+    );
+    assert!(
+        passes_setting(&args, "DREVO_OIDC_ROLE_MAP", value),
+        "#844: the shell's value did not arrive as written: {args}"
+    );
+}
+
+#[test]
+fn a_setting_emptied_in_the_shell_is_not_taken_from_the_env_file() {
+    // `DREVO_AUTH= scripts/drevo-restart.sh` switches a setting of the file
+    // off for one restart.
+    let args = restart_run_arguments_with_env_file(
+        &[("DREVO_AUTH", "")],
+        Some("DREVO_AUTH=none\nDREVO_INGEST_WORKERS=3\n"),
+    );
+    assert!(
+        !passes_variable(&args, "DREVO_AUTH"),
+        "#844: a setting emptied in the shell came back from the env file: {args}"
+    );
+    assert!(passes_setting(&args, "DREVO_INGEST_WORKERS", "3"), "{args}");
+}
+
+#[test]
+fn an_env_file_that_reads_a_shell_setting_sees_the_shell_value() {
+    // A file may build one setting from another; the shell's value is what
+    // it reads, and what it derives from it is kept.
+    let args = restart_run_arguments_with_env_file(
+        &[("DREVO_TEXT2CYPHER_MODEL", "chat-from-shell")],
+        Some("DREVO_EXTRACT_MODEL=\"${DREVO_TEXT2CYPHER_MODEL}\"\n"),
+    );
+    assert!(
+        passes_setting(&args, "DREVO_EXTRACT_MODEL", "chat-from-shell"),
+        "{args}"
+    );
+    assert!(
+        passes_setting(&args, "DREVO_TEXT2CYPHER_MODEL", "chat-from-shell"),
+        "{args}"
+    );
 }
 
 #[test]

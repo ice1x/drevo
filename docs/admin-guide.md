@@ -632,6 +632,16 @@ container (`DREVO_ENCRYPTION_KEY_FILE`, `DREVO_TLS_CERT`, `DREVO_TLS_KEY`,
 `DREVO_FLIGHT_PORT`) also need a mount or a published port, which the script
 does not add: use `docker-compose.yml` or your own `docker run` for those.
 
+A variable exported in the shell wins over the same variable in
+`~/.drevo.env`, so one restart can differ from the file without editing it:
+
+```bash
+DREVO_IMAGE=ice1x/drevo:0.0.88 scripts/drevo-restart.sh
+```
+
+Exported empty (`DREVO_AUTH= scripts/drevo-restart.sh`), a variable leaves
+that setting out for the one restart.
+
 ### Memory after large deletes
 
 The image sets `MALLOC_ARENA_MAX=2`. glibc's allocator otherwise keeps one
