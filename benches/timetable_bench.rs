@@ -345,6 +345,26 @@ fn main() -> Result<(), Error> {
         &transfers[..5]
     );
 
+    // The same trips asked the other way: be there by the time the forward
+    // search would have allowed at the latest, leave as late as possible.
+    let mut backwards = Vec::with_capacity(n);
+    let mut found_back = 0;
+    for q in &qs {
+        let starts: Vec<Endpoint> = q.starts.iter().map(|s| s.1).collect();
+        let ends: Vec<Endpoint> = q.ends.iter().map(|e| e.1).collect();
+        let arrive_by = q.depart_at + 7_200;
+        let t = Instant::now();
+        let journeys =
+            city.svc
+                .timetable_arrive_by(&starts, &ends, arrive_by, &options(q.depart_at))?;
+        backwards.push(t.elapsed());
+        if !journeys.is_empty() {
+            found_back += 1;
+        }
+    }
+    percentiles("native timetable, arriveBy", backwards);
+    println!("arriveBy found a journey for {found_back}/{n} queries");
+
     let statement = parse(CYPHER)?;
     let mut cypher = Vec::with_capacity(n);
     let mut agree = 0;

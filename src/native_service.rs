@@ -3817,6 +3817,23 @@ impl NativeService {
         })
     }
 
+    /// Public-transport journeys from any of `starts` to any of `ends` that
+    /// are there by `arrive_by` and leave as late as possible — see
+    /// [`crate::timetable::latest_departures`].
+    pub fn timetable_arrive_by(
+        &self,
+        starts: &[crate::timetable::Endpoint],
+        ends: &[crate::timetable::Endpoint],
+        arrive_by: i64,
+        options: &crate::timetable::TimetableOptions,
+    ) -> Result<Vec<crate::timetable::Journey>, DrevoError> {
+        let snap = self.graph.snapshot();
+        crate::timetable::latest_departures(starts, ends, arrive_by, options, &|id, dir, f| {
+            snap.for_each_edge_of(id, dir, f);
+            Ok(())
+        })
+    }
+
     /// The connected subgraph within `depth` hops of `root` — parity with
     /// `Drevo::subgraph_filtered`.
     pub fn subgraph_filtered(

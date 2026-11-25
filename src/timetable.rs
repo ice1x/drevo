@@ -1,5 +1,6 @@
-//! Public-transport routing: the earliest arrival over a timetable stored in
-//! the graph.
+//! Public-transport routing over a timetable stored in the graph: the
+//! earliest arrival for a departure time, or the latest departure for an
+//! arrival time.
 //!
 //! Stops are nodes. A *hop* relationship runs from one stop to the next stop
 //! of a trip pattern and carries one entry per trip in parallel list
@@ -20,10 +21,18 @@
 //! shifted by the day's offset, so yesterday's trips past midnight are found
 //! with `offset: -86400`.
 //!
+//! [`latest_departures`](crate::timetable::latest_departures()) answers the
+//! other question, "be there by 09:00, leave as late as possible", under the
+//! same rules.
+//!
 //! The search runs in rounds, one more ride per round (RAPTOR): from every
 //! stop reached earlier in the previous round it boards every trip leaving
 //! later, rides each trip to its end, and then walks on from every stop a
 //! ride reached earlier, over footpaths in a row within the walking bound.
+//! The latest departure is the same search on the timetable seen in a mirror
+//! of time: every hop runs from its end stop to its start stop with its
+//! times negated, so "as early as possible" there is "as late as possible"
+//! here.
 //!
 //! ```
 //! use drevo::model::{Direction, Edge, Properties};
@@ -207,9 +216,12 @@ pub struct Leg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Journey {
     /// When to leave the origin: the first ride's departure minus the time
-    /// to reach its stop, or the query's `depart_at` without rides.
+    /// to reach its stop. Without rides, the time asked for
+    /// ([`earliest_arrivals`]) or as late as still arrives in time
+    /// ([`latest_departures`]).
     pub depart_at: i64,
-    /// When the destination is reached.
+    /// When the destination is reached: the last ride's arrival plus the
+    /// time from its stop.
     pub arrive_at: i64,
     /// Vehicle changes: rides minus one, and zero for a journey without rides.
     pub transfers: usize,
@@ -241,7 +253,128 @@ where
     E: Fn(u64, Direction, &mut dyn FnMut(&Edge)) -> Result<()>,
 {
     validate(starts, ends, options)?;
-    Search::new(ends, options, edges_of).run(starts)
+    Search::new(ends, options, edges_of, false).run(starts)
+}
+
+/// The journeys from any of `starts` to any of `ends` that leave latest for
+/// their number of transfers and are at the destination by `arrive_by`,
+/// ordered by departure, the latest first.
+///
+/// Each journey leaves strictly later than every journey with fewer
+/// transfers, so at most `max_transfers + 1` come back. `arrive_by` is in
+/// seconds after midnight of the query date; `options.depart_at` is not
+/// used, and `max_duration` bounds `arrive_by` minus the departure. A journey
+/// reports when it really arrives, which may be before `arrive_by`. The rules
+/// are those of [`earliest_arrivals`]: transfer time, footpaths, the walking
+/// bound and the service days mean the same.
+/// `edges_of(stop, Direction::Incoming, visit)` must visit the relationships
+/// entering `stop`.
+///
+/// ```
+/// use drevo::model::{Direction, Edge, Properties};
+/// use drevo::timetable::{latest_departures, Endpoint, ServiceDay, TimetableOptions};
+/// use serde_json::json;
+///
+/// // Trips 7 and 8 run from stop 1 to stop 2: 08:00 → 08:20 and 08:30 → 08:50.
+/// let mut properties = Properties::new();
+/// properties.insert("dep", json!([28_800, 30_600]));
+/// properties.insert("arr", json!([30_000, 31_800]));
+/// properties.insert("trip", json!([7, 8]));
+/// properties.insert("svc", json!([1, 1]));
+/// let hop = Edge {
+///     id: 10,
+///     uuid: [0; 16],
+///     from_id: 1,
+///     to_id: 2,
+///     kind: "HOP".into(),
+///     weight: 1.0,
+///     created_at: 0,
+///     properties,
+/// };
+/// let options = TimetableOptions {
+///     days: vec![ServiceDay { offset: 0, services: vec![1] }],
+///     ..TimetableOptions::default()
+/// };
+/// // Be at the destination, 60 s from stop 2, by 08:45.
+/// let journeys = latest_departures(
+///     &[Endpoint { node: 1, cost: 120 }],
+///     &[Endpoint { node: 2, cost: 60 }],
+///     31_500,
+///     &options,
+///     &|stop, _direction, visit: &mut dyn FnMut(&Edge)| {
+///         if stop == hop.to_id {
+///             visit(&hop);
+///         }
+///         Ok(())
+///     },
+/// )?;
+/// assert_eq!(journeys.len(), 1);
+/// assert_eq!(journeys[0].legs[1].trip, Some(7)); // trip 8 arrives too late
+/// assert_eq!(journeys[0].depart_at, 28_680); // 120 s before the 08:00 trip
+/// assert_eq!(journeys[0].arrive_at, 30_060);
+/// # Ok::<(), drevo::error::DrevoError>(())
+/// ```
+///
+/// # Errors
+///
+/// As [`earliest_arrivals`].
+pub fn latest_departures<E>(
+    starts: &[Endpoint],
+    ends: &[Endpoint],
+    arrive_by: i64,
+    options: &TimetableOptions,
+    edges_of: &E,
+) -> Result<Vec<Journey>>
+where
+    E: Fn(u64, Direction, &mut dyn FnMut(&Edge)) -> Result<()>,
+{
+    validate(starts, ends, options)?;
+    // In the mirror the journey leaves the destination at `-arrive_by` and
+    // the origin is where it ends; a service day lies where its negated
+    // offset puts it.
+    let mirrored = TimetableOptions {
+        depart_at: arrive_by.saturating_neg(),
+        days: options
+            .days
+            .iter()
+            .map(|d| ServiceDay {
+                offset: d.offset.saturating_neg(),
+                services: d.services.clone(),
+            })
+            .collect(),
+        ..options.clone()
+    };
+    let journeys = Search::new(starts, &mirrored, edges_of, true).run(ends)?;
+    Ok(journeys.into_iter().map(out_of_the_mirror).collect())
+}
+
+/// A journey found on the mirrored timetable, as it is travelled: the legs in
+/// the opposite order and direction, with their times negated.
+fn out_of_the_mirror(journey: Journey) -> Journey {
+    let legs = journey
+        .legs
+        .into_iter()
+        .rev()
+        .map(|leg| Leg {
+            mode: match leg.mode {
+                LegMode::Access => LegMode::Egress,
+                LegMode::Egress => LegMode::Access,
+                mode => mode,
+            },
+            from: leg.to,
+            to: leg.from,
+            depart: leg.arrive.saturating_neg(),
+            arrive: leg.depart.saturating_neg(),
+            trip: leg.trip,
+            hops: leg.hops.into_iter().rev().collect(),
+        })
+        .collect();
+    Journey {
+        depart_at: journey.arrive_at.saturating_neg(),
+        arrive_at: journey.depart_at.saturating_neg(),
+        transfers: journey.transfers,
+        legs,
+    }
 }
 
 fn validate(starts: &[Endpoint], ends: &[Endpoint], options: &TimetableOptions) -> Result<()> {
@@ -374,6 +507,9 @@ impl Reach {
 struct Search<'a, E> {
     options: &'a TimetableOptions,
     edges_of: &'a E,
+    /// Whether the timetable is read in a mirror of time, for
+    /// [`latest_departures`]: see [`load_stop`].
+    mirror: bool,
     /// The cheapest egress per end stop.
     egress: HashMap<u64, i64>,
     /// The services of each day.
@@ -395,7 +531,12 @@ impl<'a, E> Search<'a, E>
 where
     E: Fn(u64, Direction, &mut dyn FnMut(&Edge)) -> Result<()>,
 {
-    fn new(ends: &[Endpoint], options: &'a TimetableOptions, edges_of: &'a E) -> Self {
+    fn new(
+        ends: &[Endpoint],
+        options: &'a TimetableOptions,
+        edges_of: &'a E,
+        mirror: bool,
+    ) -> Self {
         let mut egress = HashMap::new();
         for e in ends {
             let cost = egress.entry(e.node).or_insert(e.cost);
@@ -404,6 +545,7 @@ where
         Self {
             options,
             edges_of,
+            mirror,
             egress,
             days: options
                 .days
@@ -531,7 +673,7 @@ where
         if let Some(data) = self.stops.get(&stop) {
             return Ok(Rc::clone(data));
         }
-        let data = Rc::new(load_stop(stop, self.options, self.edges_of)?);
+        let data = Rc::new(load_stop(stop, self.options, self.edges_of, self.mirror)?);
         self.stops.insert(stop, Rc::clone(&data));
         Ok(data)
     }
@@ -829,20 +971,48 @@ where
 }
 
 /// Reads the hops and footpaths leaving `stop`.
-fn load_stop<E>(stop: u64, options: &TimetableOptions, edges_of: &E) -> Result<StopData>
+///
+/// In the mirror they are the ones entering it, each seen from its end: a
+/// hop leads to its start stop, and a trip "leaves" at its negated arrival
+/// and "arrives" at its negated departure.
+fn load_stop<E>(
+    stop: u64,
+    options: &TimetableOptions,
+    edges_of: &E,
+    mirror: bool,
+) -> Result<StopData>
 where
     E: Fn(u64, Direction, &mut dyn FnMut(&Edge)) -> Result<()>,
 {
     let fields = &options.hops;
     let mut data = StopData::default();
     let mut error = None;
-    edges_of(stop, Direction::Outgoing, &mut |edge: &Edge| {
-        if error.is_some() || edge.from_id != stop {
+    let direction = if mirror {
+        Direction::Incoming
+    } else {
+        Direction::Outgoing
+    };
+    edges_of(stop, direction, &mut |edge: &Edge| {
+        let (here, there) = if mirror {
+            (edge.to_id, edge.from_id)
+        } else {
+            (edge.from_id, edge.to_id)
+        };
+        if error.is_some() || here != stop {
             return;
         }
         if edge.kind == fields.kind {
             match read_hop(edge, fields) {
-                Ok(hop) => data.hops.push(hop),
+                Ok(mut hop) => {
+                    if mirror {
+                        hop.to = there;
+                        for e in &mut hop.entries {
+                            (e.dep, e.arr) = (e.arr.saturating_neg(), e.dep.saturating_neg());
+                        }
+                        hop.entries.sort_by_key(|e| (e.dep, e.trip));
+                    }
+                    data.hops.push(hop);
+                }
                 Err(e) => error = Some(e),
             }
         } else if let Some(walk) = options
@@ -853,7 +1023,7 @@ where
             match edge.properties.get(&walk.cost) {
                 None | Some(Value::Null) => {}
                 Some(v) => match whole(v) {
-                    Some(s) if s >= 0 => data.walks.push((edge.to_id, s, edge.id)),
+                    Some(s) if s >= 0 => data.walks.push((there, s, edge.id)),
                     _ => {
                         error = Some(DrevoError::InvalidArgument(format!(
                             "relationship {} of type {}: `{}` must be a non-negative number of seconds, got {v}",

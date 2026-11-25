@@ -1,6 +1,7 @@
-//! [`earliest_arrivals`] against a brute-force search on random small
-//! timetables: for every number of transfers, the earliest arrival is the
-//! same, and every journey returned is one a passenger can actually make.
+//! [`earliest_arrivals`] and [`latest_departures`] against a brute-force
+//! search on random small timetables: for every number of transfers, the
+//! earliest arrival (the latest departure) is the same, and every journey
+//! returned is one a passenger can actually make.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap, HashSet};
@@ -8,8 +9,8 @@ use std::collections::{BTreeSet, BinaryHeap, HashSet};
 use drevo::error::Result;
 use drevo::model::{Direction, Edge, Properties};
 use drevo::timetable::{
-    earliest_arrivals, Endpoint, HopFields, Journey, LegMode, ServiceDay, TimetableOptions,
-    WalkFields,
+    earliest_arrivals, latest_departures, Endpoint, HopFields, Journey, LegMode, ServiceDay,
+    TimetableOptions, WalkFields,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -107,6 +108,65 @@ fn plan(net: &Network) -> Result<Vec<Journey>> {
             Ok(())
         },
     )
+}
+
+fn plan_back(net: &Network, arrive_by: i64) -> Result<Vec<Journey>> {
+    let edges = net.edges();
+    latest_departures(
+        &net.starts,
+        &net.ends,
+        arrive_by,
+        &net.options,
+        &|id, dir, visit: &mut dyn FnMut(&Edge)| {
+            assert_eq!(dir, Direction::Incoming);
+            edges.iter().filter(|e| e.to_id == id).for_each(visit);
+            Ok(())
+        },
+    )
+}
+
+/// `net` seen in a mirror of time, for "be there by `arrive_by`": every trip
+/// runs backwards with its times negated, footpaths point the other way,
+/// the ends are the starts, and the journey leaves at `-arrive_by`. The
+/// earliest arrival in the mirror is the latest departure in `net`, negated.
+fn mirrored(net: &Network, arrive_by: i64) -> Network {
+    Network {
+        stops: net.stops,
+        trips: net
+            .trips
+            .iter()
+            .map(|t| Trip {
+                id: t.id,
+                service: t.service,
+                calls: t
+                    .calls
+                    .iter()
+                    .rev()
+                    .map(|&(stop, arrive, depart)| (stop, -depart, -arrive))
+                    .collect(),
+            })
+            .collect(),
+        walks: net
+            .walks
+            .iter()
+            .map(|&(from, to, s)| (to, from, s))
+            .collect(),
+        starts: net.ends.clone(),
+        ends: net.starts.clone(),
+        options: TimetableOptions {
+            depart_at: -arrive_by,
+            days: net
+                .options
+                .days
+                .iter()
+                .map(|d| ServiceDay {
+                    offset: -d.offset,
+                    services: d.services.clone(),
+                })
+                .collect(),
+            ..net.options.clone()
+        },
+    }
 }
 
 /// A passenger at a stop, or on a trip, in the brute-force search.
@@ -260,15 +320,43 @@ fn brute_force(net: &Network) -> Vec<Option<i64>> {
     best
 }
 
+/// The time a journey was asked for.
+#[derive(Debug, Clone, Copy)]
+enum Asked {
+    /// Leave no earlier than this.
+    DepartAt(i64),
+    /// Be there no later than this.
+    ArriveBy(i64),
+}
+
 /// Checks that a journey is one a passenger can make on `net`.
-fn check_journey(net: &Network, j: &Journey) {
+fn check_journey(net: &Network, j: &Journey, asked: Asked) {
     let o = &net.options;
     let legs = &j.legs;
     assert!(legs.len() >= 2, "{j:?}");
     assert_eq!(legs[0].mode, LegMode::Access, "{j:?}");
     assert_eq!(legs.last().unwrap().mode, LegMode::Egress, "{j:?}");
     assert_eq!(legs[0].depart, j.depart_at, "{j:?}");
-    assert!(j.depart_at >= o.depart_at, "{j:?}");
+    match asked {
+        Asked::DepartAt(t) => {
+            assert!(j.depart_at >= t, "{j:?}");
+            if let Some(d) = o.max_duration {
+                assert!(
+                    j.arrive_at <= t + d,
+                    "within maxDuration of departAt: {j:?}"
+                );
+            }
+        }
+        Asked::ArriveBy(t) => {
+            assert!(j.arrive_at <= t, "there by {t}: {j:?}");
+            if let Some(d) = o.max_duration {
+                assert!(
+                    j.depart_at >= t - d,
+                    "within maxDuration of arriveBy: {j:?}"
+                );
+            }
+        }
+    }
     assert_eq!(legs.last().unwrap().arrive, j.arrive_at, "{j:?}");
     let start = legs[0].to.unwrap();
     let access = net
@@ -459,7 +547,7 @@ proptest! {
             prop_assert_eq!(got, expected[t + 1], "at most {} transfers on {:?}: {:?}", t, net, journeys);
         }
         for j in &journeys {
-            check_journey(&net, j);
+            check_journey(&net, j, Asked::DepartAt(net.options.depart_at));
         }
         // Pareto: strictly earlier with every extra transfer, ordered by arrival.
         let arrivals: Vec<i64> = journeys.iter().map(|j| j.arrive_at).collect();
@@ -470,5 +558,35 @@ proptest! {
             prop_assert!(pair[0].transfers > pair[1].transfers, "{:?}", journeys);
         }
         let _ = net.stops;
+    }
+
+    #[test]
+    fn latest_departure_per_transfer_count_matches_brute_force(
+        net in network(),
+        arrive_by in 100i64..900,
+    ) {
+        let journeys = plan_back(&net, arrive_by).expect("plan");
+        // The brute force leaves the mirrored network at `-arrive_by`; its
+        // earliest arrival there is the latest departure here.
+        let expected = brute_force(&mirrored(&net, arrive_by));
+        for t in 0..=net.options.max_transfers {
+            let got = journeys.iter().filter(|j| j.transfers <= t).map(|j| j.depart_at).max();
+            prop_assert_eq!(
+                got,
+                expected[t + 1].map(|a| -a),
+                "at most {} transfers by {} on {:?}: {:?}", t, arrive_by, net, journeys
+            );
+        }
+        for j in &journeys {
+            check_journey(&net, j, Asked::ArriveBy(arrive_by));
+        }
+        // Pareto: strictly later with every extra transfer, the latest first.
+        let departures: Vec<i64> = journeys.iter().map(|j| j.depart_at).collect();
+        let transfers: BTreeSet<usize> = journeys.iter().map(|j| j.transfers).collect();
+        prop_assert_eq!(transfers.len(), journeys.len(), "one journey per transfer count");
+        for pair in journeys.windows(2) {
+            prop_assert!(pair[0].depart_at > pair[1].depart_at, "{:?}", departures);
+            prop_assert!(pair[0].transfers > pair[1].transfers, "{:?}", journeys);
+        }
     }
 }
