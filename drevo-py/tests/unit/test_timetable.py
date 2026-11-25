@@ -83,3 +83,42 @@ def test_bad_options_raise_a_cypher_error(drevo_db: drevo.Drevo, stops: dict[str
             "YIELD arriveAt RETURN arriveAt",
             {"n": stops["central"]},
         )
+
+
+_PLAN_BY = (
+    "MATCH (a:Stop {name: $from}), (d:Stop {name: $to}) "
+    "CALL drevo.path.timetable([{node: a, cost: $access}], [{node: d, cost: 60}], "
+    "{arriveBy: $by, days: [{offset: 0, services: [1]}], "
+    "walk: {relTypes: ['WALK'], cost: 's'}, minTransfer: 60}) "
+    "YIELD arriveAt, departAt, transfers, legs "
+    "RETURN arriveAt, departAt, transfers, legs"
+)
+
+
+def test_arrive_by_leaves_as_late_as_possible(drevo_db: drevo.Drevo, stops: dict[str, str]) -> None:
+    # Trip 12 reaches the park at 30000, too late to walk to the zoo by then.
+    rows = drevo_db.execute(
+        _PLAN_BY, {"from": stops["central"], "to": stops["zoo"], "access": 240, "by": 30000}
+    ).rows
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["arriveAt"], row["departAt"], row["transfers"]) == (29640, 28560, 0)
+    assert [leg["mode"] for leg in row["legs"]] == ["access", "ride", "walk", "egress"]
+    assert row["legs"][1]["trip"] == 11
+    later = drevo_db.execute(
+        _PLAN_BY, {"from": stops["central"], "to": stops["zoo"], "access": 240, "by": 30240}
+    ).rows
+    assert [(r["departAt"], r["legs"][1]["trip"]) for r in later] == [(29160, 12)]
+
+
+def test_arrive_by_and_depart_at_together_raise_a_cypher_error(
+    drevo_db: drevo.Drevo, stops: dict[str, str]
+) -> None:
+    with pytest.raises(drevo.CypherError, match="exclude each other"):
+        drevo_db.execute(
+            "MATCH (a:Stop {name: $n}) "
+            "CALL drevo.path.timetable([{node: a, cost: 0}], [], "
+            "{departAt: 0, arriveBy: 100, days: []}) "
+            "YIELD arriveAt RETURN arriveAt",
+            {"n": stops["central"]},
+        )
