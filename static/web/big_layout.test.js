@@ -128,7 +128,7 @@ test("overlappingPairs treats touching boxes as apart and honours the offset", (
       { ...box, x: 0, y: 0 },
       { ...box, x: 100, y: 0 },
     ]),
-    0
+    0,
   );
   // Same centres 40px apart vertically: they overlap, until one box hangs
   // 20px lower than its node.
@@ -137,14 +137,14 @@ test("overlappingPairs treats touching boxes as apart and honours the offset", (
       { ...box, x: 0, y: 0 },
       { ...box, x: 0, y: 40 },
     ]),
-    1
+    1,
   );
   assert.equal(
     overlappingPairs([
       { ...box, x: 0, y: 0 },
       { ...box, x: 0, y: 40, offsetY: 20 },
     ]),
-    0
+    0,
   );
 });
 
@@ -181,7 +181,7 @@ test("every node gets a finite position under its own id", () => {
   assert.equal(positions.length, nodes.length);
   assert.deepEqual(
     positions.map((p) => p.id),
-    nodes.map((n) => n.id)
+    nodes.map((n) => n.id),
   );
   for (const p of positions) {
     assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), `node ${p.id} has a position`);
@@ -267,7 +267,7 @@ test("related nodes end up closer than unrelated ones", () => {
   unrelated /= samples;
   assert.ok(
     linked < unrelated * 0.5,
-    `mean edge ${Math.round(linked)}px vs mean pair ${Math.round(unrelated)}px`
+    `mean edge ${Math.round(linked)}px vs mean pair ${Math.round(unrelated)}px`,
   );
 });
 
@@ -289,7 +289,10 @@ test("the layout stays compact: its area is a small multiple of the boxes", () =
     covered += (b.right - b.left) * (b.bottom - b.top);
   }
   const area = (right - left) * (bottom - top);
-  assert.ok(area <= covered * 8, `area is ${(area / covered).toFixed(1)}× the boxes`);
+  // The groups of this graph are islands with room between them, packed as
+  // circles: about twice the area one even disc of the same nodes takes
+  // (4×), the price of seeing the groups.
+  assert.ok(area <= covered * 10, `area is ${(area / covered).toFixed(1)}× the boxes`);
 });
 
 test("the same graph is laid out the same way every time", () => {
@@ -368,7 +371,10 @@ test("adding a node to a laid-out graph keeps the others where they are", () => 
     assert.ok(d < 400, `${id} is ${Math.round(d)}px from the node it was expanded from`);
   }
   assert.equal(bruteOverlaps(placedBoxes(again, second.positions())), 0);
-  assert.ok(units < run(createLayout(nodes, edges)), "an update takes fewer units than a fresh layout");
+  assert.ok(
+    units < run(createLayout(nodes, edges)),
+    "an update takes fewer units than a fresh layout",
+  );
 });
 
 test("5000 nodes are laid out in seconds, in short units", () => {
@@ -389,5 +395,117 @@ test("5000 nodes are laid out in seconds, in short units", () => {
   // CI runner.
   assert.ok(total < 20000, `5000 nodes took ${total}ms`);
   assert.ok(longest < 3000, `the longest unit took ${longest}ms`);
+  assert.equal(bruteOverlaps(placedBoxes(nodes, layout.positions())), 0);
+});
+
+// ── Groups (#854) ───────────────────────────────────────────────────────
+// A graph made of `groups` groups of `size` nodes: each node is related to
+// a few nodes of its own group, and a few relationships join the groups.
+function groupedGraph(groups, size, seed) {
+  const rand = rng(seed);
+  const nodes = [];
+  const edges = [];
+  for (let g = 0; g < groups; g++) {
+    for (let i = 0; i < size; i++) {
+      const id = g * size + i;
+      nodes.push({
+        id,
+        group: g,
+        ...nodeBox(22 + Math.floor(rand() * 20), 40 + Math.floor(rand() * 80)),
+      });
+      if (i === 0) continue;
+      for (let k = 0; k < 2; k++)
+        edges.push({ source: id, target: g * size + Math.floor(rand() * i) });
+    }
+  }
+  for (let g = 1; g < groups; g++) {
+    edges.push({ source: g * size, target: Math.floor(rand() * g) * size + 1 });
+  }
+  return { nodes, edges };
+}
+
+function centres(nodes, at) {
+  const sums = new Map();
+  for (const n of nodes) {
+    const p = at.get(n.id);
+    const s = sums.get(n.group) || { x: 0, y: 0, count: 0 };
+    s.x += p.x;
+    s.y += p.y;
+    s.count += 1;
+    sums.set(n.group, s);
+  }
+  return new Map([...sums].map(([g, s]) => [g, { x: s.x / s.count, y: s.y / s.count }]));
+}
+
+test("each group of related nodes is laid out as an island of its own", () => {
+  const { nodes, edges } = groupedGraph(8, 60, 21);
+  const layout = createLayout(nodes, edges);
+  run(layout);
+  const at = new Map(layout.positions().map((p) => [p.id, p]));
+  const centre = centres(nodes, at);
+  for (const n of nodes) {
+    const own = distance(at.get(n.id), centre.get(n.group));
+    for (const [g, c] of centre) {
+      if (g === n.group) continue;
+      assert.ok(
+        own < distance(at.get(n.id), c),
+        `node ${n.id} of group ${n.group} lies nearer the centre of group ${g}`,
+      );
+    }
+  }
+  // The islands do not touch: the discs around the groups' boxes stay apart.
+  const reach = new Map();
+  for (const n of nodes) {
+    const r = distance(at.get(n.id), centre.get(n.group)) + Math.hypot(n.width, n.height) / 2;
+    reach.set(n.group, Math.max(reach.get(n.group) || 0, r));
+  }
+  for (const [a, ca] of centre) {
+    for (const [b, cb] of centre) {
+      if (a < b) {
+        assert.ok(distance(ca, cb) > reach.get(a) + reach.get(b), `groups ${a} and ${b} touch`);
+      }
+    }
+  }
+  assert.equal(bruteOverlaps(placedBoxes(nodes, layout.positions())), 0);
+});
+
+test("on a graph of groups a relationship is far shorter than the distance between two nodes", () => {
+  const { nodes, edges } = groupedGraph(10, 50, 22);
+  const layout = createLayout(nodes, edges);
+  run(layout);
+  const at = new Map(layout.positions().map((p) => [p.id, p]));
+  let linked = 0;
+  for (const e of edges) linked += distance(at.get(e.source), at.get(e.target));
+  linked /= edges.length;
+  let pairs = 0;
+  let count = 0;
+  for (let i = 0; i < nodes.length; i += 7) {
+    for (let j = i + 1; j < nodes.length; j += 11) {
+      pairs += distance(at.get(i), at.get(j));
+      count += 1;
+    }
+  }
+  pairs /= count;
+  assert.ok(
+    linked < pairs * 0.2,
+    `mean edge ${Math.round(linked)}px vs mean pair ${Math.round(pairs)}px`,
+  );
+});
+
+test("nodes with no relationship are kept together, apart from the groups", () => {
+  const { nodes, edges } = groupedGraph(4, 80, 23);
+  for (let i = 0; i < 120; i++) nodes.push({ id: 1000 + i, group: "alone", ...nodeBox(22, 70) });
+  const layout = createLayout(nodes, edges);
+  run(layout);
+  const at = new Map(layout.positions().map((p) => [p.id, p]));
+  const centre = centres(nodes, at);
+  for (const n of nodes) {
+    if (n.group !== "alone") continue;
+    const own = distance(at.get(n.id), centre.get("alone"));
+    for (const [g, c] of centre) {
+      if (g !== "alone")
+        assert.ok(own < distance(at.get(n.id), c), `node ${n.id} lies among group ${g}`);
+    }
+  }
   assert.equal(bruteOverlaps(placedBoxes(nodes, layout.positions())), 0);
 });
