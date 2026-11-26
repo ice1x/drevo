@@ -387,6 +387,28 @@ async fn ui_label_chips_have_filter_and_show_all_toggle() {
         .contains("function visibleKinds"));
 }
 
+// Relationship-type chips (#858): a chip per type on the canvas, which hides
+// or shows the edges of that type, built from the tested helpers.
+#[tokio::test]
+async fn ui_relationship_type_chips_hide_and_show_edges() {
+    let app = make_app();
+    let (_, _, idx) = get(&app, "/ui").await;
+    let idx = String::from_utf8(idx).expect("utf-8");
+    assert!(
+        idx.contains("id=\"type-chips\""),
+        "index.html must contain #type-chips"
+    );
+    let (_, _, app_js) = get(&app, "/ui/app.js").await;
+    let app_js = String::from_utf8(app_js).expect("utf-8");
+    assert!(app_js.contains("DrevoGraphMath.relationshipTypes("));
+    assert!(app_js.contains("DrevoGraphMath.toggleType("));
+    assert!(app_js.contains("edge.type-hidden"));
+    let (_, _, gm) = get(&app, "/ui/graph_math.js").await;
+    let gm = String::from_utf8(gm).expect("utf-8");
+    assert!(gm.contains("function relationshipTypes"));
+    assert!(gm.contains("function toggleType"));
+}
+
 // Inspector (#622): property values go through the tested formatter, long
 // text is clipped, and a relationship's ends are links to their nodes.
 #[tokio::test]

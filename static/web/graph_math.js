@@ -1,5 +1,6 @@
 // drevo browser — pure graph helpers (layout geometry, node labels, which
-// label chips to show, what nodes are coloured by, hubs and label sizes),
+// label chips to show, what nodes are coloured by, hubs and label sizes,
+// the relationship-type chips),
 // split out of app.js so they can be unit-tested under `node --test` with no
 // DOM and no Cytoscape (see graph_math.test.js). The geometry drives the
 // interactive layout, so a regression here is a visible UI bug — hence a
@@ -172,6 +173,30 @@
     return Math.max(11, Math.min(44, Math.round(11 / z)));
   }
 
+  // The relationship types among `edges` (`{kind}`), as `[type, count]`
+  // pairs, most common first, ties by type. An edge with no type counts as
+  // "(no kind)", the name the inspector shows for it.
+  //
+  //   relationshipTypes([{kind: "IMPORTS"}, {kind: "COVERS"}, {kind: "COVERS"}])
+  //     → [["COVERS", 2], ["IMPORTS", 1]]
+  function relationshipTypes(edges) {
+    const counts = new Map();
+    for (const e of edges) {
+      const type = e.kind || "(no kind)";
+      counts.set(type, (counts.get(type) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  }
+
+  // The set of hidden relationship types after a click on `type`'s chip: a
+  // new set, with `type` hidden if it was shown and shown if it was hidden.
+  function toggleType(hidden, type) {
+    const next = new Set(hidden);
+    if (next.has(type)) next.delete(type);
+    else next.add(type);
+    return next;
+  }
+
   // The largest overview sample the node limit field accepts.
   const MAX_NODE_LIMIT = 5000;
 
@@ -196,5 +221,7 @@
     colorCandidates,
     colorValue,
     legendEntries,
+    relationshipTypes,
+    toggleType,
   };
 });

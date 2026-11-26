@@ -356,6 +356,7 @@ mod tests {
             "id=\"ask-button\"",
             "id=\"kind-filter\"",
             "id=\"kind-more\"",
+            "id=\"type-chips\"",
             "id=\"color-by\"",
             "id=\"color-legend\"",
             "id=\"stop-request\"",

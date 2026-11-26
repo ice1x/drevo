@@ -459,6 +459,19 @@ body {
   font-variant-numeric: tabular-nums;
 }
 .kind-chip.active .kind-chip-count { color: rgba(255, 255, 255, 0.85); }
+/* Relationship-type chips (#858): no colour dot; a hidden type is struck
+   through and dimmed. */
+.type-chips-title {
+  margin: 0.9rem 0 0.45rem;
+  font-size: 0.78em;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.type-chips .kind-chip-name::before { display: none; }
+.type-chips .kind-chip.off { opacity: 0.55; }
+.type-chips .kind-chip.off .kind-chip-name { text-decoration: line-through; }
 
 /* ── Cypher result table (the Table view) ── */
 .cypher-table {
