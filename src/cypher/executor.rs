@@ -17432,14 +17432,49 @@ fn arith(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value>
         return Ok(Value::Null);
     }
     if op == BinaryOp::Add {
-        if let (Value::String(a), Value::String(b)) = (&lhs, &rhs) {
-            return Ok(Value::String(format!("{}{}", a, b)));
-        }
-        if let (Value::List(mut a), Value::List(b)) = (lhs.clone(), rhs.clone()) {
-            a.extend(b);
-            return Ok(Value::List(a));
+        // `+` on lists: list + list joins them, list + value appends the
+        // value, value + list prepends it (a string included).
+        match (lhs, rhs) {
+            (Value::List(mut a), Value::List(b)) => {
+                a.extend(b);
+                return Ok(Value::List(a));
+            }
+            (Value::List(mut a), b) => {
+                a.push(b);
+                return Ok(Value::List(a));
+            }
+            (a, Value::List(mut b)) => {
+                b.insert(0, a);
+                return Ok(Value::List(b));
+            }
+            (lhs, rhs) => {
+                // A string with a number or a boolean: the other side goes
+                // in as toString() writes it.
+                if matches!(lhs, Value::String(_)) || matches!(rhs, Value::String(_)) {
+                    if let (Some(a), Some(b)) = (concat_text(&lhs), concat_text(&rhs)) {
+                        return Ok(Value::String(a + &b));
+                    }
+                }
+                return arith_numbers(op, lhs, rhs, span);
+            }
         }
     }
+    arith_numbers(op, lhs, rhs, span)
+}
+
+/// The text a value adds to a string under `+`: what `toString()` gives
+/// for a string, a number or a boolean; `None` for anything else.
+fn concat_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Integer(i) => Some(i.to_string()),
+        Value::Float(f) => Some(format_float(*f)),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn arith_numbers(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value> {
     let a = lhs.as_number();
     let b = rhs.as_number();
     let (Some(a), Some(b)) = (a, b) else {

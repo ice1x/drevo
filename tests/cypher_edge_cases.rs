@@ -372,33 +372,94 @@ fn list_literal_preserves_embedded_null() {
     }
 }
 
-// ===== String coercion rejection ============================================
+// ===== + with a string or a list (issue #859) ===============================
+//
+// Neo4j: "When `+` is used to concatenate a STRING with a non-STRING value
+// (excluding LIST values), the non-STRING value is implicitly converted to a
+// STRING using toString()", and "The + operator can add elements to the
+// beginning or end of a LIST value" (Cypher manual, string operators / list
+// expressions).
 
 #[test]
-fn string_coercion_in_arithmetic_is_rejected() {
+fn plus_concatenates_a_string_with_a_number_or_a_boolean() {
     let db = db();
-    // 1 + '2' must be a type error, NEVER the string "12" and NEVER 3. Cypher
-    // does not coerce strings to numbers in arithmetic.
-    let err = try_exec("RETURN 1 + '2' AS x", &db).expect_err("must error");
-    assert!(
-        matches!(err, ExecError::TypeMismatch { .. }),
-        "expected TypeMismatch, got {:?}",
-        err
-    );
+    let cases = [
+        ("RETURN 'f' + 1 AS x", "f1"),
+        ("RETURN 1 + '2' AS x", "12"),
+        ("RETURN '2' + 1 AS x", "21"),
+        ("RETURN 'f' + 1.5 AS x", "f1.5"),
+        ("RETURN 2.0 + 'f' AS x", "2.0f"),
+        ("RETURN 'x' + true AS x", "xtrue"),
+        ("RETURN 'a' + 'b' AS x", "ab"),
+    ];
+    for (query, want) in cases {
+        assert_eq!(
+            *scalar(&run(query, &db)),
+            Value::String(want.into()),
+            "{query}"
+        );
+    }
+    // A string with null is null.
+    assert_eq!(*scalar(&run("RETURN 'f' + null AS x", &db)), Value::Null);
+}
 
-    // The symmetric case errors too.
-    assert!(matches!(
-        try_exec("RETURN '2' + 1 AS x", &db),
-        // '2' + 1 — string LHS: this is string concatenation in Cypher only
-        // when BOTH sides are strings; a String + Integer is a type error.
-        Err(ExecError::TypeMismatch { .. })
-    ));
+#[test]
+fn plus_never_turns_a_string_into_a_number() {
+    let db = db();
+    // 1 + '2' is the string "12" — never the number 3.
+    assert_ne!(*scalar(&run("RETURN 1 + '2' AS x", &db)), Value::Integer(3));
+    // Other arithmetic over a string is still a type error.
+    for query in ["RETURN 1 - '2' AS x", "RETURN '2' * 3 AS x"] {
+        assert!(
+            matches!(try_exec(query, &db), Err(ExecError::TypeMismatch { .. })),
+            "{query} must be a type error"
+        );
+    }
+}
 
-    // Sanity: string + string IS concatenation (so the rejection above is
-    // about *coercion*, not a blanket ban on `+` over strings).
+#[test]
+fn plus_adds_an_element_to_either_end_of_a_list() {
+    let db = db();
+    let ints = |xs: &[i64]| Value::List(xs.iter().map(|&i| Value::Integer(i)).collect());
     assert_eq!(
-        *scalar(&run("RETURN 'a' + 'b' AS x", &db)),
-        Value::String("ab".into())
+        *scalar(&run("RETURN [1, 2] + 3 AS x", &db)),
+        ints(&[1, 2, 3])
+    );
+    assert_eq!(
+        *scalar(&run("RETURN 0 + [1, 2] AS x", &db)),
+        ints(&[0, 1, 2])
+    );
+    assert_eq!(
+        *scalar(&run("RETURN [1, 2] + [3] AS x", &db)),
+        ints(&[1, 2, 3])
+    );
+    // A string and a list: the string is one more element.
+    assert_eq!(
+        *scalar(&run("RETURN 'Cypher' + ['Java'] AS x", &db)),
+        Value::List(vec![
+            Value::String("Cypher".into()),
+            Value::String("Java".into())
+        ])
+    );
+    // A list inside a list stays one element.
+    assert_eq!(
+        *scalar(&run("RETURN [[1]] + [[2]] AS x", &db)),
+        Value::List(vec![ints(&[1]), ints(&[2])])
+    );
+}
+
+#[test]
+fn plus_builds_a_name_while_creating_nodes() {
+    let db = db();
+    run(
+        "UNWIND range(1, 3) AS i CREATE (:File {name: 'f' + i})",
+        &db,
+    );
+    let rows = run("MATCH (f:File) RETURN f.name AS name ORDER BY name", &db);
+    let names: Vec<Value> = rows.into_iter().map(|r| r[0].clone()).collect();
+    assert_eq!(
+        names,
+        ["f1", "f2", "f3"].map(|s| Value::String(s.into())).to_vec()
     );
 }
 

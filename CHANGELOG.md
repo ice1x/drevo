@@ -315,6 +315,15 @@ history and the in-repo issue tracker; format loosely follows
   one in four; the layout takes 2.7 s instead of 4.1 s. The picture takes
   about twice the area, the room between the groups.
 
+- **Cypher: `+` joins a string with a number or a boolean, and adds an
+  element to either end of a list** (issue #859). `'f' + 1`, `1 + '2'` and
+  `'x' + true` were type errors; they now give `"f1"`, `"12"` and `"xtrue"`,
+  the other side written as `toString()` writes it. So
+  `UNWIND range(1, 30) AS i CREATE (:File {name: 'f' + i})` works.
+  `[1, 2] + 3` gives `[1, 2, 3]`, `0 + [1, 2]` gives `[0, 1, 2]`, and a
+  string next to a list is one more element. Null still gives null; `-`,
+  `*` and the other operators still refuse a string.
+
 - **Two stores whose logs share a directory keep their own identity and
   stamps** (issue #826). A durable store's sidecars were named after the
   directory (`origin.json`, `stamps.jsonl`, `tombstones.json`,
