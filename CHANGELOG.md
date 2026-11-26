@@ -303,6 +303,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Web UI: a hub stands at the centre of its neighbours instead of pulling
+  them into one knot** (issue #856). A hub is a node with at least 20
+  relationships and at least √(number of nodes) of them, such as a project's
+  `types.py` or its layer. It is now left out of the islands. Its
+  relationships count as a single one when the groups are found, and once
+  the islands are packed it is placed at the centre of the nodes it links to.
+  Inside a large island, the smaller groups found among its nodes are pulled
+  together as patches. On the live graph (4596 nodes, 10898 relationships)
+  the median relationship between two ordinary nodes of the `providers`
+  island went from 8.8 to 6.1 node widths, and from 3.7 to 3.2 over the
+  whole graph. A hub's own relationships now fan out from the middle of its
+  neighbours, so they are longer than before.
 - **Web UI: a large graph is laid out as islands of related nodes** (issue
   #854). The overview of thousands of nodes came out as one even disc, its
   relationships running across it in every direction. A fresh layout now

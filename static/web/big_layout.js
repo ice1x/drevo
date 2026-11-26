@@ -4,7 +4,9 @@
 //
 // A fresh layout first splits the graph into groups of nodes related more
 // among themselves than to the rest (Louvain, in this file), lays each group
-// out as an island and packs the islands with room between them.
+// out as an island and packs the islands with room between them. A hub, a
+// node much of the graph links to, then stands at the centre of its
+// neighbours instead of pulling them all around itself.
 //
 // The positions come from two vendored libraries, and this file only
 // describes the graph to them:
@@ -79,6 +81,18 @@
   // groups.
   const GROUP_GAP = 40;
   const PACK_TICKS = 300;
+
+  // A hub — a node with at least this many relationships, and at least
+  // HUB_SCALE × √(number of nodes) of them — is left out of the groups and
+  // stands at the centre of the nodes it links to.
+  const HUB_MIN_DEGREE = 20;
+  const HUB_SCALE = 1;
+
+  // In a piece of at least CLUMP_FROM nodes, each node is also pulled, this
+  // strongly, towards the centre of the smaller group it belongs to inside
+  // the piece, so those groups stay together as patches of the island.
+  const CLUMP = 0.05;
+  const CLUMP_FROM = 50;
 
   function isLargeGraph(nodeCount) {
     return nodeCount >= LARGE_GRAPH_NODES;
@@ -193,6 +207,14 @@
         .force("charge", d3.forceManyBody().theta(1.2))
         .force("x", d3.forceX(0).strength(0.05))
         .force("y", d3.forceY(0).strength(0.05));
+      if (CLUMP > 0 && bodies.length >= CLUMP_FROM) {
+        const at = new Map(bodies.map((b, i) => [b, i]));
+        const kin = groupsOf(
+          bodies.length,
+          links.map((l) => [at.get(l.source), at.get(l.target)]),
+        );
+        simulation.force("clump", clump(kin, CLUMP));
+      }
     }
 
     function makeRoom() {
@@ -345,23 +367,50 @@
   // of nodes comes out as an even disc, its relationships running across it
   // in every direction.
   //
+  // A hub — a node a large part of the graph links to, such as a project's
+  // `types.py` or its layer — is left out of the islands: pulled towards it,
+  // all the nodes it touches would end up in one knot around it, their own
+  // relationships running across the knot. Once the islands are packed, each
+  // hub stands at the centre of the nodes it links to.
+  //
   // A graph where some nodes are placed is only completed (pieceLayout).
   function createLayout(nodes, edges) {
     if (nodes.length === 0 || nodes.some(isPlaced)) return pieceLayout(nodes, edges);
     const index = new Map(nodes.map((n, i) => [n.id, i]));
     const pairs = [];
+    const degree = new Array(nodes.length).fill(0);
     for (const e of edges || []) {
       const a = index.get(e.source);
       const b = index.get(e.target);
-      if (a !== undefined && b !== undefined && a !== b) pairs.push([a, b]);
+      if (a !== undefined && b !== undefined && a !== b) {
+        pairs.push([a, b]);
+        degree[a] += 1;
+        degree[b] += 1;
+      }
     }
-    const group = groupsOf(nodes.length, pairs);
-    const members = [];
+    const hubDegree = Math.max(HUB_MIN_DEGREE, HUB_SCALE * Math.sqrt(nodes.length));
+    const hub = degree.map((d) => d >= hubDegree);
+    // A hub's relationships count as one relationship spread over all of
+    // them, so the hub does not make one group of everything it touches.
+    const weighted = pairs.map(([a, b]) => {
+      if (!hub[a] && !hub[b]) return [a, b, 1];
+      return [a, b, 1 / Math.max(hub[a] ? degree[a] : 0, hub[b] ? degree[b] : 0)];
+    });
+    const group = groupsOf(nodes.length, weighted);
+    const byGroup = new Map();
     for (let i = 0; i < nodes.length; i++) {
-      if (!members[group[i]]) members[group[i]] = [];
-      members[group[i]].push(i);
+      if (hub[i]) continue;
+      if (!byGroup.has(group[i])) byGroup.set(group[i], []);
+      byGroup.get(group[i]).push(i);
     }
-    if (members.length === 1) return pieceLayout(nodes, edges);
+    const members = [...byGroup.values()];
+    const hubs = [];
+    for (let i = 0; i < nodes.length; i++) if (hub[i]) hubs.push(i);
+    if (members.length === 0 || (members.length === 1 && hubs.length === 0)) {
+      return pieceLayout(nodes, edges);
+    }
+    const groupOf = new Array(nodes.length).fill(-1);
+    members.forEach((list, g) => list.forEach((i) => (groupOf[i] = g)));
 
     const pieces = members.map((list) => {
       const inside = new Set(list.map((i) => nodes[i].id));
@@ -424,9 +473,9 @@
       spiral();
       const shared = new Map();
       for (const [a, b] of pairs) {
-        const ga = group[a];
-        const gb = group[b];
-        if (ga === gb) continue;
+        const ga = groupOf[a];
+        const gb = groupOf[b];
+        if (ga < 0 || gb < 0 || ga === gb) continue;
         const key = ga < gb ? ga * islands.length + gb : gb * islands.length + ga;
         shared.set(key, (shared.get(key) || 0) + 1);
       }
@@ -471,7 +520,32 @@
           };
         });
       });
+      // A hub stands at the centre of the nodes it links to.
+      for (const h of hubs) {
+        let x = 0;
+        let y = 0;
+        let k = 0;
+        for (const j of neighbours.get(h) || []) {
+          if (!out[j]) continue;
+          x += out[j].x;
+          y += out[j].y;
+          k += 1;
+        }
+        out[h] = { id: nodes[h].id, x: k > 0 ? x / k : 0, y: k > 0 ? y / k : 0 };
+      }
       return out;
+    }
+
+    const neighbours = new Map();
+    for (const [a, b] of pairs) {
+      if (hub[a] && !hub[b]) {
+        if (!neighbours.has(a)) neighbours.set(a, []);
+        neighbours.get(a).push(b);
+      }
+      if (hub[b] && !hub[a]) {
+        if (!neighbours.has(b)) neighbours.set(b, []);
+        neighbours.get(b).push(a);
+      }
     }
 
     let piecesDone = false;
@@ -530,21 +604,22 @@
   // index): Louvain, which moves each node to the neighbouring group that
   // raises the modularity most, merges the groups and starts over until
   // nothing moves. Nodes with no relationship form one group of their own.
+  // A pair may carry a weight as a third element (1 when it does not).
   // Returns the group of each node, numbered from 0.
   function groupsOf(n, pairs) {
     const degree = new Array(n).fill(0);
-    for (const [a, b] of pairs) {
-      degree[a] += 1;
-      degree[b] += 1;
-    }
+    let total = 0;
     let size = n;
     let adjacent = Array.from({ length: n }, () => new Map());
-    for (const [a, b] of pairs) {
-      adjacent[a].set(b, (adjacent[a].get(b) || 0) + 1);
-      adjacent[b].set(a, (adjacent[b].get(a) || 0) + 1);
+    for (const [a, b, w = 1] of pairs) {
+      degree[a] += 1;
+      degree[b] += 1;
+      adjacent[a].set(b, (adjacent[a].get(b) || 0) + w);
+      adjacent[b].set(a, (adjacent[b].get(a) || 0) + w);
+      total += 2 * w;
     }
     let member = Array.from({ length: n }, (_, i) => i);
-    const total = 2 * pairs.length || 1;
+    total = total || 1;
     for (let level = 0; level < 20; level++) {
       const weight = adjacent.map((m) => {
         let sum = 0;
@@ -605,6 +680,31 @@
       if (!number.has(key)) number.set(key, number.size);
       return number.get(key);
     });
+  }
+
+  // A d3 force that pulls each body towards the centre of the bodies of its
+  // group (`kin[i]` is the group of body i).
+  function clump(kin, strength) {
+    let bodies = [];
+    function force(alpha) {
+      const sum = new Map();
+      bodies.forEach((b, i) => {
+        const s = sum.get(kin[i]) || { x: 0, y: 0, n: 0 };
+        s.x += b.x;
+        s.y += b.y;
+        s.n += 1;
+        sum.set(kin[i], s);
+      });
+      bodies.forEach((b, i) => {
+        const s = sum.get(kin[i]);
+        b.vx += (s.x / s.n - b.x) * strength * alpha;
+        b.vy += (s.y / s.n - b.y) * strength * alpha;
+      });
+    }
+    force.initialize = (b) => {
+      bodies = b;
+    };
+    return force;
   }
 
   // Bodies that sit on exactly the same point give overlap removal no

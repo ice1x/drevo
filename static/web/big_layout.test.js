@@ -509,3 +509,97 @@ test("nodes with no relationship are kept together, apart from the groups", () =
   }
   assert.equal(bruteOverlaps(placedBoxes(nodes, layout.positions())), 0);
 });
+
+// ── Hubs (#856) ─────────────────────────────────────────────────────────
+// Small clusters of related files, where most files also link to the same
+// few hubs — a project's `types.py`, its layer, its task — and a share
+// `cross` of the files also to a file of another cluster.
+function hubbedGraph(clusters, size, hubs, seed, cross = 0) {
+  const rand = rng(seed);
+  const nodes = [];
+  const edges = [];
+  for (let h = 0; h < hubs; h++) nodes.push({ id: h, hub: true, ...nodeBox(54, 100) });
+  for (let c = 0; c < clusters; c++) {
+    for (let i = 0; i < size; i++) {
+      const id = hubs + c * size + i;
+      nodes.push({
+        id,
+        group: c,
+        ...nodeBox(22 + Math.floor(rand() * 12), 60 + Math.floor(rand() * 60)),
+      });
+      for (let h = 0; h < hubs; h++) if (rand() < 0.7) edges.push({ source: id, target: h });
+      if (i > 0) {
+        for (let k = 0; k < 2; k++)
+          edges.push({ source: id, target: hubs + c * size + Math.floor(rand() * i) });
+      }
+      if (rand() < cross) {
+        edges.push({ source: id, target: hubs + Math.floor(rand() * clusters * size) });
+      }
+    }
+  }
+  return { nodes, edges };
+}
+
+test("nodes most of the graph links to do not pull the others into one knot", () => {
+  const hubs = 6;
+  const { nodes, edges } = hubbedGraph(40, 8, hubs, 31, 0.3);
+  const layout = createLayout(nodes, edges);
+  run(layout);
+  const at = new Map(layout.positions().map((p) => [p.id, p]));
+  let linked = 0;
+  let count = 0;
+  for (const e of edges) {
+    if (e.source < hubs || e.target < hubs || e.source === e.target) continue;
+    linked += distance(at.get(e.source), at.get(e.target));
+    count += 1;
+  }
+  linked /= count;
+  let pairs = 0;
+  let sampled = 0;
+  for (let i = hubs; i < nodes.length; i += 3) {
+    for (let j = i + 1; j < nodes.length; j += 7) {
+      pairs += distance(at.get(i), at.get(j));
+      sampled += 1;
+    }
+  }
+  pairs /= sampled;
+  // Pulled towards the hubs, the files sit in one knot around them and
+  // their own relationships run across it (0.25 of the mean pair).
+  assert.ok(
+    linked < pairs * 0.21,
+    `mean file-to-file edge ${Math.round(linked)}px vs mean pair ${Math.round(pairs)}px`,
+  );
+  assert.equal(bruteOverlaps(placedBoxes(nodes, layout.positions())), 0);
+});
+
+test("a hub stands at the centre of the nodes it links to", () => {
+  const hubs = 6;
+  const { nodes, edges } = hubbedGraph(40, 8, hubs, 32);
+  const layout = createLayout(nodes, edges);
+  run(layout);
+  const at = new Map(layout.positions().map((p) => [p.id, p]));
+  const all = { x: 0, y: 0 };
+  for (const n of nodes) {
+    all.x += at.get(n.id).x / nodes.length;
+    all.y += at.get(n.id).y / nodes.length;
+  }
+  let spread = 0;
+  for (const n of nodes) spread += distance(at.get(n.id), all) / nodes.length;
+  for (let h = 0; h < hubs; h++) {
+    const centre = { x: 0, y: 0 };
+    let k = 0;
+    for (const e of edges) {
+      const other = e.target === h ? e.source : e.source === h ? e.target : null;
+      if (other === null) continue;
+      centre.x += at.get(other).x;
+      centre.y += at.get(other).y;
+      k += 1;
+    }
+    centre.x /= k;
+    centre.y /= k;
+    assert.ok(
+      distance(at.get(h), centre) < spread * 0.2,
+      `hub ${h} is ${Math.round(distance(at.get(h), centre))}px from the centre of its ${k} neighbours (mean spread ${Math.round(spread)}px)`,
+    );
+  }
+});
