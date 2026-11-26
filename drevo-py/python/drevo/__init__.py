@@ -41,6 +41,8 @@ from . import _drevo
 # patch its `__init_subclass__`-style hooks without confusing the
 # attribute re-exports above.
 from ._drevo import (  # type: ignore[attr-defined]
+    # READ access (#853).
+    AccessModeError,
     # Plain-data wrappers.
     BloatReport,
     CompactReport,
@@ -130,6 +132,7 @@ __all__ = [
     "CypherRelationship",
     "CypherResult",
     # Exceptions.
+    "AccessModeError",
     "ConflictError",
     "CypherError",
     "CypherSyntaxError",

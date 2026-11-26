@@ -13,17 +13,19 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use drevo::cypher::executor::{
-    ExecError, ExecResult, ExecStats, NodeValue, PathValue, RelationshipValue, Value,
+    Access, ExecError, ExecResult, ExecStats, NodeValue, PathValue, RelationshipValue, Value,
 };
 use drevo::cypher::parser::ParseError;
-use pyo3::exceptions::{PyOverflowError, PyTypeError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use crate::errors::{
-    map_err, CypherError, CypherSyntaxError, ParameterMissingError, QueryTimeoutError,
+    map_err, AccessModeError, CypherError, CypherSyntaxError, ParameterMissingError,
+    QueryTimeoutError,
 };
 
 /// A failed `execute`: the statement did not parse, or the executor failed.
@@ -41,10 +43,39 @@ pub(crate) fn map_cypher_err(failure: CypherFailure) -> PyErr {
             format!("statement exceeded the {limit_ms} ms statement timeout"),
             limit_ms,
         )),
+        CypherFailure::Exec(ExecError::ClientTimeout { limit_ms }) => QueryTimeoutError::new_err((
+            format!("statement exceeded the {limit_ms} ms timeout_ms the caller set"),
+            limit_ms,
+        )),
         CypherFailure::Exec(e @ ExecError::MissingParameter(_)) => {
             ParameterMissingError::new_err(e.to_string())
         }
+        CypherFailure::Exec(ExecError::AccessMode { message }) => AccessModeError::new_err(message),
         CypherFailure::Exec(e) => CypherError::new_err(e.to_string()),
+    }
+}
+
+/// The access an `access=` argument names: `"write"` (the default) or
+/// `"read"`, in any case (#853).
+pub(crate) fn access_from_py(access: &str) -> PyResult<Access> {
+    match access.to_ascii_lowercase().as_str() {
+        "write" => Ok(Access::Write),
+        "read" => Ok(Access::Read),
+        _ => Err(PyValueError::new_err(format!(
+            "access must be \"read\" or \"write\", got {access:?}"
+        ))),
+    }
+}
+
+/// The limit a `timeout_ms=` argument sets: `None` or `0` for none, else
+/// that many milliseconds (#853).
+pub(crate) fn timeout_from_py(timeout_ms: Option<i64>) -> PyResult<Option<Duration>> {
+    match timeout_ms {
+        None | Some(0) => Ok(None),
+        Some(ms) if ms > 0 => Ok(Some(Duration::from_millis(ms.unsigned_abs()))),
+        Some(ms) => Err(PyValueError::new_err(format!(
+            "timeout_ms must be a non-negative number of milliseconds, got {ms}"
+        ))),
     }
 }
 

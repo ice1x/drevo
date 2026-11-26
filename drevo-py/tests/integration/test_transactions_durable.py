@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 
+import pytest
 from faker import Faker
 
 import drevo
@@ -51,3 +52,36 @@ def test_readers_never_see_a_partial_transaction(disk_db: drevo.Drevo) -> None:
     assert seen, "the reader ran"
     assert all(c % 10 == 0 for c in seen), f"saw a partial transaction: {sorted(set(seen))}"
     assert disk_db.execute("MATCH (n:T) RETURN count(n) AS c")[0]["c"] == 50
+
+
+def test_an_agents_read_session_leaves_the_journal_as_it_was(tmp_db_path: str, fake: Faker) -> None:
+    """An AI agent reads a CBT journal (#853): its lookups work, a write it
+    attempts is refused, a transaction past its time limit is rolled back,
+    and after a reopen the journal holds exactly what the owner wrote."""
+    thoughts = [fake.sentence() for _ in range(4)]
+    with drevo.Drevo.open(tmp_db_path) as db:
+        with db.transaction() as tx:
+            for i, text in enumerate(thoughts):
+                tx.execute(
+                    "CREATE (:Thought {title: $t, text: $x, day: $d})",
+                    {"t": f"thought-{i}", "x": text, "d": i},
+                )
+
+        with db.transaction(access="read", timeout_ms=10_000) as agent:
+            rows = agent.execute("MATCH (t:Thought) WHERE t.day >= 2 RETURN t.text AS x ORDER BY x")
+            assert [r["x"] for r in rows] == sorted(thoughts[2:])
+            with pytest.raises(drevo.AccessModeError):
+                agent.execute("MATCH (t:Thought) SET t.reframed = true")
+        assert agent.closed
+
+        late = db.begin(timeout_ms=30)
+        late.execute("CREATE (:Thought {title: 'too late'})")
+        threading.Event().wait(0.08)
+        with pytest.raises(drevo.QueryTimeoutError):
+            late.commit()
+
+    with drevo.Drevo.open(tmp_db_path) as db:
+        got = db.execute(
+            "MATCH (t:Thought) RETURN t.title AS t, t.reframed AS r ORDER BY t", access="read"
+        )
+        assert [(r["t"], r["r"]) for r in got] == [(f"thought-{i}", None) for i in range(4)]

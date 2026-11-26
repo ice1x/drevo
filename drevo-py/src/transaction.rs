@@ -10,6 +10,13 @@
 //! may already hold part of that statement's writes), and any use of a
 //! closed transaction raises [`TransactionError`].
 //!
+//! `begin(access="read")` makes every statement a read (#853): a write, a
+//! schema change or a procedure with outside effects raises
+//! `AccessModeError` and closes the transaction. `begin(timeout_ms=...)`
+//! bounds the whole transaction: a statement running past it stops, and
+//! `execute` or `commit` after it raises `QueryTimeoutError`; either way the
+//! transaction is rolled back.
+//!
 //! The transaction holds only a [`Weak`] reference to the database, upgraded
 //! for the duration of each call: `Drevo.close()` waits for every strong
 //! reference to go away, so a live transaction object must never keep the
@@ -18,11 +25,12 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
+use drevo::cypher::executor::{Access, ClientDeadline};
 use drevo::native::{CommitError, NativeTxId, PrepareError, ResolveError};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
-use crate::cypher::{map_cypher_err, params_from_py, result_to_py, CypherResult};
+use crate::cypher::{map_cypher_err, params_from_py, result_to_py, CypherFailure, CypherResult};
 use crate::errors::{
     panic_to_pyerr, ConstraintViolation, HeuristicRollbackError, PreparedTransactionError,
     StorageError, TransactionConflict, TransactionError, UnknownGidError,
@@ -128,15 +136,33 @@ pub struct Transaction {
     db: Weak<NativeBackend>,
     /// `None` once committed, rolled back, or aborted by a failed statement.
     id: Mutex<Option<NativeTxId>>,
+    /// The access of every statement (#853).
+    access: Access,
+    /// When the transaction has to finish, if the caller set a limit.
+    deadline: Option<ClientDeadline>,
 }
 
 impl Transaction {
-    /// Begin a transaction on `db`.
-    pub(crate) fn begin(db: &Arc<NativeBackend>) -> Self {
+    /// Begin a transaction on `db` with `access`, finishing within `timeout`.
+    pub(crate) fn begin(
+        db: &Arc<NativeBackend>,
+        access: Access,
+        timeout: Option<std::time::Duration>,
+    ) -> Self {
         Self {
             db: Arc::downgrade(db),
+            deadline: timeout.map(|limit| db.client_deadline(limit)),
             id: Mutex::new(Some(db.begin_tx())),
+            access,
         }
+    }
+
+    /// The error for a transaction past its deadline, which is rolled back;
+    /// `None` while it has time left.
+    fn past_deadline(&self) -> Option<PyErr> {
+        let deadline = self.deadline.filter(ClientDeadline::expired)?;
+        self.abort();
+        Some(map_cypher_err(CypherFailure::Exec(deadline.error())))
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<NativeTxId>> {
@@ -187,7 +213,12 @@ impl Transaction {
             let params = params_from_py(params.as_ref())?;
             let db = self.db()?;
             let id = self.current()?;
-            match py.allow_threads(|| db.execute_cypher_in_tx(id, query, params)) {
+            if let Some(err) = self.past_deadline() {
+                return Err(err);
+            }
+            let (access, deadline) = (self.access, self.deadline);
+            match py.allow_threads(|| db.execute_cypher_in_tx(id, query, params, access, deadline))
+            {
                 Ok(result) => result_to_py(py, &result),
                 Err(failure) => {
                     self.abort();
@@ -198,10 +229,16 @@ impl Transaction {
     }
 
     /// Commit: apply every write atomically (one fsynced WAL batch). Raises
-    /// `TransactionConflict` if the graph changed since `begin()`.
+    /// `TransactionConflict` if the graph changed since `begin()`, and
+    /// `QueryTimeoutError`, rolling back, past the transaction's
+    /// `timeout_ms`.
     fn commit(&self, py: Python<'_>) -> PyResult<()> {
         guarded(|| {
             let db = self.db()?;
+            self.current()?;
+            if let Some(err) = self.past_deadline() {
+                return Err(err);
+            }
             let id = self.take()?;
             py.allow_threads(|| db.commit_tx(id))
                 .map_err(map_commit_err)
@@ -212,10 +249,15 @@ impl Transaction {
     /// it durably as prepared under `gid`, closing it. Finish it with
     /// `Drevo.commit_prepared(gid)` or `Drevo.rollback_prepared(gid)` — from
     /// any handle, also after a restart. While it is prepared, every other
-    /// write raises `TransactionConflict`.
+    /// write raises `TransactionConflict`. Past the transaction's
+    /// `timeout_ms` it raises `QueryTimeoutError` and rolls back instead.
     fn prepare(&self, py: Python<'_>, gid: &str) -> PyResult<()> {
         guarded(|| {
             let db = self.db()?;
+            self.current()?;
+            if let Some(err) = self.past_deadline() {
+                return Err(err);
+            }
             let id = self.take()?;
             py.allow_threads(|| db.prepare_tx(id, gid))
                 .map_err(map_prepare_err)

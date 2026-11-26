@@ -44,6 +44,8 @@ create_exception!(_drevo, CypherError, DrevoError);
 create_exception!(_drevo, CypherSyntaxError, CypherError);
 create_exception!(_drevo, QueryTimeoutError, CypherError);
 create_exception!(_drevo, ParameterMissingError, CypherError);
+// A READ statement or transaction tried to change the graph (#853).
+create_exception!(_drevo, AccessModeError, CypherError);
 // Explicit transactions (#554): an optimistic commit that lost the race is a
 // retryable `TransactionConflict`; a declared constraint the commit would
 // break is a `ConstraintViolation`, alongside `DuplicateTitleError` under
@@ -80,6 +82,7 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
         "ParameterMissingError",
         py.get_type::<ParameterMissingError>(),
     )?;
+    m.add("AccessModeError", py.get_type::<AccessModeError>())?;
     m.add("TransactionConflict", py.get_type::<TransactionConflict>())?;
     m.add("TransactionTooLarge", py.get_type::<TransactionTooLarge>())?;
     m.add("ConstraintViolation", py.get_type::<ConstraintViolation>())?;

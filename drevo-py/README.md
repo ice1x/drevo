@@ -193,6 +193,34 @@ with drevo.Drevo.open_in_memory() as db:
 - v1 scope: only `tx.execute` runs inside the transaction. The typed CRUD
   methods (`create_node`, …) stay autocommit on the handle.
 
+### Read-only statements and time limits
+
+`access="read"` runs a statement, or every statement of a transaction, that
+may not change anything. A write, a schema change or a procedure with effects
+outside the graph (`drevo.extract.*`, `drevo.events.post`, `drevo.tx.*`,
+`apoc.trigger.install`, …) raises `AccessModeError` (a `CypherError`) before
+it runs, and nothing is written. `MATCH`, full-text search and vector search
+with a given vector work as usual. `timeout_ms` stops a statement, or a whole
+transaction, after that many milliseconds with `QueryTimeoutError` and rolls
+the transaction back; `None` or `0` sets no limit. These are the same rules
+as Bolt's `mode: "r"` and `tx_timeout` on a drevo server.
+
+```python
+import drevo
+
+with drevo.Drevo.open_in_memory() as db:
+    db.execute("CREATE (:Thought {text: 'I always fail'})")
+
+    rows = db.execute("MATCH (t:Thought) RETURN t.text AS text", access="read")
+
+    with db.transaction(access="read", timeout_ms=2_000) as tx:
+        tx.execute("MATCH (t:Thought) RETURN count(t) AS n")
+        try:
+            tx.execute("MATCH (t:Thought) SET t.reframed = true")
+        except drevo.AccessModeError:              # refused; the transaction is closed
+            pass
+```
+
 ### Two-phase commit
 
 A transaction can take part in a distributed transaction run by an external

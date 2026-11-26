@@ -373,6 +373,81 @@ fn a_statement_longer_than_the_idle_limit_is_not_idle_time() {
     ));
 }
 
+/// An embedded caller (drevo-py, #853) sets the same limit through
+/// [`NativeService::client_deadline`]: one deadline for one statement or a
+/// whole transaction, capped by the server's statement timeout.
+mod embedded {
+    use super::*;
+
+    use drevo::cypher::executor::{Access, ExecError};
+
+    fn read(svc: &NativeService, query: &str) -> Result<(), ExecError> {
+        svc.execute_with_access(
+            &parse(query).unwrap(),
+            Default::default(),
+            None,
+            Access::Read,
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn a_client_deadline_stops_a_slow_read() {
+        let svc = NativeService::in_memory();
+        let n = calibrate(&svc);
+        let deadline = svc.client_deadline(Duration::from_millis(100));
+        let started = Instant::now();
+        let err = deadline.run(|| read(&svc, &slow_report(n))).unwrap_err();
+        assert!(
+            matches!(err, ExecError::ClientTimeout { limit_ms: 100 }),
+            "{err:?}"
+        );
+        assert!(started.elapsed() < Duration::from_millis(700));
+        assert!(deadline.expired());
+        assert!(matches!(
+            deadline.error(),
+            ExecError::ClientTimeout { limit_ms: 100 }
+        ));
+        // Outside `run` nothing limits the statement.
+        read(&svc, &slow_report(n)).expect("no limit outside the deadline");
+    }
+
+    #[test]
+    fn one_deadline_spans_every_statement_of_a_transaction() {
+        let svc = NativeService::in_memory();
+        let n = calibrate(&svc);
+        let deadline = svc.client_deadline(Duration::from_millis(300));
+        let tx = svc.begin_tx();
+        let quick = parse("CREATE (:Ticket {title: 'disk'})").unwrap();
+        deadline
+            .run(|| svc.execute_in_tx(tx, &quick, Default::default()))
+            .expect("in time");
+        assert!(!deadline.expired());
+        std::thread::sleep(Duration::from_millis(200));
+        // 200 ms are gone: the slow statement gets only what is left.
+        let started = Instant::now();
+        let err = deadline
+            .run(|| svc.execute_in_tx(tx, &parse(&slow_report(n)).unwrap(), Default::default()))
+            .unwrap_err();
+        assert!(matches!(err, ExecError::ClientTimeout { limit_ms: 300 }));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        svc.rollback_tx(tx);
+    }
+
+    #[test]
+    fn the_servers_statement_timeout_caps_a_longer_client_deadline() {
+        let svc = NativeService::in_memory();
+        let n = calibrate(&svc);
+        svc.set_statement_timeout(Some(Duration::from_millis(100)));
+        let deadline = svc.client_deadline(Duration::from_secs(60));
+        let err = deadline.run(|| read(&svc, &slow_report(n))).unwrap_err();
+        assert!(
+            matches!(err, ExecError::Timeout { limit_ms: 100 }),
+            "{err:?}"
+        );
+    }
+}
+
 mod over_tcp {
     use super::*;
 
