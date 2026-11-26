@@ -56,6 +56,7 @@
   const $colorBy = document.getElementById("color-by");
   const $colorLegend = document.getElementById("color-legend");
   const $kindMore = document.getElementById("kind-more");
+  const $typeChips = document.getElementById("type-chips");
   const $themeToggle = document.getElementById("theme-toggle");
   const $dbSelect = document.getElementById("db-select");
   const $dbNew = document.getElementById("db-new");
@@ -118,6 +119,9 @@
   // result): live changes reload only the overview.
   let overviewShown = false;
   let kindsExpanded = false; // show every label chip, not just the top ones
+  // Relationship types whose edges are not drawn (#858). Kept across
+  // renders, cleared when the database changes.
+  let hiddenTypes = new Set();
 
   // ── Dynamic node colour (task 00093) ────────────────────────────────
   // A handful of common kinds get curated, semantically-suggestive
@@ -1483,6 +1487,11 @@
         selector: "edge.hl, edge:selected",
         style: { "text-opacity": 1, "line-opacity": 1, width: 2 },
       },
+      {
+        // A relationship type switched off with its chip (#858).
+        selector: "edge.type-hidden",
+        style: { display: "none" },
+      },
     ];
   }
 
@@ -2258,6 +2267,7 @@
     cy.fit(undefined, 28);
     refreshEmphasis();
     renderColorLegend();
+    renderTypeChips();
   }
 
   // ── Emphasis: node size, hubs, focus ───────────────────────────────
@@ -2318,8 +2328,54 @@
     if (added > 0) {
       refreshEmphasis();
       renderColorLegend();
+      renderTypeChips();
     }
     return added;
+  }
+
+  // ── Relationship-type chips (#858) ─────────────────────────────────
+  // One chip per relationship type on the canvas, most common first; a
+  // click hides the edges of that type, or shows them again. Only what is
+  // drawn changes: the nodes stay where they are.
+  function renderTypeChips() {
+    if (!$typeChips || !cy) return;
+    const types = DrevoGraphMath.relationshipTypes(
+      cy.edges().map((e) => ({ kind: e.data("kind") }))
+    );
+    $typeChips.innerHTML = "";
+    for (const [type, count] of types) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "kind-chip";
+      const off = hiddenTypes.has(type);
+      chip.classList.toggle("off", off);
+      chip.setAttribute("aria-pressed", off ? "false" : "true");
+      chip.title = off ? `Show the ${type} relationships` : `Hide the ${type} relationships`;
+      const name = document.createElement("span");
+      name.className = "kind-chip-name";
+      name.textContent = type;
+      const c = document.createElement("span");
+      c.className = "kind-chip-count";
+      c.textContent = String(count);
+      chip.appendChild(name);
+      chip.appendChild(c);
+      chip.addEventListener("click", () => {
+        hiddenTypes = DrevoGraphMath.toggleType(hiddenTypes, type);
+        renderTypeChips();
+      });
+      $typeChips.appendChild(chip);
+    }
+    if (types.length === 0) {
+      const none = document.createElement("span");
+      none.className = "kind-chips-empty";
+      none.textContent = "none";
+      $typeChips.appendChild(none);
+    }
+    cy.batch(() =>
+      cy.edges().forEach((e) => {
+        e.toggleClass("type-hidden", hiddenTypes.has(e.data("kind") || "(no kind)"));
+      })
+    );
   }
 
   // ── Inspector ──────────────────────────────────────────────────────
@@ -2690,6 +2746,7 @@
     showAccess();
     graphCache = null;
     activeKind = null;
+    hiddenTypes = new Set();
     if (liveSource) openLiveStream();
     status(`Switched to database “${name}”.`, "ok");
     showView("graph");

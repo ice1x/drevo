@@ -17,6 +17,8 @@ const {
   labelFontSize,
   MAX_NODE_LIMIT,
   clampNodeLimit,
+  relationshipTypes,
+  toggleType,
 } = require("./graph_math.js");
 
 test("meanEdgeLength averages the segment lengths", () => {
@@ -260,4 +262,44 @@ test("a node limit that is not a positive number becomes 50", () => {
 test("a fractional node limit is cut to a whole number", () => {
   assert.equal(clampNodeLimit("12.7"), 12);
   assert.equal(clampNodeLimit(1), 1);
+});
+
+// ── Relationship types (#858) ───────────────────────────────────────────
+
+test("relationshipTypes counts the edges of each type, most common first", () => {
+  const edges = [
+    { kind: "IMPORTS" },
+    { kind: "COVERS" },
+    { kind: "COVERS" },
+    { kind: "BELONGS_TO" },
+    { kind: "IMPORTS" },
+    { kind: "COVERS" },
+  ];
+  assert.deepEqual(relationshipTypes(edges), [
+    ["COVERS", 3],
+    ["IMPORTS", 2],
+    ["BELONGS_TO", 1],
+  ]);
+});
+
+test("relationshipTypes breaks ties by name and names an untyped edge", () => {
+  const edges = [{ kind: "B" }, { kind: "" }, { kind: "A" }, {}];
+  assert.deepEqual(relationshipTypes(edges), [
+    ["(no kind)", 2],
+    ["A", 1],
+    ["B", 1],
+  ]);
+});
+
+test("relationshipTypes of no edges is empty", () => {
+  assert.deepEqual(relationshipTypes([]), []);
+});
+
+test("toggleType hides a shown type and shows a hidden one, leaving the set as it was", () => {
+  const hidden = new Set(["COVERS"]);
+  const more = toggleType(hidden, "IMPORTS");
+  assert.deepEqual([...more].sort(), ["COVERS", "IMPORTS"]);
+  const less = toggleType(more, "COVERS");
+  assert.deepEqual([...less], ["IMPORTS"]);
+  assert.deepEqual([...hidden], ["COVERS"]);
 });

@@ -8,6 +8,12 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Web UI: show or hide relationships by type** (issue #858). Under the
+  label chips, a "Relationships" row has one chip per relationship type on
+  the canvas, with its count, most common first. A click hides the edges of
+  that type; a second click shows them again. The nodes stay where they are.
+  The hidden types are kept when the canvas is redrawn and cleared when
+  another database is picked.
 - **`drevo.path.timetable`: `arriveBy` — be there by a time, leave as late
   as possible** (issue #776). `arriveBy` (seconds after midnight of the query
   date) replaces `departAt`; giving both, or neither, is refused. Each row is
