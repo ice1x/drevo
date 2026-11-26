@@ -2,6 +2,10 @@
 // unit-tested under `node --test` with no DOM and no Cytoscape (see
 // big_layout.test.js).
 //
+// A fresh layout first splits the graph into groups of nodes related more
+// among themselves than to the rest (Louvain, in this file), lays each group
+// out as an island and packs the islands with room between them.
+//
 // The positions come from two vendored libraries, and this file only
 // describes the graph to them:
 //   - d3-force (vendor/d3-force.min.js and the three d3 modules it needs)
@@ -71,6 +75,11 @@
   const SPACE_TICKS = 60;
   const SEPARATE_PASSES = 4;
 
+  // Room left between two groups, and ticks of the simulation that packs the
+  // groups.
+  const GROUP_GAP = 40;
+  const PACK_TICKS = 300;
+
   function isLargeGraph(nodeCount) {
     return nodeCount >= LARGE_GRAPH_NODES;
   }
@@ -118,16 +127,13 @@
     return Number.isFinite(node.x) && Number.isFinite(node.y);
   }
 
-  // Lay `nodes` (`{id, width, height, offsetY[, x, y]}`) and `edges`
-  // (`{source, target}` by id) out. Returns `{step, progress, positions}`:
-  // `step(units)` does at most that many units of work — a tick of the
-  // simulation or a pass of overlap removal — and says whether the layout is
-  // finished.
-  //
-  // Nodes that come with a position keep it as far as the others allow: a
-  // graph where some nodes are placed is only completed — the new nodes go
-  // next to a neighbour and whatever overlaps is moved apart.
-  function createLayout(nodes, edges) {
+  // The layout of one piece of the graph: d3-force arranges it as points,
+  // then as circles with room around them, and overlap removal finishes it.
+  // Same interface as createLayout. Nodes that come with a position keep it
+  // as far as the others allow: a graph where some nodes are placed is only
+  // completed — the new nodes go next to a neighbour and whatever overlaps
+  // is moved apart.
+  function pieceLayout(nodes, edges) {
     if (nodes.length === 0) {
       return { step: () => true, progress: () => 1, positions: () => [] };
     }
@@ -223,7 +229,7 @@
           d3
             .forceLink(links)
             .distance((l) => l.source.radius + l.target.radius)
-            .strength((l) => 0.3 / Math.min(l.source.degree, l.target.degree))
+            .strength((l) => 0.3 / Math.min(l.source.degree, l.target.degree)),
         )
         .force("charge", null)
         .force("x", null)
@@ -233,7 +239,7 @@
           d3
             .forceCollide((b) => b.radius)
             .strength(1)
-            .iterations(2)
+            .iterations(2),
         );
     }
 
@@ -268,7 +274,12 @@
         const halfWidth = (b.node.width + BOX_GAP) / 2;
         const halfHeight = (b.node.height + BOX_GAP) / 2;
         const cy = b.y / stretch;
-        return new cola.Rectangle(b.x - halfWidth, b.x + halfWidth, cy - halfHeight, cy + halfHeight);
+        return new cola.Rectangle(
+          b.x - halfWidth,
+          b.x + halfWidth,
+          cy - halfHeight,
+          cy + halfHeight,
+        );
       });
     }
 
@@ -319,6 +330,281 @@
     }
 
     return { step, progress, positions };
+  }
+
+  // Lay `nodes` (`{id, width, height, offsetY[, x, y]}`) and `edges`
+  // (`{source, target}` by id) out. Returns `{step, progress, positions}`:
+  // `step(units)` does at most that many units of work and says whether the
+  // layout is finished.
+  //
+  // A fresh layout finds the groups of the graph — nodes related more among
+  // themselves than to the rest (Louvain) — and lays each one out as an
+  // island of its own; the nodes with no relationship form one more. The
+  // islands are then packed with room between them, those that share
+  // relationships side by side. Laid out as one piece, a graph of thousands
+  // of nodes comes out as an even disc, its relationships running across it
+  // in every direction.
+  //
+  // A graph where some nodes are placed is only completed (pieceLayout).
+  function createLayout(nodes, edges) {
+    if (nodes.length === 0 || nodes.some(isPlaced)) return pieceLayout(nodes, edges);
+    const index = new Map(nodes.map((n, i) => [n.id, i]));
+    const pairs = [];
+    for (const e of edges || []) {
+      const a = index.get(e.source);
+      const b = index.get(e.target);
+      if (a !== undefined && b !== undefined && a !== b) pairs.push([a, b]);
+    }
+    const group = groupsOf(nodes.length, pairs);
+    const members = [];
+    for (let i = 0; i < nodes.length; i++) {
+      if (!members[group[i]]) members[group[i]] = [];
+      members[group[i]].push(i);
+    }
+    if (members.length === 1) return pieceLayout(nodes, edges);
+
+    const pieces = members.map((list) => {
+      const inside = new Set(list.map((i) => nodes[i].id));
+      return pieceLayout(
+        list.map((i) => nodes[i]),
+        (edges || []).filter((e) => inside.has(e.source) && inside.has(e.target)),
+      );
+    });
+
+    // The islands, largest first, on a spiral until they are packed.
+    const islands = members.map((list, g) => ({
+      g,
+      size: list.length,
+      r: 0,
+      x: 0,
+      y: 0,
+      cx: 0,
+      cy: 0,
+    }));
+    const order = islands.slice().sort((a, b) => b.size - a.size || a.g - b.g);
+    function spiral() {
+      const turn = Math.PI * (3 - Math.sqrt(5));
+      let area = 0;
+      order.forEach((island, k) => {
+        area += Math.max(island.r, 1) ** 2;
+        const far = Math.sqrt(area) * 1.1;
+        island.x = far * Math.cos(k * turn);
+        island.y = far * Math.sin(k * turn);
+      });
+    }
+
+    // Measure each finished island: its centre and the circle around it.
+    function measure() {
+      pieces.forEach((piece, g) => {
+        const at = piece.positions();
+        const island = islands[g];
+        let cx = 0;
+        let cy = 0;
+        for (const p of at) {
+          cx += p.x;
+          cy += p.y;
+        }
+        cx /= at.length;
+        cy /= at.length;
+        let r = 0;
+        at.forEach((p, j) => {
+          const n = nodes[members[g][j]];
+          const y = p.y + (n.offsetY || 0);
+          r = Math.max(r, Math.hypot(p.x - cx, y - cy) + Math.hypot(n.width, n.height) / 2);
+        });
+        island.cx = cx;
+        island.cy = cy;
+        island.r = r + GROUP_GAP / 2;
+      });
+    }
+
+    let packing = null;
+    function startPacking() {
+      measure();
+      spiral();
+      const shared = new Map();
+      for (const [a, b] of pairs) {
+        const ga = group[a];
+        const gb = group[b];
+        if (ga === gb) continue;
+        const key = ga < gb ? ga * islands.length + gb : gb * islands.length + ga;
+        shared.set(key, (shared.get(key) || 0) + 1);
+      }
+      let most = 1;
+      for (const w of shared.values()) most = Math.max(most, w);
+      const links = [...shared].map(([key, w]) => ({
+        source: islands[Math.floor(key / islands.length)],
+        target: islands[key % islands.length],
+        w,
+      }));
+      packing = d3
+        .forceSimulation(islands)
+        .stop()
+        .alphaDecay(1 - Math.pow(0.001, 1 / PACK_TICKS))
+        .force(
+          "link",
+          d3
+            .forceLink(links)
+            .distance((l) => l.source.r + l.target.r)
+            .strength((l) => 0.05 + (0.5 * l.w) / most),
+        )
+        .force(
+          "collide",
+          d3
+            .forceCollide((island) => island.r)
+            .strength(1)
+            .iterations(3),
+        )
+        .force("x", d3.forceX(0).strength(0.1))
+        .force("y", d3.forceY(0).strength(0.1));
+    }
+
+    function placed() {
+      const out = new Array(nodes.length);
+      pieces.forEach((piece, g) => {
+        const island = islands[g];
+        piece.positions().forEach((p, j) => {
+          out[members[g][j]] = {
+            id: p.id,
+            x: p.x - island.cx + island.x,
+            y: p.y - island.cy + island.y,
+          };
+        });
+      });
+      return out;
+    }
+
+    let piecesDone = false;
+    let packed = 0;
+    let finish = null; // overlap removal over the packed islands, if needed
+    let done = false;
+
+    function step(units) {
+      for (let i = 0; i < units && !done; i++) {
+        if (!piecesDone) {
+          // One unit: a unit of work on every island not yet laid out.
+          let all = true;
+          for (const piece of pieces) if (!piece.step(1)) all = false;
+          if (all) {
+            piecesDone = true;
+            startPacking();
+          }
+          continue;
+        }
+        if (packed < PACK_TICKS) {
+          packing.tick();
+          packed += 1;
+          continue;
+        }
+        if (!finish) {
+          const at = placed();
+          finish = pieceLayout(
+            nodes.map((n, j) => ({ ...n, x: at[j].x, y: at[j].y })),
+            [],
+          );
+        }
+        done = finish.step(1);
+      }
+      return done;
+    }
+
+    function positions() {
+      if (finish) return finish.positions();
+      if (!piecesDone) {
+        measure();
+        spiral();
+      }
+      return placed();
+    }
+
+    function progress() {
+      if (done) return 1;
+      const laying = piecesDone ? 1 : Math.min(...pieces.map((p) => p.progress()));
+      return Math.min(0.99, 0.6 * laying + (0.4 * packed) / PACK_TICKS);
+    }
+
+    return { step, progress, positions };
+  }
+
+  // The groups of a graph of `n` nodes related by `pairs` (`[a, b]` by
+  // index): Louvain, which moves each node to the neighbouring group that
+  // raises the modularity most, merges the groups and starts over until
+  // nothing moves. Nodes with no relationship form one group of their own.
+  // Returns the group of each node, numbered from 0.
+  function groupsOf(n, pairs) {
+    const degree = new Array(n).fill(0);
+    for (const [a, b] of pairs) {
+      degree[a] += 1;
+      degree[b] += 1;
+    }
+    let size = n;
+    let adjacent = Array.from({ length: n }, () => new Map());
+    for (const [a, b] of pairs) {
+      adjacent[a].set(b, (adjacent[a].get(b) || 0) + 1);
+      adjacent[b].set(a, (adjacent[b].get(a) || 0) + 1);
+    }
+    let member = Array.from({ length: n }, (_, i) => i);
+    const total = 2 * pairs.length || 1;
+    for (let level = 0; level < 20; level++) {
+      const weight = adjacent.map((m) => {
+        let sum = 0;
+        for (const w of m.values()) sum += w;
+        return sum;
+      });
+      const community = Array.from({ length: size }, (_, i) => i);
+      const sums = weight.slice();
+      let movedAny = false;
+      for (let pass = 0; pass < 20; pass++) {
+        let moved = false;
+        for (let i = 0; i < size; i++) {
+          const from = community[i];
+          sums[from] -= weight[i];
+          const toward = new Map();
+          for (const [j, w] of adjacent[i]) {
+            if (j !== i) toward.set(community[j], (toward.get(community[j]) || 0) + w);
+          }
+          let best = from;
+          let gain = (toward.get(from) || 0) - (weight[i] * sums[from]) / total;
+          for (const [c, w] of toward) {
+            const g = w - (weight[i] * sums[c]) / total;
+            if (g > gain + 1e-9) {
+              gain = g;
+              best = c;
+            }
+          }
+          sums[best] += weight[i];
+          if (best !== from) {
+            community[i] = best;
+            moved = true;
+            movedAny = true;
+          }
+        }
+        if (!moved) break;
+      }
+      if (!movedAny) break;
+      const renumber = new Map();
+      for (const c of community) if (!renumber.has(c)) renumber.set(c, renumber.size);
+      const next = Array.from({ length: renumber.size }, () => new Map());
+      for (let i = 0; i < size; i++) {
+        const a = renumber.get(community[i]);
+        for (const [j, w] of adjacent[i]) {
+          const b = renumber.get(community[j]);
+          next[a].set(b, (next[a].get(b) || 0) + w);
+        }
+      }
+      member = member.map((v) => renumber.get(community[v]));
+      adjacent = next;
+      size = next.length;
+    }
+    // Number the groups in order of first appearance; the nodes with no
+    // relationship share one.
+    const number = new Map();
+    const alone = degree.indexOf(0) >= 0 ? "alone" : null;
+    return member.map((m, i) => {
+      const key = degree[i] === 0 ? alone : m;
+      if (!number.has(key)) number.set(key, number.size);
+      return number.get(key);
+    });
   }
 
   // Bodies that sit on exactly the same point give overlap removal no

@@ -303,6 +303,18 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Web UI: a large graph is laid out as islands of related nodes** (issue
+  #854). The overview of thousands of nodes came out as one even disc, its
+  relationships running across it in every direction. A fresh layout now
+  finds the groups of the graph — nodes related more among themselves than
+  to the rest (Louvain) — lays each group out on its own and packs the
+  groups with room between them, groups that share relationships side by
+  side; nodes with no relationship are kept together in one more. On a
+  4596-node, 10898-relationship graph the median relationship spans 2.5
+  node spacings instead of 5.4 and one in ten is longer than ten instead of
+  one in four; the layout takes 2.7 s instead of 4.1 s. The picture takes
+  about twice the area, the room between the groups.
+
 - **Two stores whose logs share a directory keep their own identity and
   stamps** (issue #826). A durable store's sidecars were named after the
   directory (`origin.json`, `stamps.jsonl`, `tombstones.json`,
