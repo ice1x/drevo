@@ -39,6 +39,7 @@ import drevo
         (drevo.CypherSyntaxError, drevo.CypherError),
         (drevo.QueryTimeoutError, drevo.CypherError),
         (drevo.ParameterMissingError, drevo.CypherError),
+        (drevo.AccessModeError, drevo.CypherError),
         # Explicit transactions (#554).
         (drevo.TransactionError, drevo.DrevoError),
         (drevo.TransactionConflict, drevo.TransactionError),

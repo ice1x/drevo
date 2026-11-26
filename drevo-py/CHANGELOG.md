@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — read-only statements and time limits (issue #853)
+
+* `Drevo.execute(query, params=None, *, access="write", timeout_ms=None)` and
+  `Drevo.begin(access="write", timeout_ms=None)` (and `transaction(...)`).
+  With `access="read"` a write, a schema change or a procedure with outside
+  effects (`drevo.extract.*`, `drevo.events.post`, ...) raises the new
+  `drevo.AccessModeError` (a `CypherError`) before it runs, and nothing is
+  written. `timeout_ms` stops the statement, or the whole transaction, with
+  `QueryTimeoutError` (`.args == (message, limit_ms)`) and rolls the
+  transaction back; `execute`, `commit` and `prepare` after it raise the same
+  error. An unknown `access` or a negative `timeout_ms` raises `ValueError`.
+
 ### Added — triggers (issue #643)
 
 * `apoc.trigger.*` work through `Drevo.execute` and `Transaction`: a

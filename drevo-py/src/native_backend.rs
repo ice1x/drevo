@@ -55,18 +55,34 @@ impl NativeBackend {
     }
 
     /// Parse and execute one Cypher statement in autocommit mode (#553): a
-    /// write is committed (one fsynced WAL batch) when this returns.
+    /// write is committed (one fsynced WAL batch) when this returns. With
+    /// `Access::Read` a statement that would change the graph is refused
+    /// (#853); `timeout` bounds its run time.
     pub fn execute_cypher(
         &self,
         query: &str,
         params: std::collections::HashMap<String, drevo::cypher::executor::Value>,
+        access: drevo::cypher::executor::Access,
+        timeout: Option<std::time::Duration>,
     ) -> std::result::Result<drevo::cypher::executor::ExecResult, crate::cypher::CypherFailure>
     {
         let ast =
             drevo::cypher::parser::parse(query).map_err(crate::cypher::CypherFailure::Parse)?;
-        self.svc
-            .execute(&ast, params)
-            .map_err(crate::cypher::CypherFailure::Exec)
+        let run = || self.svc.execute_with_access(&ast, params, None, access);
+        match timeout {
+            Some(limit) => self.client_deadline(limit).run(run),
+            None => run(),
+        }
+        .map_err(crate::cypher::CypherFailure::Exec)
+    }
+
+    /// A caller's time limit, `limit` from now, capped by the statement
+    /// timeout (#853).
+    pub fn client_deadline(
+        &self,
+        limit: std::time::Duration,
+    ) -> drevo::cypher::executor::ClientDeadline {
+        self.svc.client_deadline(limit)
     }
 
     /// Begin a registered transaction (#554).
@@ -74,19 +90,28 @@ impl NativeBackend {
         self.svc.begin_tx()
     }
 
-    /// Parse and execute one Cypher statement inside transaction `tx`.
+    /// Parse and execute one Cypher statement inside transaction `tx`, with
+    /// the transaction's access and deadline (#853).
     pub fn execute_cypher_in_tx(
         &self,
         tx: drevo::native::NativeTxId,
         query: &str,
         params: std::collections::HashMap<String, drevo::cypher::executor::Value>,
+        access: drevo::cypher::executor::Access,
+        deadline: Option<drevo::cypher::executor::ClientDeadline>,
     ) -> std::result::Result<drevo::cypher::executor::ExecResult, crate::cypher::CypherFailure>
     {
         let ast =
             drevo::cypher::parser::parse(query).map_err(crate::cypher::CypherFailure::Parse)?;
-        self.svc
-            .execute_in_tx(tx, &ast, params)
-            .map_err(crate::cypher::CypherFailure::Exec)
+        let run = || {
+            self.svc
+                .execute_in_tx_with_access(tx, &ast, params, None, access)
+        };
+        match deadline {
+            Some(deadline) => deadline.run(run),
+            None => run(),
+        }
+        .map_err(crate::cypher::CypherFailure::Exec)
     }
 
     /// Commit transaction `tx` (one fsynced WAL batch).

@@ -98,8 +98,16 @@ class Transaction:
 
     closed: bool
 
-    def execute(self, query: str, params: Optional[dict[str, Any]] = None) -> CypherResult: ...
-    def commit(self) -> None: ...
+    def execute(self, query: str, params: Optional[dict[str, Any]] = None) -> CypherResult:
+        """Run one statement with the transaction's access, within its
+        `timeout_ms`."""
+        ...
+
+    def commit(self) -> None:
+        """Apply every write; past the transaction's `timeout_ms` raise
+        `QueryTimeoutError` and roll back instead."""
+        ...
+
     def rollback(self) -> None: ...
     def prepare(self, gid: str) -> None:
         """Two-phase commit: record the transaction as prepared under `gid` (#556)."""
@@ -367,11 +375,16 @@ class CypherSyntaxError(CypherError):
     """The statement did not parse."""
 
 class QueryTimeoutError(CypherError):
-    """The statement exceeded the statement timeout.
-    `.args == (message, limit_ms)`."""
+    """The statement exceeded the statement timeout or the caller's
+    `timeout_ms`. `.args == (message, limit_ms)`."""
 
 class ParameterMissingError(CypherError):
     """The statement used a `$name` that `params` did not provide."""
+
+class AccessModeError(CypherError):
+    """A statement run with `access="read"` would write, change the schema
+    or call a procedure with effects outside the graph (#853). Nothing of it
+    reached the graph."""
 
 class InvalidWeightError(ValueError):
     """An edge weight was non-finite (`NaN` / ±`inf`).
@@ -484,15 +497,37 @@ class Drevo:
     def search_fts(self, query: str, limit: int) -> list[ScoredNode]: ...
 
     # ── Cypher (#553) ───────────────────────────────────────────────────
-    def execute(self, query: str, params: Optional[dict[str, Any]] = None) -> CypherResult:
-        """Run one Cypher statement in autocommit mode with named `$params`."""
+    def execute(
+        self,
+        query: str,
+        params: Optional[dict[str, Any]] = None,
+        *,
+        access: str = "write",
+        timeout_ms: Optional[int] = None,
+    ) -> CypherResult:
+        """Run one Cypher statement in autocommit mode with named `$params`.
+
+        `access="read"` refuses a write, a schema change or a procedure with
+        outside effects with `AccessModeError` before it runs (#853).
+        `timeout_ms` stops the statement with `QueryTimeoutError` after that
+        many milliseconds; `None` or `0` sets no limit."""
         ...
     # ── Explicit transactions (#554) ────────────────────────────────────
-    def begin(self) -> Transaction:
-        """Begin an explicit transaction."""
+    def begin(
+        self,
+        access: str = "write",
+        timeout_ms: Optional[int] = None,
+    ) -> Transaction:
+        """Begin an explicit transaction. With `access="read"` every
+        statement is a read; `timeout_ms` bounds the whole transaction, which
+        is rolled back past it (#853)."""
         ...
 
-    def transaction(self) -> Transaction:
+    def transaction(
+        self,
+        access: str = "write",
+        timeout_ms: Optional[int] = None,
+    ) -> Transaction:
         """Alias of `begin()` for `with db.transaction() as tx:`."""
         ...
 

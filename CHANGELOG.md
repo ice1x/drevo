@@ -8,6 +8,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **drevo-py: read-only statements and time limits** (issue #853).
+  `Drevo.execute(..., access="read", timeout_ms=...)` and
+  `Drevo.begin(access="read", timeout_ms=...)` give embedded drevo the rules
+  a server gives Bolt's `mode: "r"` and `tx_timeout`: a write, a schema change
+  or a procedure with outside effects raises `drevo.AccessModeError` before
+  it runs, and a statement or transaction past its limit stops with
+  `QueryTimeoutError` and is rolled back. In Rust,
+  `NativeService::client_deadline(limit)` returns a `ClientDeadline` whose
+  `run` bounds every statement run inside it.
+
 - **Web UI: show or hide relationships by type** (issue #858). Under the
   label chips, a "Relationships" row has one chip per relationship type on
   the canvas, with its count, most common first. A click hides the edges of

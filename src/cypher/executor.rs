@@ -934,6 +934,56 @@ pub(crate) mod deadline {
     }
 }
 
+/// A time limit a caller set for one statement or a whole transaction,
+/// counted from when it was made (see
+/// [`NativeService::client_deadline`](crate::native_service::NativeService::client_deadline)).
+/// Statements run inside [`run`](Self::run) stop once it passes, with
+/// [`ExecError::ClientTimeout`], or [`ExecError::Timeout`] when the
+/// server's shorter statement timeout capped it.
+///
+/// ```
+/// use std::time::Duration;
+/// use drevo::cypher::parser::parse;
+/// use drevo::native_service::NativeService;
+///
+/// let svc = NativeService::in_memory();
+/// let deadline = svc.client_deadline(Duration::from_secs(5));
+/// let rows = deadline
+///     .run(|| svc.execute(&parse("RETURN 1 AS one").unwrap(), Default::default()))
+///     .unwrap()
+///     .rows;
+/// assert_eq!(rows.len(), 1);
+/// assert!(!deadline.expired());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientDeadline(deadline::Deadline);
+
+impl ClientDeadline {
+    /// `limit` from now, capped by `server`, the statement timeout.
+    pub(crate) fn starting_now(
+        limit: std::time::Duration,
+        server: Option<std::time::Duration>,
+    ) -> Self {
+        Self(deadline::Deadline::client(limit, server))
+    }
+
+    /// Run `work` (statements of this caller) stopping when the deadline
+    /// passes.
+    pub fn run<R>(&self, work: impl FnOnce() -> R) -> R {
+        deadline::with_deadline(Some(self.0), work)
+    }
+
+    /// Whether the deadline has passed.
+    pub fn expired(&self) -> bool {
+        self.0.expired()
+    }
+
+    /// The error of a statement that ran into the deadline.
+    pub fn error(&self) -> ExecError {
+        self.0.error()
+    }
+}
+
 /// One discovered path as `(relationships, nodes-after-source)`, both in
 /// traversal order — the shape [`Executor::bfs_shortest_paths`] returns.
 type ShortestPath = (Vec<Arc<RelationshipValue>>, Vec<Arc<NodeValue>>);

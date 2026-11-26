@@ -742,18 +742,28 @@ impl Drevo {
     /// when this returns — with named `$params` from a `dict`. Returns a
     /// `CypherResult` (`columns`, rows as dicts, `stats`). The statement runs
     /// without the GIL.
-    #[pyo3(signature = (query, params=None))]
+    ///
+    /// `access="read"` refuses a statement that would write, change the
+    /// schema or call a procedure with outside effects (`drevo.extract.*`,
+    /// `drevo.events.post`, ...) with `AccessModeError`, before it runs.
+    /// `timeout_ms` stops the statement after that many milliseconds with
+    /// `QueryTimeoutError`; `None` or `0` sets no limit (#853).
+    #[pyo3(signature = (query, params=None, *, access="write", timeout_ms=None))]
     fn execute(
         &self,
         py: Python<'_>,
         query: &str,
         params: Option<Bound<'_, PyAny>>,
+        access: &str,
+        timeout_ms: Option<i64>,
     ) -> PyResult<crate::cypher::CypherResult> {
         guarded(|| {
+            let access = crate::cypher::access_from_py(access)?;
+            let timeout = crate::cypher::timeout_from_py(timeout_ms)?;
             let params = crate::cypher::params_from_py(params.as_ref())?;
             with_db(&self.inner, |db| {
                 let result = py
-                    .allow_threads(|| db.execute_cypher(query, params))
+                    .allow_threads(|| db.execute_cypher(query, params, access, timeout))
                     .map_err(crate::cypher::map_cypher_err)?;
                 crate::cypher::result_to_py(py, &result)
             })
@@ -763,10 +773,23 @@ impl Drevo {
     /// Begin an explicit transaction (#554). Commit or roll it back, or use
     /// it as a context manager: `with db.transaction() as tx: ...` commits on
     /// a clean exit and rolls back on an exception.
-    fn begin(&self) -> PyResult<crate::transaction::Transaction> {
+    ///
+    /// With `access="read"` every statement of the transaction is a read, as
+    /// in `execute`. `timeout_ms` bounds the whole transaction: a statement
+    /// still running when it passes stops, and the transaction is rolled
+    /// back; after it, `execute` and `commit` raise `QueryTimeoutError`
+    /// (#853).
+    #[pyo3(signature = (access="write", timeout_ms=None))]
+    fn begin(
+        &self,
+        access: &str,
+        timeout_ms: Option<i64>,
+    ) -> PyResult<crate::transaction::Transaction> {
         guarded(|| {
+            let access = crate::cypher::access_from_py(access)?;
+            let timeout = crate::cypher::timeout_from_py(timeout_ms)?;
             let db = borrow_db(&self.inner)?;
-            Ok(crate::transaction::Transaction::begin(&db))
+            Ok(crate::transaction::Transaction::begin(&db, access, timeout))
         })
     }
 
@@ -839,8 +862,13 @@ impl Drevo {
     }
 
     /// Alias of `begin()` that reads naturally in a `with` statement.
-    fn transaction(&self) -> PyResult<crate::transaction::Transaction> {
-        self.begin()
+    #[pyo3(signature = (access="write", timeout_ms=None))]
+    fn transaction(
+        &self,
+        access: &str,
+        timeout_ms: Option<i64>,
+    ) -> PyResult<crate::transaction::Transaction> {
+        self.begin(access, timeout_ms)
     }
 
     // ── Full-text search ───────────────────────────────────────────

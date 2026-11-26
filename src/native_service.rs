@@ -1453,6 +1453,17 @@ impl NativeService {
         }
     }
 
+    /// A caller's time limit for its statement or transaction, `limit` from
+    /// now (#853): run the statements in
+    /// [`ClientDeadline::run`](crate::cypher::executor::ClientDeadline::run).
+    /// The statement timeout caps it, as it caps Bolt's `tx_timeout`.
+    pub fn client_deadline(
+        &self,
+        limit: std::time::Duration,
+    ) -> crate::cypher::executor::ClientDeadline {
+        crate::cypher::executor::ClientDeadline::starting_now(limit, self.statement_timeout())
+    }
+
     /// Compact the WAL and trim the consumed change-feed once enough ops
     /// have accumulated since the last compaction — the runtime bound on
     /// disk (log rewrite as the state snapshot; a no-op for an in-memory
