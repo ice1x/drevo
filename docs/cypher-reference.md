@@ -612,6 +612,19 @@ RETURN p.title AS person, count(*) AS task_count
 ORDER BY task_count DESC
 ```
 
+After an aggregation, `ORDER BY` sorts the groups. It can use a column by its alias, repeat
+a grouping expression or an aggregate of the same `RETURN` / `WITH`, or build on either:
+
+```cypher
+MATCH (b:Bug)
+RETURN b.component, count(*)
+ORDER BY count(*) DESC, toLower(b.component)
+```
+
+A variable that is not part of a returned expression is gone after the grouping:
+`RETURN b.component, count(*) ORDER BY b.severity` is an error, and so is an aggregate that
+is not an item of the projection (`ORDER BY max(b.severity)` here).
+
 `collect` gathers values into a list; the numeric aggregates fold a group to a scalar:
 
 ```cypher

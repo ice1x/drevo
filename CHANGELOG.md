@@ -319,6 +319,16 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Fixed
 
+- **Cypher: `ORDER BY` after an aggregation sorts by the grouping expression
+  and by the aggregate** (issue #863). `RETURN p.name, count(*) ORDER BY
+  p.name` failed with `unbound variable p`, and `ORDER BY count(*)` with
+  `function call count is not supported`; only an alias could be sorted by.
+  Now `ORDER BY` after an aggregating `RETURN` / `WITH` may repeat any
+  expression of the projection, or build on one (`ORDER BY
+  toLower(p.name)`, `ORDER BY size(collect(x))`). A variable the grouping
+  folded away is refused with a message that says so, and an aggregate that
+  is not an item of the projection is refused by name.
+
 - **Web UI: a hub stands at the centre of its neighbours instead of pulling
   them into one knot** (issue #856). A hub is a node with at least 20
   relationships and at least √(number of nodes) of them, such as a project's
