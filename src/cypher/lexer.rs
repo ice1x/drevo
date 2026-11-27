@@ -229,6 +229,8 @@ pub enum TokenKind {
     Ge,
     /// `=~` — regex match.
     RegexMatch,
+    /// `||` - concatenation of two strings or two lists.
+    Concat,
 
     // ---- Arithmetic operators --------------------------------------
     /// `+`.
@@ -434,6 +436,7 @@ impl fmt::Display for TokenKind {
             Self::Gt => f.write_str(">"),
             Self::Ge => f.write_str(">="),
             Self::RegexMatch => f.write_str("=~"),
+            Self::Concat => f.write_str("||"),
             Self::Plus => f.write_str("+"),
             Self::Minus => f.write_str("-"),
             Self::Star => f.write_str("*"),
@@ -736,7 +739,12 @@ impl<'src> Lexer<'src> {
             }
             '|' => {
                 self.advance();
-                TokenKind::Pipe
+                if self.peek() == Some('|') {
+                    self.advance();
+                    TokenKind::Concat
+                } else {
+                    TokenKind::Pipe
+                }
             }
             '+' => {
                 self.advance();

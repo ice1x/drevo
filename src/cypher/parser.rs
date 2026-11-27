@@ -2433,7 +2433,11 @@ impl Parser {
             // is replaced by `n.prop IS NOT NULL`).
             TokenKind::Exists => {
                 self.consume(); // EXISTS
-                self.parse_exists_subquery(tok_span)?
+                if matches!(self.peek_kind(), TokenKind::LParen) {
+                    self.parse_exists_function(tok_span)?
+                } else {
+                    self.parse_exists_subquery(tok_span)?
+                }
             }
             TokenKind::Identifier(_) => self.parse_identifier_or_call()?,
             // A soft keyword where an operand is expected is a variable
@@ -2779,6 +2783,78 @@ impl Parser {
     /// and an optional inner `WHERE` filters the matches before they are
     /// counted. The only difference from `EXISTS` is the produced AST node and
     /// its runtime value (an integer count rather than a boolean).
+    /// `exists(pattern)` - the function form of a pattern predicate
+    /// (`WHERE exists((a)-[:KNOWS]->())`). The cursor sits on `(`.
+    ///
+    /// `exists(n.prop)`, which Neo4j 5 removed, is refused with what to
+    /// write instead.
+    fn parse_exists_function(&mut self, span: Span) -> ParseResult<Expression> {
+        self.consume(); // (
+        let inner = self.parse_expression()?;
+        self.eat(&TokenKind::RParen, "`)` to close exists(...)")?;
+        match inner {
+            pattern @ Expression::PatternPredicate { .. } => Ok(pattern),
+            _ => Err(ParseError::Malformed {
+                message: "exists(...) takes a pattern, such as exists((a)-[:KNOWS]->()); \
+                          to test a property write `n.prop IS NOT NULL`"
+                    .to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// `COLLECT { [MATCH] pattern [WHERE pred] RETURN expr }` - the list of
+    /// `expr` over the matches of the pattern. It is a pattern comprehension
+    /// in the words of a query, and is parsed into one.
+    fn parse_collect_subquery(&mut self, span: Span) -> ParseResult<Expression> {
+        self.eat(&TokenKind::LBrace, "`{` after COLLECT")?;
+        if matches!(self.peek_kind(), TokenKind::Match) {
+            self.consume();
+        }
+        let pattern = self.parse_path_pattern()?;
+        let predicate = if matches!(self.peek_kind(), TokenKind::Where) {
+            self.consume();
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+        self.eat(&TokenKind::Return, "RETURN in a COLLECT subquery")?;
+        let malformed = |message: &str, span: Span| ParseError::Malformed {
+            message: message.to_string(),
+            span,
+        };
+        if matches!(self.peek_kind(), TokenKind::Distinct) {
+            return Err(malformed(
+                "RETURN DISTINCT is not supported in a COLLECT subquery",
+                self.peek_span(),
+            ));
+        }
+        let projection = self.parse_expression()?;
+        match self.peek_kind() {
+            TokenKind::RBrace => {}
+            TokenKind::Comma => {
+                return Err(malformed(
+                    "a COLLECT subquery returns one column",
+                    self.peek_span(),
+                ));
+            }
+            _ => {
+                return Err(malformed(
+                    "a COLLECT subquery ends after `RETURN expr`: AS, ORDER BY, SKIP and LIMIT \
+                     are not supported in it",
+                    self.peek_span(),
+                ));
+            }
+        }
+        self.consume(); // }
+        Ok(Expression::PatternComprehension {
+            pattern: Box::new(pattern),
+            predicate,
+            projection: Box::new(projection),
+            span,
+        })
+    }
+
     fn parse_count_subquery(&mut self, span: Span) -> ParseResult<Expression> {
         self.eat(&TokenKind::LBrace, "`{` after COUNT")?;
         // An optional leading `MATCH` keyword — `COUNT { MATCH (a)-->(b) }` is
@@ -2904,6 +2980,10 @@ impl Parser {
         if first.eq_ignore_ascii_case("count") && matches!(self.peek_kind(), TokenKind::LBrace) {
             return self.parse_count_subquery(first_span);
         }
+        // `COLLECT { ... RETURN expr }`, found the same way.
+        if first.eq_ignore_ascii_case("collect") && matches!(self.peek_kind(), TokenKind::LBrace) {
+            return self.parse_collect_subquery(first_span);
+        }
         // List predicate functions `any` / `none` / `single` (the `all`
         // variant is a keyword token, handled in `parse_prefix`). They take
         // the `var IN list WHERE pred` form rather than ordinary comma-
@@ -2989,6 +3069,8 @@ impl Parser {
             TokenKind::Gt => Some((InfixOp::Binary(BinaryOp::Gt), 20, 21)),
             TokenKind::Ge => Some((InfixOp::Binary(BinaryOp::Ge), 20, 21)),
             TokenKind::RegexMatch => Some((InfixOp::Binary(BinaryOp::RegexMatch), 20, 21)),
+            // `||` binds like `+`.
+            TokenKind::Concat => Some((InfixOp::Binary(BinaryOp::Concat), 30, 31)),
             TokenKind::Is => Some((InfixOp::IsNullPrefix, 20, 21)),
             TokenKind::In => Some((InfixOp::InPrefix, 20, 21)),
             TokenKind::Starts => Some((InfixOp::Binary(BinaryOp::StartsWith), 20, 21)),

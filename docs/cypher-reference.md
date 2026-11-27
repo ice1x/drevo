@@ -1018,14 +1018,14 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 
 | Family | Functions |
 |--------|-----------|
-| String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString` |
+| String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString`, `char_length(s)` / `character_length(s)` (the number of characters), `btrim(s[, chars])` (trims white space, or the characters of `chars`, from both ends), `normalize(s[, form])` (the Unicode normal form `'NFC'` by default, or `'NFD'`, `'NFKC'`, `'NFKD'`) |
 | Edit distance | `apoc.text.levenshteinDistance(a, b)` — the fewest single-character insertions, deletions and substitutions turning `a` into `b` (an `Integer`); `apoc.text.levenshteinSimilarity(a, b)` — `1 − distance / max(length)`, `1.0` for two empty strings. Characters are Unicode code points. See [Fuzzy matching](#fuzzy-matching-593) |
 | Name normalisation | `drevo.entity.normalise(name)` — `name` lower-cased, without accents or punctuation, words separated by single spaces (`'А. С. Пушкин'` → `'а с пушкин'`), the form entity resolution compares. See [Entity resolution](#entity-resolution) |
 | Numeric | `abs`, `ceil`, `floor`, `round(x[, precision[, mode]])`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` — see [round()](#rounding-with-round) for the precision / mode overloads |
 | List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` — element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
 | Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` — fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
 | Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
-| List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `keys`, `labels`, `type`, `properties` |
+| List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `nullIf(a, b)` (`null` when the two are equal, `a` otherwise), `valueType(x)` (the type of `x` as text: `'INTEGER NOT NULL'`, `'LIST<STRING NOT NULL> NOT NULL'`, `'NULL'`), `keys`, `labels`, `type`, `properties` |
 | Identity | `id(x)` — a node's or relationship's id, an `Integer`; `elementId(x)` — the same id as a `String` (`"42"`), the `element_id` Bolt 5 drivers report on nodes and relationships. `MATCH (n) WHERE elementId(n) = $e` (or `IN $ids`) looks the node up by id, like `id(n) = $id`; the two do not mix types, so `elementId(n) = 42` matches nothing |
 | Container predicate | `isEmpty(x)` — `true` when the container `x` holds no elements; accepts a String, a List, or a Map. Fills the gap left by `size`, which rejects a Map (so `size(m) = 0` cannot express it). A non-container argument errors |
 | Numeric predicate | `isNaN(n)` — `true` when `n` is the IEEE-754 NaN value, `false` for any other number (an `Integer` is never NaN, and `±Infinity` are numbers, not NaN). The only way to test for NaN, since `NaN = NaN` is *false*. See [isNaN()](#testing-for-nan-with-isnan) |
@@ -3866,6 +3866,17 @@ nothing), and a malformed question or config key fail with an error naming it.
 
 ---
 
+## Concatenation with `||`
+
+`a || b` joins two strings or two lists; it is `null` when either side is `null`. Unlike
+`+`, which also adds numbers and appends a value to a list, it takes nothing else.
+
+```cypher
+RETURN 'drevo' || ' ' || 'graph' AS name, [1, 2] || [3] AS list
+```
+
+---
+
 ## Indexing and slicing
 
 Lists and maps support element access with `[]`.
@@ -4205,8 +4216,9 @@ Semantics:
 - **`null` anchor** — if the head variable is already bound to `null` (an
   unmatched [`OPTIONAL MATCH`](#optional-match) node), the subquery is `null`
   under three-valued logic rather than an error.
-- **Function form not supported** — the deprecated `exists(n.prop)` *function*
-  form is not accepted; use `n.prop IS NOT NULL` (see [WHERE](#filtering--where)).
+- **Function form** - `exists(pattern)` is the same test written as a function:
+  `WHERE exists((c)-[:PLACED]->(:Order))`. The form `exists(n.prop)`, which Neo4j 5
+  removed, is not accepted; use `n.prop IS NOT NULL` (see [WHERE](#filtering--where)).
 
 ---
 
@@ -4301,6 +4313,24 @@ Semantics:
 - **Access** - a write inside a subquery is a write of the statement: a READ session refuses
   it before anything runs.
 - A schema command cannot stand inside a subquery.
+
+---
+
+## COLLECT subquery
+
+`COLLECT { [MATCH] pattern [WHERE predicate] RETURN expression }` is the list of
+`expression` over the matches of the pattern, for each row: a
+[pattern comprehension](#pattern-comprehension) in the words of a query.
+
+```cypher
+MATCH (a:Author)
+RETURN a.title AS author,
+       COLLECT { MATCH (a)-[:WROTE]->(post:Post) WHERE post.year > 2020 RETURN post.title } AS recent
+```
+
+No match gives an empty list. The subquery returns one column, and ends after `RETURN
+expression`: `DISTINCT`, `ORDER BY`, `SKIP` and `LIMIT` are not supported in it. It is not
+the `collect(expr)` [aggregation](#aggregation), which folds the rows of a group.
 
 ---
 
