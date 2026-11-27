@@ -2,7 +2,8 @@
 //!
 //! `EXPLAIN` runs nothing, so a variable that was never bound
 //! (`MATCH (p) RETURN q.name`) would go unnoticed: when the query runs, the
-//! error comes from evaluating the first row. [`unbound_variable`] finds it
+//! error comes from evaluating the first row.
+//! [`unbound_variable`](crate::cypher::scope::unbound_variable) finds it
 //! from the text alone.
 //!
 //! ```
