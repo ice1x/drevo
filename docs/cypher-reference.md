@@ -4275,6 +4275,61 @@ Semantics:
 
 ---
 
+## EXPLAIN and PROFILE
+
+`EXPLAIN` before a statement checks it and returns how it would run, one row per step,
+without running it: nothing is read, written or called. Use it to see whether a query
+starts from an index, and to check a query for errors.
+
+```cypher
+EXPLAIN
+MATCH (p:Person {title: 'Ann'})-[:WROTE]->(post:Post)
+WHERE post.year > 2020
+RETURN p.title AS author, count(post) AS posts
+ORDER BY posts DESC
+```
+
+| step | operator | details |
+|------|----------|---------|
+| 1 | `NodeIndexSeek` | `(p:Person {title: 'Ann'}) by title` |
+| 2 | `Expand` | `(p)-[:WROTE]->(post:Post)` |
+| 3 | `Filter` | `post.year > 2020` |
+| 4 | `Aggregation` | `count(post) AS posts for each p.title AS author` |
+| 5 | `Sort` | `posts DESC` |
+
+The first step of a pattern says how its first node is found:
+
+| Operator | Meaning |
+|----------|---------|
+| `Argument` | the node is already bound by an earlier clause |
+| `NodeByIdSeek` | looked up by id (`WHERE id(n) = ...`) |
+| `NodeIndexSeek` | looked up in the property index by the properties named after `by`: those with a value in the pattern (`{title: 'Ann'}`) or in a `WHERE` term (`n.title = 'Ann'`, `IN`, a numeric range) |
+| `NodeByLabelScan` | every node of the label is read |
+| `AllNodesScan` | every node is read; `kept by label` when the store has no label index |
+
+Then come `Expand` (`OptionalExpand`, `VarLengthExpand`, `ShortestPath`) for each
+relationship followed, `Filter`, `Projection` or `Aggregation`, `Sort`, `Distinct`, `Skip`,
+`Limit`, `Unwind`, `Create`, `Merge`, `SetProperty`, `Remove`, `Delete`, `ProcedureCall`,
+`VectorSearch`, and `Subquery` with the steps of its body indented under it. A `UNION` is
+a `Union` row between its arms.
+
+`PROFILE` runs the statement - its writes happen, and a READ session refuses a `PROFILE`
+of a write - and returns the same steps with two more columns in place of the statement's
+own rows: `rows`, the rows the clause left, and `ms`, the time it took. Both are on the
+last step of each clause.
+
+```cypher
+PROFILE
+MATCH (t:Task)
+WHERE t.priority >= 3
+RETURN t.status AS status, count(*) AS tasks
+```
+
+A statement with a syntax error, an unknown function or procedure, or a variable no
+clause has bound is refused by `EXPLAIN` as it would be when run.
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task

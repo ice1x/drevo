@@ -45,6 +45,8 @@ pub mod provenance;
 /// A small dependency-free regular-expression engine backing the Cypher
 /// `=~` operator. Task `00140`.
 pub mod regex;
+/// Which variables a query has at each clause, checked without running it.
+pub mod scope;
 pub mod security_admin;
 pub mod temporal;
 /// RFC 3339 parsing and normalisation of the `asOf` instant.

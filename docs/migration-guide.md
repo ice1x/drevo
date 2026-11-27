@@ -164,6 +164,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Pattern comprehension (`[(a)-[:R]->(b) WHERE p \| proj]`) | ✅ Supported (anchored on bound vars; no match / `null` anchor → `[]`). |
 | Pattern predicate (`WHERE (a)-[:R]->(b)`, `NOT (a)-[:R]->()`) | ✅ Supported (existence test; anchored on bound vars; `null` anchor → `null`). |
 | `WHERE` inside a pattern (`(n:L WHERE n.x > 1)`, `-[r:T WHERE r.y > 1]->`) | ✅ Supported in `MATCH` (not in `CREATE` / `MERGE`, not on a variable-length relationship). |
+| `EXPLAIN` / `PROFILE` | ✅ The plan is returned as rows (`step`, `operator`, `details`; `PROFILE` adds `rows`, `ms` and returns them in place of the statement's rows), not in the result summary. |
 | Existential subquery (`EXISTS { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (optional `MATCH` keyword + inner `WHERE`; bare node legal; `null` anchor → `null`). The deprecated `exists(n.prop)` function form is not — use `n.prop IS NOT NULL`. |
 | Counting subquery (`COUNT { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (integer match count; same surface as `EXISTS { … }`; `null` anchor → `null`; distinct from the `count(*)` aggregation). |
 | `CALL { ... }` subquery (`CALL (a, b) { ... }`, importing `WITH`, `UNION` inside) | ✅ Supported (runs once per incoming row; `IN TRANSACTIONS` is not). |

@@ -206,6 +206,8 @@ fn clause_keyword(clause: &Clause) -> &'static str {
         Clause::Foreach(_) => "FOREACH",
         Clause::Call(_) => "CALL",
         Clause::CallSubquery(_) => "CALL",
+        Clause::Explain(e) if e.profile => "PROFILE",
+        Clause::Explain(_) => "EXPLAIN",
         Clause::CreateVectorIndex(_) => "CREATE VECTOR INDEX",
         Clause::CreatePathIndex(_) => "CREATE INDEX",
         Clause::DropIndex(_) => "DROP INDEX",
@@ -408,7 +410,32 @@ impl Parser {
         if self.at_eof() {
             return Err(ParseError::Empty);
         }
-        let query = self.parse_union_parts()?;
+        let query = if self.is_soft_keyword("EXPLAIN") || self.is_soft_keyword("PROFILE") {
+            // The keyword stands before a whole statement, which becomes the
+            // one clause of this one.
+            let profile = self.is_soft_keyword("PROFILE");
+            let span = self.peek_span();
+            self.consume();
+            if self.at_eof() {
+                return Err(ParseError::Empty);
+            }
+            let query = self.parse_union_parts()?;
+            let explain = Clause::Explain(ExplainClause {
+                profile,
+                query,
+                span,
+            });
+            Query {
+                parts: vec![UnionPart {
+                    union: None,
+                    query: SingleQuery {
+                        clauses: vec![explain],
+                    },
+                }],
+            }
+        } else {
+            self.parse_union_parts()?
+        };
         // Optional trailing semicolon: Cypher allows one.
         let _ = self.match_kind(&TokenKind::Semicolon);
         Ok(query)
