@@ -301,6 +301,19 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Changed
 
+- **Cypher: a column without `AS` is named by its expression, not `expr`**
+  (issue #864). `RETURN count(*), max(p.age)` returned two columns both
+  named `expr`, so a client that reads a row by column name (a drevo-py row
+  is a `dict`, a Neo4j driver has `record["..."]`) kept one value and lost
+  the other. A column is now named by its text as written in the query, as
+  Neo4j does: `count(*)`, `max(p.age)`, `toUpper(p.name)`, `1 + 1`. A
+  variable, a property and a parameter keep their names (`p`, `p.name`,
+  `$limit`). A string literal is named as written (`'a'`, not `"a"`) and
+  `null` as written. **If you read the `expr` column, use the new name or
+  give the item an alias.** `UNION` arms written differently
+  (`RETURN 1 + 1 UNION RETURN 2 + 2`) no longer share the name `expr` and
+  need an alias, as in Neo4j.
+
 - **The Web UI's Storage panel follows the graph** (issue #777). While the
   panel is open, its file size, bloat share and keyspace counts reload after
   a change on `GET /events`, once per burst of changes, like the live

@@ -36,7 +36,7 @@ fn parses_match_return_single_node() {
             assert!(!r.distinct);
             assert_eq!(r.items.len(), 1);
             match &r.items[0] {
-                ProjectionItem::Expression { expr, alias } => {
+                ProjectionItem::Expression { expr, alias, .. } => {
                     assert!(matches!(expr, Expression::Variable(name, _) if name == "n"));
                     assert!(alias.is_none());
                 }
@@ -990,7 +990,7 @@ fn parses_case_in_return_with_alias() {
         _ => panic!(),
     };
     match &r.items[0] {
-        ProjectionItem::Expression { expr, alias } => {
+        ProjectionItem::Expression { expr, alias, .. } => {
             assert_eq!(alias.as_deref(), Some("verdict"));
             assert!(matches!(expr, Expression::Case { .. }));
         }

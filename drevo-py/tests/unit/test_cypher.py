@@ -33,6 +33,18 @@ def test_returns_columns_and_rows_as_dicts(drevo_db: drevo.Drevo) -> None:
     assert result.rows == [{"one": 1, "two": "two"}]
 
 
+def test_columns_without_an_alias_are_named_by_their_text(
+    drevo_db: drevo.Drevo, fake: Faker
+) -> None:
+    """Two aggregates in one RETURN are two keys of the row (#864)."""
+    ages = [fake.random_int(min=18, max=90) for _ in range(5)]
+    for age in ages:
+        drevo_db.execute("CREATE (:Person {age: $age})", {"age": age})
+    result = drevo_db.execute("MATCH (p:Person) RETURN count(*), max(p.age), min(p.age)")
+    assert result.columns == ["count(*)", "max(p.age)", "min(p.age)"]
+    assert result.rows == [{"count(*)": 5, "max(p.age)": max(ages), "min(p.age)": min(ages)}]
+
+
 def test_a_write_is_committed_and_counted(drevo_db: drevo.Drevo, fake: Faker) -> None:
     name = fake.name()
     created = drevo_db.execute("CREATE (:Person {name: $name})", {"name": name})

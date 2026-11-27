@@ -530,6 +530,15 @@ SKIP 0
 LIMIT 25
 ```
 
+A column without `AS` is named by its expression as written in the query, so each
+column of this result has a name of its own: `count(*)`, `max(p.born)` and
+`toUpper(p.title)`.
+
+```cypher
+MATCH (p:Person)
+RETURN toUpper(p.title), count(*), max(p.born)
+```
+
 A variable or alias is an identifier, or one of the keywords that only ever
 stand between operands or inside a clause: `starts`, `ends`, `contains`, `in`,
 `is`, `on`, `by`, `asc`, `desc`, `and`, `or`, `xor`. They keep working as

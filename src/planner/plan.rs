@@ -1048,7 +1048,7 @@ fn render_expand(
 fn describe_projection(item: &ProjectionItem) -> String {
     match item {
         ProjectionItem::Star => "*".to_string(),
-        ProjectionItem::Expression { expr, alias } => match alias {
+        ProjectionItem::Expression { expr, alias, .. } => match alias {
             Some(name) => format!("{} AS {name}", describe_expression(expr)),
             None => describe_expression(expr),
         },
