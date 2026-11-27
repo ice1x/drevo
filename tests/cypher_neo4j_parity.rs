@@ -270,6 +270,7 @@ fn value_to_json(v: &Value) -> Json {
         Value::Integer(i) => json!(i),
         Value::Float(f) => json!((f * FLOAT_DECIMALS).round() / FLOAT_DECIMALS),
         Value::String(s) => json!(s),
+        Value::Temporal(t) => json!(t.to_string()),
         Value::List(xs) => Json::Array(xs.iter().map(value_to_json).collect()),
         Value::Map(m) => map_to_json(m),
         Value::Node(n) => json!({

@@ -46,5 +46,6 @@ pub mod provenance;
 /// `=~` operator. Task `00140`.
 pub mod regex;
 pub mod security_admin;
+pub mod temporal;
 /// RFC 3339 parsing and normalisation of the `asOf` instant.
 pub(crate) mod timestamp;

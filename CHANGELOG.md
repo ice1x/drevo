@@ -34,6 +34,23 @@ history and the in-repo issue tracker; format loosely follows
   that type; a second click shows them again. The nodes stay where they are.
   The hidden types are kept when the canvas is redrawn and cleared when
   another database is picked.
+- **Cypher: dates, datetimes and durations** (issue #866).
+  `date('2026-11-27')`, `datetime('2026-11-27T10:00:00+02:00')` and
+  `duration('P1DT2H')` are values of their own kind, built from a text or a
+  map (`date({year, month, day})`, `datetime({epochMillis})`,
+  `duration({days, hours})`). They have components (`.year`, `.dayOfWeek`,
+  `.epochMillis`, `.months`), compare and sort as moments in time, and a
+  duration shifts a date or a datetime (`date() - duration('P7D')`).
+  `duration.between(a, b)`, `duration.inMonths`, `duration.inDays` and
+  `duration.inSeconds` give the time between two of them. A property stores
+  a temporal value as its ISO 8601 text and a client receives that text, as
+  before for `datetime()`; a comparison with a stored text reads it as a
+  value, so `WHERE e.created_at >= datetime() - duration('P7D')` works on
+  existing data. `datetime()` is now a datetime, not a text: `datetime().year`
+  is the year (it was `null`) and `datetime() + 1` is an error (it was the
+  text with `1` added); text functions still take it as its text. Named time
+  zones, `time`, the `local` types and `truncate` are not supported.
+
 - **`drevo.path.timetable`: `arriveBy` — be there by a time, leave as late
   as possible** (issue #776). `arriveBy` (seconds after midnight of the query
   date) replaces `departAt`; giving both, or neither, is refused. Each row is

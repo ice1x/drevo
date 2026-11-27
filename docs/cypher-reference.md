@@ -985,6 +985,7 @@ inside `UNWIND`, and as a grouping key alongside an aggregation.
 | Container predicate | `isEmpty(x)` — `true` when the container `x` holds no elements; accepts a String, a List, or a Map. Fills the gap left by `size`, which rejects a Map (so `size(m) = 0` cannot express it). A non-container argument errors |
 | Numeric predicate | `isNaN(n)` — `true` when `n` is the IEEE-754 NaN value, `false` for any other number (an `Integer` is never NaN, and `±Infinity` are numbers, not NaN). The only way to test for NaN, since `NaN = NaN` is *false*. See [isNaN()](#testing-for-nan-with-isnan) |
 | Non-deterministic | `rand()` — uniform `Float` in `[0.0, 1.0)`; `randomUUID()` — a fresh version-4 UUID string. Both take **no arguments** and re-draw on every evaluation (per row). See [Non-deterministic functions](#non-deterministic-functions) |
+| Dates and durations | `date`, `datetime`, `duration`, `duration.between(a, b)`, `duration.inMonths`, `duration.inDays`, `duration.inSeconds`, `timestamp()` - see [Dates and durations](#dates-and-durations) |
 | Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
 | Relationship | `startNode(r)`, `endNode(r)` — the source / target node of a relationship `r`. The companion to [`fts.searchRelationships`](#procedures): a `YIELD rel` endpoint is then directly reachable, no re-`MATCH`. A `NULL` argument yields `NULL`; a non-relationship argument errors |
 
@@ -1149,6 +1150,79 @@ UNWIND [sqrt(-1.0), sqrt(4.0), 0.0 / 0.0] AS x
 WITH x WHERE isNaN(x)
 RETURN count(*) AS nan_count
 ```
+
+---
+
+## Dates and durations
+
+A date, a datetime and a duration are values of their own kind: they compare and sort as
+moments in time, have components, and a duration shifts a date or a datetime.
+
+| Function | Returns |
+|----------|---------|
+| `date()` | today's date in UTC |
+| `date('2026-11-27')` | the date; also `'20261127'`, `'2026-11'` (the first of the month), and the date of a datetime text |
+| `date({year: 2026, month: 11, day: 27})` | the date; `month` and `day` default to 1 |
+| `datetime()` | the current moment in UTC, to the millisecond |
+| `datetime('2026-11-27T10:00:00+02:00')` | the moment; the offset is `Z` or `+hh:mm`, and UTC when there is none |
+| `datetime({year: 2026, month: 11, day: 27, hour: 10, timezone: '+02:00'})` | the moment; also `minute`, `second`, `millisecond`, `microsecond`, `nanosecond` |
+| `datetime({epochMillis: 0})` | the moment that many milliseconds after 1970-01-01T00:00:00Z; also `epochSeconds` |
+| `duration('P1DT2H30M')` | the duration (ISO 8601: `P`, then years `Y`, months `M`, weeks `W`, days `D`, then `T` and hours `H`, minutes `M`, seconds `S`) |
+| `duration({days: 1, hours: 2})` | the duration; the keys are `years`, `months`, `weeks`, `days`, `hours`, `minutes`, `seconds`, `milliseconds`, `microseconds`, `nanoseconds` |
+| `duration.between(a, b)` | the time from `a` to `b` in months, days and a rest of seconds |
+| `duration.inMonths(a, b)`, `duration.inDays(a, b)`, `duration.inSeconds(a, b)` | the same time counted in whole months, in days, or in seconds only |
+| `timestamp()` | milliseconds since 1970-01-01T00:00:00Z, an `Integer` |
+
+```cypher
+RETURN date('2026-11-27') + duration('P7D') AS next_week,
+       datetime('2026-11-27T10:00:00Z') - duration({hours: 36}) AS earlier,
+       duration.between(date('2026-01-01'), date('2026-11-27')) AS since_new_year
+```
+
+Components are read like properties; a name the value does not have gives `null`:
+
+| Value | Components |
+|-------|------------|
+| a date | `year`, `quarter`, `month`, `week` and `weekYear` (ISO 8601), `day`, `dayOfWeek` (Monday is 1), `ordinalDay`, `epochDays` |
+| a datetime | those of its date, in its own offset, and `hour`, `minute`, `second`, `millisecond`, `microsecond`, `nanosecond`, `epochSeconds`, `epochMillis`, `timezone` and `offset` (`'Z'`, `'+02:00'`), `offsetMinutes`, `offsetSeconds` |
+| a duration | totals `years`, `quarters`, `months`, `weeks`, `days`, `hours`, `minutes`, `seconds`, `milliseconds`, `microseconds`, `nanoseconds`; remainders `monthsOfYear`, `daysOfWeek`, `minutesOfHour`, `secondsOfMinute`, `millisecondsOfSecond` and the like |
+
+```cypher
+RETURN date('2026-11-27').dayOfWeek AS friday,
+       datetime('2026-11-27T12:00:00+02:00').epochMillis AS ms,
+       duration('P1Y2M').months AS months
+```
+
+Arithmetic and comparison:
+
+- A date or a datetime `+` / `-` a duration: the months first (31 January plus one month is
+  the last day of February), then the days, then the seconds. Hours move a date only when
+  they make a whole day.
+- Two durations add and subtract; a duration is multiplied and divided by a number.
+- Two dates, two datetimes and two durations compare with `=`, `<`, `>` and sort in
+  `ORDER BY`. Two datetimes are compared as moments: `10:00Z` equals `12:00+02:00`.
+  Durations are ordered by length, a month counting as a twelfth of a year.
+- The time between two dates is `duration.between(a, b)`, not `a - b`.
+
+**Stored and returned as text.** A property stores a temporal value as its ISO 8601 text
+(`'2026-11-27'`, `'2026-11-27T10:00:00.000Z'`, `'P1DT2H'`), and a client receives that
+text. The text of a datetime always has milliseconds, so stored datetimes of one offset
+also sort as text. Reading works both ways: `date(e.day)` and `datetime(t.created_at)`
+turn the stored text back into a value, and a comparison of a temporal value with a text
+reads the text as a value of the same kind, so this finds the entries of the last week:
+
+```cypher
+MATCH (e:Entry)
+WHERE e.created_at >= datetime() - duration('P7D')
+RETURN e.title AS title, date(e.created_at) AS day
+ORDER BY datetime(e.created_at) DESC
+```
+
+A text function takes a temporal value as its text: `left(datetime(), 10)`,
+`toString(date())`, `'due ' + date()`.
+
+Not supported: named time zones (`[Europe/Kyiv]`; write an offset), `time` and the `local`
+types, and `truncate`.
 
 ---
 

@@ -528,6 +528,8 @@ pub(crate) fn value_to_json(v: &CypherValue) -> serde_json::Value {
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
         CypherValue::String(s) => serde_json::Value::String(s.clone()),
+        // A date, datetime or duration is its ISO 8601 text.
+        CypherValue::Temporal(t) => serde_json::Value::String(t.to_string()),
         CypherValue::List(items) => {
             serde_json::Value::Array(items.iter().map(value_to_json).collect())
         }

@@ -45,6 +45,39 @@ def test_columns_without_an_alias_are_named_by_their_text(
     assert result.rows == [{"count(*)": 5, "max(p.age)": max(ages), "min(p.age)": min(ages)}]
 
 
+def test_dates_and_durations_come_back_as_iso_text(drevo_db: drevo.Drevo) -> None:
+    """A temporal value is its ISO 8601 text outside a query (#866)."""
+    row = drevo_db.execute(
+        "RETURN date('2026-11-27') + duration('P7D') AS due, "
+        "datetime('2026-11-27T12:00:00+02:00') AS at, "
+        "duration({days: 1, hours: 2}) AS took, "
+        "date('2026-11-27').dayOfWeek AS weekday, "
+        "datetime().year >= 2026 AS now_has_a_year"
+    )[0]
+    assert row == {
+        "due": "2026-12-04",
+        "at": "2026-11-27T12:00:00.000+02:00",
+        "took": "P1DT2H",
+        "weekday": 5,
+        "now_has_a_year": True,
+    }
+
+
+def test_a_stored_datetime_compares_as_a_moment(drevo_db: drevo.Drevo, fake: Faker) -> None:
+    title = fake.sentence()
+    drevo_db.execute(
+        "CREATE (:Entry {title: $title, created_at: datetime('2026-11-27T09:00:00+02:00')})",
+        {"title": title},
+    )
+    stored = drevo_db.execute("MATCH (e:Entry) RETURN e.created_at AS at")[0]["at"]
+    assert stored == "2026-11-27T09:00:00.000+02:00"
+    found = drevo_db.execute(
+        "MATCH (e:Entry) WHERE e.created_at > datetime('2026-11-27T06:30:00Z') "
+        "RETURN e.title AS title"
+    ).rows
+    assert found == [{"title": title}]
+
+
 def test_a_write_is_committed_and_counted(drevo_db: drevo.Drevo, fake: Faker) -> None:
     name = fake.name()
     created = drevo_db.execute("CREATE (:Person {name: $name})", {"name": name})

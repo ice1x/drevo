@@ -282,6 +282,8 @@ pub fn value_to_pb(v: &Value) -> pb::Value {
         Value::Integer(i) => kind(Kind::Integer(*i)),
         Value::Float(f) => kind(Kind::Float(*f)),
         Value::String(s) => kind(Kind::String(s.clone())),
+        // A date, datetime or duration goes out as its ISO 8601 text.
+        Value::Temporal(t) => kind(Kind::String(t.to_string())),
         Value::List(items) => {
             let floats: Option<Vec<f64>> = items
                 .iter()
