@@ -1888,14 +1888,26 @@ impl Parser {
         } else {
             None
         };
+        let predicate = self.parse_pattern_predicate()?;
         self.eat(&TokenKind::RParen, "`)` to close node pattern")?;
         Ok(NodePattern {
             variable,
             labels,
             label_expr,
             properties,
+            predicate,
             span,
         })
+    }
+
+    /// `WHERE predicate` as the last thing inside a node's parentheses or a
+    /// relationship's brackets, when it is there.
+    fn parse_pattern_predicate(&mut self) -> ParseResult<Option<Box<Expression>>> {
+        if !matches!(self.peek_kind(), TokenKind::Where) {
+            return Ok(None);
+        }
+        self.consume(); // WHERE
+        Ok(Some(Box::new(self.parse_expression()?)))
     }
 
     fn parse_relationship_pattern(&mut self) -> ParseResult<RelationshipPattern> {
@@ -1917,6 +1929,7 @@ impl Parser {
         let mut types = Vec::new();
         let mut length = None;
         let mut properties = None;
+        let mut predicate = None;
 
         // Optional detail in [...]
         if matches!(self.peek_kind(), TokenKind::LBracket) {
@@ -1948,6 +1961,7 @@ impl Parser {
             if matches!(self.peek_kind(), TokenKind::LBrace) {
                 properties = Some(self.parse_map_literal()?);
             }
+            predicate = self.parse_pattern_predicate()?;
             self.eat(&TokenKind::RBracket, "`]` to close relationship detail")?;
         }
 
@@ -1988,6 +2002,7 @@ impl Parser {
             types,
             length,
             properties,
+            predicate,
             span,
         })
     }

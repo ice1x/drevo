@@ -1770,7 +1770,11 @@ fn try_count_pushdown(
     }
     let node = &pattern.path.head;
     // A label expression (#572) is not a single label count.
-    if node.properties.is_some() || node.labels.len() > 1 || node.label_expr.is_some() {
+    if node.properties.is_some()
+        || node.labels.len() > 1
+        || node.label_expr.is_some()
+        || node.predicate.is_some()
+    {
         return Ok(None);
     }
     if r.distinct || !r.order_by.is_empty() || r.skip.is_some() || r.limit.is_some() {
@@ -2162,14 +2166,60 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
     Ok(())
 }
 
+/// Check a `WHERE` written inside a node or relationship pattern (#867): a
+/// predicate has no meaning where the pattern is created, and none per hop
+/// of a variable-length relationship.
+fn validate_pattern_predicate(
+    predicate: Option<&Expression>,
+    span: Span,
+    creating: bool,
+    variable_length: bool,
+) -> ExecResultT<()> {
+    let Some(predicate) = predicate else {
+        return Ok(());
+    };
+    let refused = if creating {
+        Some("WHERE inside a pattern of CREATE or MERGE (it filters what MATCH finds)")
+    } else if variable_length {
+        Some("WHERE inside a variable-length relationship")
+    } else {
+        None
+    };
+    match refused {
+        Some(feature) => Err(ExecError::Unsupported {
+            feature: feature.into(),
+            span,
+        }),
+        None => validate_expr_supported(predicate),
+    }
+}
+
 fn validate_path_supported(path: &PathPattern, creating: bool) -> ExecResultT<()> {
     if let Some(map) = &path.head.properties {
         for (_, expr) in &map.entries {
             validate_expr_supported(expr)?;
         }
     }
+    validate_pattern_predicate(
+        path.head.predicate.as_deref(),
+        path.head.span,
+        creating,
+        false,
+    )?;
     for segment in &path.tail {
         let rel = &segment.relationship;
+        validate_pattern_predicate(
+            rel.predicate.as_deref(),
+            rel.span,
+            creating,
+            rel.length.is_some(),
+        )?;
+        validate_pattern_predicate(
+            segment.node.predicate.as_deref(),
+            segment.node.span,
+            creating,
+            false,
+        )?;
         // Variable-length paths are MATCH-only; in CREATE they make
         // no semantic sense (how many edges should be created?) so
         // we keep the rejection there.
@@ -8648,6 +8698,7 @@ impl<'a> Executor<'a> {
             labels: labels.iter().map(|l| (*l).to_string()).collect(),
             label_expr: None,
             properties: Some(properties),
+            predicate: None,
             span,
         };
         self.ensure_node_for_create(&pattern, &mut row)
@@ -8672,6 +8723,7 @@ impl<'a> Executor<'a> {
             types: vec![rel_type.to_string()],
             length: None,
             properties,
+            predicate: None,
             span,
         };
         self.create_relationship(from, &rel, to, &mut row)
@@ -16219,6 +16271,18 @@ fn node_matches_pattern(
             }
         }
     }
+    // `(p:Person WHERE p.age > 28)`: the predicate sees the node under its
+    // variable, next to what the row already holds.
+    if let Some(predicate) = &pattern.predicate {
+        let mut scope = row.clone();
+        if let Some(variable) = &pattern.variable {
+            scope.insert(variable.clone(), Value::Node(Arc::clone(nv)));
+        }
+        return Ok(matches!(
+            executor.eval(predicate, &scope)?,
+            Value::Bool(true)
+        ));
+    }
     Ok(true)
 }
 
@@ -16243,6 +16307,20 @@ fn edge_matches_pattern(
                 return Ok(false);
             }
         }
+    }
+    // `-[r:KNOWS WHERE r.since > 2020]->`: as for a node.
+    if let Some(predicate) = &pattern.predicate {
+        let mut scope = row.clone();
+        if let Some(variable) = &pattern.variable {
+            scope.insert(
+                variable.clone(),
+                Value::Relationship(executor.seen_edge(edge)),
+            );
+        }
+        return Ok(matches!(
+            executor.eval(predicate, &scope)?,
+            Value::Bool(true)
+        ));
     }
     Ok(true)
 }
