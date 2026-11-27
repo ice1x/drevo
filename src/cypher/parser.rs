@@ -1625,7 +1625,11 @@ impl Parser {
             self.consume();
             return Ok(ProjectionItem::Star);
         }
+        let start = self.peek_span().start;
         let expr = self.parse_expression()?;
+        // The expression's own text, from its first token to its last.
+        let end = self.tokens[self.pos.saturating_sub(1)].span.end;
+        let text = self.source.get(start..end).unwrap_or_default().to_string();
         let alias = if matches!(self.peek_kind(), TokenKind::As) {
             self.consume();
             let (name, _) = self.consume_variable()?;
@@ -1633,7 +1637,7 @@ impl Parser {
         } else {
             None
         };
-        Ok(ProjectionItem::Expression { expr, alias })
+        Ok(ProjectionItem::Expression { expr, alias, text })
     }
 
     fn parse_post_projection(

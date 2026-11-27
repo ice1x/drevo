@@ -666,7 +666,7 @@ fn bugs_severity_sla_with_case_projection() {
         Clause::Return(r) => r,
         _ => panic!(),
     };
-    if let ProjectionItem::Expression { expr, alias } = &r.items[1] {
+    if let ProjectionItem::Expression { expr, alias, .. } = &r.items[1] {
         assert_eq!(alias.as_deref(), Some("sla_hours"));
         match expr {
             Expression::Case {

@@ -265,6 +265,10 @@ pub enum ProjectionItem {
         expr: Expression,
         /// Optional alias name introduced with `AS`.
         alias: Option<String>,
+        /// The expression as written in the query (`count(*)`,
+        /// `toUpper(p.name)`): the name of the column when there is no
+        /// alias. Empty for an item that was not parsed from text.
+        text: String,
     },
 }
 

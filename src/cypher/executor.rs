@@ -1757,7 +1757,7 @@ fn try_count_pushdown(
     if r.distinct || !r.order_by.is_empty() || r.skip.is_some() || r.limit.is_some() {
         return Ok(None);
     }
-    let [ProjectionItem::Expression { expr, alias }] = r.items.as_slice() else {
+    let [ProjectionItem::Expression { expr, alias, text }] = r.items.as_slice() else {
         return Ok(None);
     };
     let Expression::FunctionCall {
@@ -1800,7 +1800,7 @@ fn try_count_pushdown(
             count
         }
     };
-    let column = alias.clone().unwrap_or_else(|| default_column_name(expr));
+    let column = alias.clone().unwrap_or_else(|| column_name(expr, text));
     Ok(Some(ExecResult {
         columns: vec![column],
         rows: vec![vec![Value::Integer(count as i64)]],
@@ -1944,7 +1944,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             for item in &w.items {
                 match item {
                     ProjectionItem::Star => {}
-                    ProjectionItem::Expression { expr, alias } => {
+                    ProjectionItem::Expression { expr, alias, .. } => {
                         // Cypher requires an alias for every projection
                         // in WITH that isn't a bare variable — otherwise
                         // the projected column has no name downstream
@@ -12466,10 +12466,10 @@ impl<'a> Executor<'a> {
                         }
                     }
                 }
-                ProjectionItem::Expression { expr, alias } => {
+                ProjectionItem::Expression { expr, alias, text } => {
                     let column = match alias {
                         Some(a) => a.clone(),
-                        None => default_column_name(expr),
+                        None => column_name(expr, text),
                     };
                     columns.push(column);
                     projections.push(expr.clone());
@@ -17466,6 +17466,25 @@ fn format_float(f: f64) -> String {
         format!("{f:.1}")
     } else {
         format!("{f}")
+    }
+}
+
+/// The name of a projected column that has no alias.
+///
+/// A variable, a property or a parameter is named in its plain form
+/// (`p`, `p.name`, `$limit`); any other expression by its `text`, as it is
+/// written in the query (`count(*)`, `toUpper(p.name)`, `1 + 1`), so two
+/// columns of one `RETURN` get the same name only when they are written
+/// the same.
+fn column_name(expr: &Expression, text: &str) -> String {
+    let plain = matches!(
+        expr,
+        Expression::Variable(..) | Expression::Property { .. } | Expression::Parameter(..)
+    );
+    if plain || text.is_empty() {
+        default_column_name(expr)
+    } else {
+        text.to_string()
     }
 }
 
