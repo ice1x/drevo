@@ -205,6 +205,7 @@ fn clause_keyword(clause: &Clause) -> &'static str {
         Clause::Search(_) => "SEARCH",
         Clause::Foreach(_) => "FOREACH",
         Clause::Call(_) => "CALL",
+        Clause::CallSubquery(_) => "CALL",
         Clause::CreateVectorIndex(_) => "CREATE VECTOR INDEX",
         Clause::CreatePathIndex(_) => "CREATE INDEX",
         Clause::DropIndex(_) => "DROP INDEX",
@@ -407,6 +408,15 @@ impl Parser {
         if self.at_eof() {
             return Err(ParseError::Empty);
         }
+        let query = self.parse_union_parts()?;
+        // Optional trailing semicolon: Cypher allows one.
+        let _ = self.match_kind(&TokenKind::Semicolon);
+        Ok(query)
+    }
+
+    /// One single query, or several joined by `UNION` / `UNION ALL`: a whole
+    /// statement, or the body of a `CALL { ... }` subquery.
+    fn parse_union_parts(&mut self) -> ParseResult<Query> {
         let mut parts = Vec::new();
         let first = self.parse_single_query()?;
         parts.push(UnionPart {
@@ -427,15 +437,18 @@ impl Parser {
                 query: next,
             });
         }
-        // Optional trailing semicolon — Cypher allows one.
-        let _ = self.match_kind(&TokenKind::Semicolon);
         Ok(Query { parts })
     }
 
     fn parse_single_query(&mut self) -> ParseResult<SingleQuery> {
         let mut clauses = Vec::new();
         loop {
-            if self.at_eof() || matches!(self.peek_kind(), TokenKind::Union | TokenKind::Semicolon)
+            // A `}` closes the subquery this single query is the body of.
+            if self.at_eof()
+                || matches!(
+                    self.peek_kind(),
+                    TokenKind::Union | TokenKind::Semicolon | TokenKind::RBrace
+                )
             {
                 break;
             }
@@ -1543,6 +1556,16 @@ impl Parser {
     fn parse_call(&mut self) -> ParseResult<Clause> {
         let span = self.peek_span();
         self.consume(); // CALL
+        match self.peek_kind() {
+            TokenKind::LBrace => {
+                return self.parse_call_subquery(span, SubqueryImports::LeadingWith)
+            }
+            TokenKind::LParen => {
+                let imports = self.parse_subquery_scope()?;
+                return self.parse_call_subquery(span, imports);
+            }
+            _ => {}
+        }
         let (first, _) = self.consume_variable()?;
         let mut name = vec![first];
         while matches!(self.peek_kind(), TokenKind::Dot) {
@@ -1587,6 +1610,69 @@ impl Parser {
             args,
             yields,
             where_clause,
+            span,
+        }))
+    }
+
+    /// The scope of `CALL (a, b) { ... }`: `(*)`, `()` or a list of outer
+    /// variables. The opening `(` is the next token.
+    fn parse_subquery_scope(&mut self) -> ParseResult<SubqueryImports> {
+        self.consume(); // (
+        if matches!(self.peek_kind(), TokenKind::Star) {
+            self.consume();
+            self.eat(
+                &TokenKind::RParen,
+                ") to close the subquery's variable scope",
+            )?;
+            return Ok(SubqueryImports::All);
+        }
+        let mut names = Vec::new();
+        while !matches!(self.peek_kind(), TokenKind::RParen) {
+            if !names.is_empty() {
+                self.eat(&TokenKind::Comma, ", between the subquery's variables")?;
+            }
+            let (name, _) = self.consume_variable()?;
+            names.push(name);
+        }
+        self.consume(); // )
+        Ok(SubqueryImports::Variables(names))
+    }
+
+    /// The braces of `CALL { query }` and an `IN TRANSACTIONS` after them.
+    /// The opening `{` is expected next; `span` is the `CALL` keyword's.
+    fn parse_call_subquery(&mut self, span: Span, imports: SubqueryImports) -> ParseResult<Clause> {
+        self.eat(&TokenKind::LBrace, "{ to open the subquery")?;
+        // Subqueries nest; bound the recursion like expressions.
+        self.depth += 1;
+        if self.depth > MAX_EXPRESSION_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::NestingTooDeep { span });
+        }
+        let body = self.parse_union_parts();
+        self.depth -= 1;
+        let body = body?;
+        self.eat(&TokenKind::RBrace, "} to close the subquery")?;
+        // `IN [n CONCURRENT] TRANSACTIONS [OF n ROW[S]]`: kept as a flag so
+        // the executor can say it is not supported, by name.
+        let in_transactions = matches!(self.peek_kind(), TokenKind::In);
+        if in_transactions {
+            self.consume(); // IN
+            while !self.at_eof() && !self.is_soft_keyword("TRANSACTIONS") {
+                self.consume();
+            }
+            self.expect_soft_keyword("TRANSACTIONS")?;
+            if self.is_soft_keyword("OF") {
+                self.consume();
+                self.parse_expression()?;
+                if self.is_soft_keyword("ROWS") || self.is_soft_keyword("ROW") {
+                    self.consume();
+                }
+            }
+        }
+        Ok(Clause::CallSubquery(CallSubquery {
+            imports,
+            body,
+            in_transactions,
             span,
         }))
     }

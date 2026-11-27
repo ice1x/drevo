@@ -167,12 +167,12 @@ mod community_procs;
 pub(crate) use community_procs::opening_community_summarize;
 
 use crate::cypher::ast::{
-    BinaryOp, CallClause, Clause, CreateClause, CreateConstraint, CreatePathIndex,
+    BinaryOp, CallClause, CallSubquery, Clause, CreateClause, CreateConstraint, CreatePathIndex,
     CreateVectorIndex, Direction as AstDirection, DropConstraint, DropIndex, Expression,
     ForeachClause, LabelExpr, ListPredicateKind, MapLiteral, MapProjectionSelector, MatchClause,
     NamedPattern, NodePattern, OrderDirection, OrderItem, PathPattern, ProjectionItem, Query,
-    RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery, UnaryOp,
-    UnionKind, UnwindClause, YieldItem,
+    RelLength, RelationshipPattern, ReturnClause, SearchClause, ShortestKind, SingleQuery,
+    SubqueryImports, UnaryOp, UnionKind, UnwindClause, YieldItem,
 };
 use crate::cypher::entity_resolution::config::{Resolve, ResolveOptions};
 use crate::cypher::lexer::Span;
@@ -1504,11 +1504,7 @@ pub const READ_PROCEDURES: &[&str] = &[
 /// reads.
 #[must_use]
 pub fn read_access_refusal(query: &Query) -> Option<String> {
-    let clauses = query
-        .parts
-        .iter()
-        .flat_map(|part| part.query.clauses.iter());
-    for clause in clauses {
+    for clause in query.clauses_deep() {
         let refused = match clause {
             Clause::Create(_) => Some("write to the graph (CREATE)".to_string()),
             Clause::Merge(_) => Some("write to the graph (MERGE)".to_string()),
@@ -1526,7 +1522,9 @@ pub fn read_access_refusal(query: &Query) -> Option<String> {
                 let name = call.name.join(".");
                 (!READ_PROCEDURES.contains(&name.as_str())).then(|| refused_procedure(&name))
             }
-            Clause::Match(_)
+            // The clauses of its body are in `clauses_deep` themselves.
+            Clause::CallSubquery(_)
+            | Clause::Match(_)
             | Clause::With(_)
             | Clause::Return(_)
             | Clause::Unwind(_)
@@ -1658,26 +1656,7 @@ fn execute_inner(
     // `Some` for every `i > 0` and the *kind that joins arm `i-1` to arm
     // `i`*. A query must not mix `UNION` and `UNION ALL`, so collapse the
     // joining kinds into a single agreed kind (or reject the mix).
-    let mut kind: Option<UnionKind> = None;
-    for part in &query.parts[1..] {
-        // The parser guarantees `union` is `Some` for every arm after the
-        // first; a `None` would be a parser bug, so skip it rather than
-        // panic (no `unwrap`/`expect` in library code).
-        let Some(this) = part.union else { continue };
-        match kind {
-            None => kind = Some(this),
-            Some(prev) if prev != this => {
-                return Err(ExecError::UnionMismatch {
-                    message: "a query cannot mix UNION and UNION ALL — \
-                              use one or the other for every arm"
-                        .into(),
-                    span: first_clause_span(&part.query.clauses),
-                });
-            }
-            Some(_) => {}
-        }
-    }
-    let distinct = matches!(kind, Some(UnionKind::Distinct));
+    let distinct = matches!(union_kind(query)?, Some(UnionKind::Distinct));
 
     // Execute every arm independently and concatenate the rows in arm
     // order. Every arm must project the same column names in the same
@@ -1714,6 +1693,31 @@ fn execute_inner(
         rows,
         stats,
     })
+}
+
+/// The one kind of `UNION` that joins the arms of `query`: `None` for a
+/// single arm, an error when `UNION` and `UNION ALL` are mixed.
+fn union_kind(query: &Query) -> ExecResultT<Option<UnionKind>> {
+    let mut kind: Option<UnionKind> = None;
+    for part in query.parts.iter().skip(1) {
+        // The parser guarantees `union` is `Some` for every arm after the
+        // first; a `None` would be a parser bug, so skip it rather than
+        // panic (no `unwrap`/`expect` in library code).
+        let Some(this) = part.union else { continue };
+        match kind {
+            None => kind = Some(this),
+            Some(prev) if prev != this => {
+                return Err(ExecError::UnionMismatch {
+                    message: "a query cannot mix UNION and UNION ALL: \
+                              use one or the other for every arm"
+                        .into(),
+                    span: first_clause_span(&part.query.clauses),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(kind)
 }
 
 /// The count pushdown (RFC `docs/rfc-native-core.md` #307): recognise
@@ -1820,9 +1824,7 @@ fn execute_single(
     // effects run, so a query that would eventually fail on a varlen
     // path or a function call gets the deterministic error even when
     // the underlying graph is empty.
-    for clause in &single.clauses {
-        validate_clause_supported(clause)?;
-    }
+    validate_clauses_supported(&single.clauses)?;
 
     // Count pushdown (RFC #307): a bare `MATCH (n[:L]) RETURN count(*)`
     // needs no enumeration, no projection, and no row machinery — answer it
@@ -1844,18 +1846,7 @@ fn execute_single(
 
     let mut executor = Executor::new(engine, ctx, params);
 
-    for (i, clause) in single.clauses.iter().enumerate() {
-        // A MATCH whose rows the next clause cuts to a LIMIT need not produce
-        // more than that (#714).
-        let next = single.clauses.get(i + 1);
-        (executor.match_cap, executor.match_top) = match clause {
-            Clause::Match(_) => (executor.limit_cap(next), executor.top_cap(next)),
-            _ => (None, None),
-        };
-        executor.run_clause(clause)?;
-    }
-    executor.match_cap = None;
-    executor.match_top = None;
+    executor.run_clauses(&single.clauses)?;
 
     // A query that ends in `CALL … YIELD …` (or `SHOW … [YIELD …] [WHERE …]`)
     // returns the yielded columns, as in Neo4j.
@@ -1882,8 +1873,78 @@ fn add_stats(a: ExecStats, b: ExecStats) -> ExecStats {
     }
 }
 
+/// Check the clauses of one single query (a statement, a `UNION` arm or
+/// the body of a subquery) before any of them runs.
+fn validate_clauses_supported(clauses: &[Clause]) -> ExecResultT<()> {
+    for clause in clauses {
+        validate_clause_supported(clause)?;
+    }
+    // The rows a subquery returns have to go somewhere.
+    if let Some(Clause::CallSubquery(sub)) = clauses.last() {
+        if subquery_returns(&sub.body) {
+            return Err(ExecError::Unsupported {
+                feature: "a query that ends with a CALL { ... } subquery returning rows \
+                          (write a RETURN after it)"
+                    .into(),
+                span: sub.span,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Whether the body of a subquery ends with `RETURN`: its rows are then
+/// joined to the outer row. A body that does not runs for its writes.
+fn subquery_returns(body: &Query) -> bool {
+    body.parts
+        .iter()
+        .any(|part| matches!(part.query.clauses.last(), Some(Clause::Return(_))))
+}
+
+/// Check a `CALL { ... }` subquery before it runs.
+fn validate_subquery_supported(sub: &CallSubquery) -> ExecResultT<()> {
+    if sub.in_transactions {
+        return Err(ExecError::Unsupported {
+            feature: "CALL { ... } IN TRANSACTIONS".into(),
+            span: sub.span,
+        });
+    }
+    union_kind(&sub.body)?;
+    let returns = subquery_returns(&sub.body);
+    for part in &sub.body.parts {
+        let clauses = &part.query.clauses;
+        if returns != matches!(clauses.last(), Some(Clause::Return(_))) {
+            return Err(ExecError::UnionMismatch {
+                message: "every arm of a UNION in a CALL { ... } subquery must end with RETURN, \
+                          or none"
+                    .into(),
+                span: first_clause_span(clauses),
+            });
+        }
+        for clause in clauses {
+            if matches!(
+                clause,
+                Clause::CreateVectorIndex(_)
+                    | Clause::CreatePathIndex(_)
+                    | Clause::DropIndex(_)
+                    | Clause::CreateConstraint(_)
+                    | Clause::DropConstraint(_)
+                    | Clause::SchemaNoop(_)
+            ) {
+                return Err(ExecError::Unsupported {
+                    feature: "a schema command inside a CALL { ... } subquery".into(),
+                    span: first_clause_span(std::slice::from_ref(clause)),
+                });
+            }
+        }
+        validate_clauses_supported(clauses)?;
+    }
+    Ok(())
+}
+
 fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
     match clause {
+        Clause::CallSubquery(sub) => validate_subquery_supported(sub)?,
         Clause::Match(m) => {
             if let Some(expr) = &m.where_clause {
                 validate_expr_supported(expr)?;
@@ -3127,6 +3188,7 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::Unwind(u) => u.span,
             Clause::Foreach(f) => f.span,
             Clause::Call(c) => c.span,
+            Clause::CallSubquery(c) => c.span,
             Clause::Search(s) => s.span,
             Clause::CreateVectorIndex(c) => c.span,
             Clause::CreatePathIndex(c) => c.span,
@@ -3955,8 +4017,122 @@ impl<'a> Executor<'a> {
         }
     }
 
+    /// Run the clauses of one single query in order over the current rows.
+    fn run_clauses(&mut self, clauses: &[Clause]) -> ExecResultT<()> {
+        for (i, clause) in clauses.iter().enumerate() {
+            // A MATCH whose rows the next clause cuts to a LIMIT need not
+            // produce more than that (#714).
+            let next = clauses.get(i + 1);
+            (self.match_cap, self.match_top) = match clause {
+                Clause::Match(_) => (self.limit_cap(next), self.top_cap(next)),
+                _ => (None, None),
+            };
+            self.run_clause(clause)?;
+        }
+        self.match_cap = None;
+        self.match_top = None;
+        Ok(())
+    }
+
+    /// `CALL { ... }` (issue #865): run the body once for each incoming row.
+    ///
+    /// The body starts from one row holding the variables it imports. When
+    /// it ends with `RETURN`, each row it returns is joined to the incoming
+    /// row, and an incoming row with no returned row is dropped. When it
+    /// does not, it runs for its writes and the incoming row passes through.
+    /// The body runs in this executor, so its writes, their counters, the
+    /// transaction, the privileges and the time limit are the statement's.
+    fn run_call_subquery(&mut self, sub: &CallSubquery) -> ExecResultT<()> {
+        let returns = subquery_returns(&sub.body);
+        let distinct = matches!(union_kind(&sub.body)?, Some(UnionKind::Distinct));
+        let outer = std::mem::take(&mut self.bindings);
+        let mut joined = Vec::with_capacity(outer.len());
+        for row in outer {
+            let start = self.subquery_scope(sub, &row)?;
+            let mut columns: Option<Vec<String>> = None;
+            let mut rows: Vec<Vec<Value>> = Vec::new();
+            for part in &sub.body.parts {
+                self.bindings = vec![start.clone()];
+                self.run_clauses(&part.query.clauses)?;
+                if !returns {
+                    continue;
+                }
+                let arm_columns = std::mem::take(&mut self.result_columns);
+                rows.append(&mut self.result_rows);
+                match &columns {
+                    None => columns = Some(arm_columns),
+                    Some(expected) if *expected != arm_columns => {
+                        return Err(ExecError::UnionMismatch {
+                            message: format!(
+                                "all arms of a UNION must return the same columns: \
+                                 expected {expected:?}, this arm returns {arm_columns:?}"
+                            ),
+                            span: first_clause_span(&part.query.clauses),
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+            if !returns {
+                joined.push(row);
+                continue;
+            }
+            if distinct {
+                dedup_rows(&mut rows);
+            }
+            let columns = columns.unwrap_or_default();
+            if let Some(taken) = columns.iter().find(|column| row.contains_key(*column)) {
+                return Err(ExecError::InvalidMutation(format!(
+                    "the CALL {{ ... }} subquery returns `{taken}`, which is already a variable \
+                     of the outer query; return it under another name"
+                )));
+            }
+            for values in rows {
+                let mut out = row.clone();
+                out.extend(columns.iter().cloned().zip(values));
+                joined.push(out);
+            }
+        }
+        self.bindings = joined;
+        Ok(())
+    }
+
+    /// The row a subquery's body starts from: the outer variables it
+    /// imports out of `row`.
+    fn subquery_scope(&self, sub: &CallSubquery, row: &Bindings) -> ExecResultT<Bindings> {
+        match &sub.imports {
+            SubqueryImports::All => Ok(row.clone()),
+            SubqueryImports::Variables(names) => {
+                let mut scope = Bindings::with_capacity(names.len());
+                for name in names {
+                    let value = row.get(name).ok_or_else(|| ExecError::UnboundVariable {
+                        name: name.clone(),
+                        span: sub.span,
+                    })?;
+                    scope.insert(name.clone(), value.clone());
+                }
+                Ok(scope)
+            }
+            // A leading `WITH` picks the outer variables it names; a body
+            // that starts with anything else sees none.
+            SubqueryImports::LeadingWith => {
+                let imports = sub
+                    .body
+                    .parts
+                    .iter()
+                    .all(|part| matches!(part.query.clauses.first(), Some(Clause::With(_))));
+                Ok(if imports {
+                    row.clone()
+                } else {
+                    Bindings::new()
+                })
+            }
+        }
+    }
+
     fn run_clause(&mut self, clause: &Clause) -> ExecResultT<()> {
         match clause {
+            Clause::CallSubquery(sub) => self.run_call_subquery(sub),
             Clause::Match(m) => self.run_match(m),
             Clause::Create(c) => self.run_create(c),
             Clause::Return(r) => self.run_return(r),
