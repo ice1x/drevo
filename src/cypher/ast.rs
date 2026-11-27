@@ -39,8 +39,11 @@ impl Query {
         fn collect<'q>(query: &'q Query, out: &mut Vec<&'q Clause>) {
             for clause in query.parts.iter().flat_map(|part| &part.query.clauses) {
                 out.push(clause);
-                if let Clause::CallSubquery(sub) = clause {
-                    collect(&sub.body, out);
+                match clause {
+                    Clause::CallSubquery(sub) => collect(&sub.body, out),
+                    // `PROFILE` runs its query; `EXPLAIN` runs nothing.
+                    Clause::Explain(explain) if explain.profile => collect(&explain.query, out),
+                    _ => {}
                 }
             }
         }
@@ -105,6 +108,9 @@ pub enum Clause {
     /// `CALL { query }` / `CALL (a, b) { query }` - a subquery run once per
     /// incoming row (issue #865).
     CallSubquery(CallSubquery),
+    /// `EXPLAIN query` / `PROFILE query` - the only clause of its statement
+    /// (issue #868).
+    Explain(ExplainClause),
     /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
     /// LIMIT k) [SCORE AS alias]` — declarative vector search (issue #430),
     /// lowered to the cosine `vector_scan`.
@@ -391,6 +397,22 @@ pub struct CallSubquery {
     /// `true` when `IN TRANSACTIONS` follows the closing brace.
     pub in_transactions: bool,
     /// Source span of the `CALL` keyword.
+    pub span: Span,
+}
+
+/// `EXPLAIN query` or `PROFILE query` (issue #868).
+///
+/// `EXPLAIN` checks `query` and returns how it would run, one row per step,
+/// without running it. `PROFILE` runs it - its writes happen - and returns
+/// the same steps with the rows each produced and the time it took, in
+/// place of the query's own rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExplainClause {
+    /// `true` for `PROFILE`.
+    pub profile: bool,
+    /// The statement after the keyword.
+    pub query: Query,
+    /// Source span of the keyword.
     pub span: Span,
 }
 

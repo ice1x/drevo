@@ -454,6 +454,8 @@ impl PlanBuilder<'_> {
                 | Clause::Call(_)
                 // A subquery's rows depend on its body, which is not costed.
                 | Clause::CallSubquery(_)
+                // `EXPLAIN` / `PROFILE` describe a statement of their own.
+                | Clause::Explain(_)
                 // Schema DDL (issue #532) produces no rows — pass through.
                 | Clause::CreateVectorIndex(_)
                 | Clause::CreatePathIndex(_)
@@ -1059,7 +1061,7 @@ fn describe_projection(item: &ProjectionItem) -> String {
 
 /// Render an expression to a compact source-like string for `EXPLAIN`. Covers
 /// the common shapes; anything else collapses to `…`.
-fn describe_expression(expr: &Expression) -> String {
+pub(crate) fn describe_expression(expr: &Expression) -> String {
     match expr {
         Expression::Integer(n, _) => n.to_string(),
         Expression::Float(f, _) => f.to_string(),

@@ -35,6 +35,17 @@ history and the in-repo issue tracker; format loosely follows
   the variables bound before it. It works in `OPTIONAL MATCH`, pattern
   comprehensions, `EXISTS { }` and `COUNT { }`, and is refused by name in
   `CREATE`, `MERGE` and on a variable-length relationship.
+- **Cypher: `EXPLAIN` and `PROFILE`** (issue #868). `EXPLAIN <statement>`
+  checks the statement and returns how it would run as a table of steps
+  (`step`, `operator`, `details`) without running it: whether a pattern
+  starts from the property index (`NodeIndexSeek ... by name`), a label
+  scan or every node, then each expand, filter, aggregation, sort and
+  write. It reads, writes and calls nothing, so it is allowed in a READ
+  session and safe for a statement that would call a model. `PROFILE
+  <statement>` runs the statement and returns the same steps with the rows
+  each clause left and the time it took (`rows`, `ms`), in place of the
+  statement's own rows. A variable no clause has bound is reported by
+  `EXPLAIN` without a run (`drevo::cypher::scope::unbound_variable`).
 
 - **Web UI: show or hide relationships by type** (issue #858). Under the
   label chips, a "Relationships" row has one chip per relationship type on

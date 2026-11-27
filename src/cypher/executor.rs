@@ -600,6 +600,7 @@ pub type ExecResultT<T> = Result<T, ExecError>;
 /// node enumeration, pattern expansion, path searches) call [`tick`], which
 /// costs a counter bump and only reads the clock every [`TICK_STRIDE`] calls.
 /// With no deadline set, `tick` is a single thread-local read.
+mod explain;
 mod extract_procs;
 mod ingest_procs;
 mod temporal_fns;
@@ -1537,8 +1538,10 @@ pub fn read_access_refusal(query: &Query) -> Option<String> {
                 let name = call.name.join(".");
                 (!READ_PROCEDURES.contains(&name.as_str())).then(|| refused_procedure(&name))
             }
-            // The clauses of its body are in `clauses_deep` themselves.
+            // The clauses of its body are in `clauses_deep` themselves, and
+            // so are those of a `PROFILE`; an `EXPLAIN` runs none.
             Clause::CallSubquery(_)
+            | Clause::Explain(_)
             | Clause::Match(_)
             | Clause::With(_)
             | Clause::Return(_)
@@ -1708,6 +1711,27 @@ fn execute_inner(
         rows,
         stats,
     })
+}
+
+/// The start of a `PROFILE` measurement; nothing where there is no clock.
+#[cfg(not(target_arch = "wasm32"))]
+fn profile_clock() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn profile_clock() {}
+
+/// Milliseconds since [`profile_clock`], to the microsecond; `null` where
+/// there is no clock.
+#[cfg(not(target_arch = "wasm32"))]
+fn profile_elapsed_ms(started: std::time::Instant) -> Value {
+    Value::Float((started.elapsed().as_micros() as f64) / 1000.0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn profile_elapsed_ms((): ()) -> Value {
+    Value::Null
 }
 
 /// The one kind of `UNION` that joins the arms of `query`: `None` for a
@@ -1964,6 +1988,19 @@ fn validate_subquery_supported(sub: &CallSubquery) -> ExecResultT<()> {
 fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
     match clause {
         Clause::CallSubquery(sub) => validate_subquery_supported(sub)?,
+        Clause::Explain(explain) => {
+            union_kind(&explain.query)?;
+            for part in &explain.query.parts {
+                validate_clauses_supported(&part.query.clauses)?;
+            }
+            // Nothing runs under EXPLAIN, so a variable no clause bound is
+            // looked for here; under PROFILE the run itself reports it.
+            if !explain.profile {
+                if let Some((name, span)) = crate::cypher::scope::unbound_variable(&explain.query) {
+                    return Err(ExecError::UnboundVariable { name, span });
+                }
+            }
+        }
         Clause::Match(m) => {
             if let Some(expr) = &m.where_clause {
                 validate_expr_supported(expr)?;
@@ -3261,6 +3298,7 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
             Clause::Foreach(f) => f.span,
             Clause::Call(c) => c.span,
             Clause::CallSubquery(c) => c.span,
+            Clause::Explain(e) => e.span,
             Clause::Search(s) => s.span,
             Clause::CreateVectorIndex(c) => c.span,
             Clause::CreatePathIndex(c) => c.span,
@@ -4211,9 +4249,90 @@ impl<'a> Executor<'a> {
         }
     }
 
+    /// `EXPLAIN query` / `PROFILE query` (issue #868): the steps of the
+    /// query as the statement's rows.
+    ///
+    /// `EXPLAIN` runs nothing: the query was checked in the upfront sweep,
+    /// and its plan is written from the text and the indexes the store
+    /// has. `PROFILE` runs every clause in this executor - its writes
+    /// happen and are counted - and adds to the last step of each clause
+    /// the rows the clause left and the time it took.
+    fn run_explain(&mut self, e: &crate::cypher::ast::ExplainClause) -> ExecResultT<()> {
+        let mut planner = explain::Planner::new(explain::Indexes {
+            properties: self.native_props.is_some(),
+            labels: self.native_labels.is_some(),
+        });
+        let text = |s: &str| Value::String(s.to_string());
+        let mut rows: Vec<Vec<Value>> = Vec::new();
+        let mut push = |steps: Vec<explain::Step>, measured: Option<(usize, Value)>| {
+            let last = steps.len().saturating_sub(1);
+            for (i, step) in steps.into_iter().enumerate() {
+                let mut row = vec![
+                    Value::Integer(rows.len() as i64 + 1),
+                    text(step.operator),
+                    Value::String(step.details),
+                ];
+                if e.profile {
+                    match &measured {
+                        Some((produced, ms)) if i == last => {
+                            row.push(Value::Integer(*produced as i64));
+                            row.push(ms.clone());
+                        }
+                        _ => row.extend([Value::Null, Value::Null]),
+                    }
+                }
+                rows.push(row);
+            }
+        };
+        if e.profile {
+            for part in &e.query.parts {
+                if let Some(kind) = part.union {
+                    let union = explain::Step {
+                        operator: "Union",
+                        details: format!("{kind:?}").to_uppercase(),
+                    };
+                    push(vec![union], None);
+                }
+                planner.start_arm();
+                self.bindings = vec![Bindings::new()];
+                let clauses = &part.query.clauses;
+                for (i, clause) in clauses.iter().enumerate() {
+                    let next = clauses.get(i + 1);
+                    (self.match_cap, self.match_top) = match clause {
+                        Clause::Match(_) => (self.limit_cap(next), self.top_cap(next)),
+                        _ => (None, None),
+                    };
+                    let started = profile_clock();
+                    self.run_clause(clause)?;
+                    let ms = profile_elapsed_ms(started);
+                    let produced = match clause {
+                        Clause::Return(_) => self.result_rows.len(),
+                        _ => self.bindings.len(),
+                    };
+                    push(planner.clause(clause), Some((produced, ms)));
+                }
+                self.match_cap = None;
+                self.match_top = None;
+                // The rows of the query itself are not the statement's.
+                self.result_rows.clear();
+            }
+        } else {
+            push(planner.query(&e.query), None);
+        }
+        self.result_columns = ["step", "operator", "details"]
+            .into_iter()
+            .chain(e.profile.then_some(["rows", "ms"]).into_iter().flatten())
+            .map(str::to_string)
+            .collect();
+        self.result_rows = rows;
+        self.bindings = Vec::new();
+        Ok(())
+    }
+
     fn run_clause(&mut self, clause: &Clause) -> ExecResultT<()> {
         match clause {
             Clause::CallSubquery(sub) => self.run_call_subquery(sub),
+            Clause::Explain(e) => self.run_explain(e),
             Clause::Match(m) => self.run_match(m),
             Clause::Create(c) => self.run_create(c),
             Clause::Return(r) => self.run_return(r),
