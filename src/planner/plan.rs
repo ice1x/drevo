@@ -452,6 +452,8 @@ impl PlanBuilder<'_> {
                 | Clause::Foreach(_)
                 | Clause::Search(_)
                 | Clause::Call(_)
+                // A subquery's rows depend on its body, which is not costed.
+                | Clause::CallSubquery(_)
                 // Schema DDL (issue #532) produces no rows — pass through.
                 | Clause::CreateVectorIndex(_)
                 | Clause::CreatePathIndex(_)

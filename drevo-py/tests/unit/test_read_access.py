@@ -91,6 +91,23 @@ def test_a_read_never_calls_the_model(journal: drevo.Drevo, fake: Faker) -> None
             journal.begin(access="read").execute(query, {"text": text})
 
 
+def test_a_read_refuses_a_write_inside_a_subquery(journal: drevo.Drevo) -> None:
+    """A `CALL { ... }` subquery does not hide a write from READ access (#865)."""
+    hidden = "MATCH (e:Entry) CALL { WITH e SET e.mood = 'calm' }"
+    with pytest.raises(drevo.AccessModeError, match="READ"):
+        journal.execute(hidden, access="read")
+    with pytest.raises(drevo.AccessModeError, match="READ"):
+        journal.begin(access="read").execute(hidden)
+    assert journal.execute(
+        "MATCH (e:Entry) WHERE e.mood IS NOT NULL RETURN count(e) AS c"
+    ).rows == [{"c": 0}]
+    per_entry = journal.execute(
+        "MATCH (e:Entry) CALL (e) { RETURN size(e.title) AS n } RETURN sum(n) AS total",
+        access="read",
+    ).rows
+    assert per_entry == [{"total": 21}]
+
+
 def test_matching_full_text_and_vector_search_work_in_a_read_transaction(
     journal: drevo.Drevo,
 ) -> None:

@@ -27,6 +27,29 @@ pub struct Query {
     pub parts: Vec<UnionPart>,
 }
 
+impl Query {
+    /// Every clause of the query: those of each `UNION` arm and, behind
+    /// them, the clauses of every `CALL { ... }` subquery at any depth.
+    ///
+    /// A check that asks "does this statement write / change the schema /
+    /// call this procedure" has to look here, or a subquery would hide the
+    /// clause from it.
+    #[must_use]
+    pub fn clauses_deep(&self) -> Vec<&Clause> {
+        fn collect<'q>(query: &'q Query, out: &mut Vec<&'q Clause>) {
+            for clause in query.parts.iter().flat_map(|part| &part.query.clauses) {
+                out.push(clause);
+                if let Clause::CallSubquery(sub) = clause {
+                    collect(&sub.body, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        collect(self, &mut out);
+        out
+    }
+}
+
 /// One arm of a UNION-joined [`Query`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnionPart {
@@ -79,6 +102,9 @@ pub enum Clause {
     Foreach(ForeachClause),
     /// `CALL proc.name(args) [YIELD col [AS alias] … [WHERE pred]]`.
     Call(CallClause),
+    /// `CALL { query }` / `CALL (a, b) { query }` - a subquery run once per
+    /// incoming row (issue #865).
+    CallSubquery(CallSubquery),
     /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
     /// LIMIT k) [SCORE AS alias]` — declarative vector search (issue #430),
     /// lowered to the cosine `vector_scan`.
@@ -345,6 +371,40 @@ pub struct CallClause {
     pub where_clause: Option<Expression>,
     /// Source span of the `CALL` keyword.
     pub span: Span,
+}
+
+/// `CALL { ... }` - a subquery clause (issue #865).
+///
+/// The `body` runs once for each incoming row. When it ends with `RETURN`,
+/// every row it returns is the incoming row plus the returned columns (no
+/// returned row drops the incoming one). When it does not, it runs for its
+/// writes and the incoming row passes through unchanged.
+///
+/// The body sees the variables named by `imports` and nothing else of the
+/// outer query.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallSubquery {
+    /// Which outer variables the body sees.
+    pub imports: SubqueryImports,
+    /// The query between the braces; it may be a `UNION`.
+    pub body: Query,
+    /// `true` when `IN TRANSACTIONS` follows the closing brace.
+    pub in_transactions: bool,
+    /// Source span of the `CALL` keyword.
+    pub span: Span,
+}
+
+/// How a [`CallSubquery`] takes variables from the outer query.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SubqueryImports {
+    /// `CALL { WITH a, b ... }` - the body starts with a `WITH` that names
+    /// the outer variables it needs; without one it sees none.
+    LeadingWith,
+    /// `CALL (a, b) { ... }` - the listed variables; `CALL () { ... }` is the
+    /// empty list.
+    Variables(Vec<String>),
+    /// `CALL (*) { ... }` - every outer variable.
+    All,
 }
 
 /// `SEARCH` clause — declarative vector search (issue #430).

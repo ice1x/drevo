@@ -18,6 +18,16 @@ history and the in-repo issue tracker; format loosely follows
   `NativeService::client_deadline(limit)` returns a `ClientDeadline` whose
   `run` bounds every statement run inside it.
 
+- **Cypher: `CALL { ... }` subqueries** (issue #865). A subquery runs once
+  for each incoming row: `CALL (p) { MATCH (p)-[:WROTE]->(post) RETURN
+  post.title AS latest ORDER BY post.created_at DESC LIMIT 1 }` gives the
+  latest post of each person. The body imports outer variables through the
+  list after `CALL` (`(*)` for all) or a leading `WITH`, may be a `UNION`,
+  and may write (`CALL { WITH t SET t.reviewed = true }`). A row the body
+  returns nothing for is dropped; a body without `RETURN` passes the rows
+  through. A write inside a subquery is refused in a READ session before
+  anything runs. `IN TRANSACTIONS` parses and is refused by name.
+
 - **Web UI: show or hide relationships by type** (issue #858). Under the
   label chips, a "Relationships" row has one chip per relationship type on
   the canvas, with its count, most common first. A click hides the edges of

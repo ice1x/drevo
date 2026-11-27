@@ -4132,6 +4132,59 @@ Semantics:
 
 ---
 
+## CALL subquery
+
+`CALL { ... }` runs a query of its own once for each incoming row. Use it for "the top N
+for each", for a `UNION` whose rows are processed further, and for a write per row.
+
+The body sees only the outer variables it imports: list them in parentheses after `CALL`
+(`CALL (*)` imports all of them, `CALL ()` none), or start the body with a `WITH` that
+names them.
+
+```cypher
+MATCH (p:Person)
+CALL (p) {
+  MATCH (p)-[:WROTE]->(post:Post)
+  RETURN post.title AS latest
+  ORDER BY post.created_at DESC
+  LIMIT 1
+}
+RETURN p.title AS author, latest
+```
+
+```cypher
+CALL {
+  MATCH (t:Task) RETURN t.title AS title
+  UNION
+  MATCH (b:Bug) RETURN b.title AS title
+}
+RETURN count(title) AS items
+```
+
+```cypher
+MATCH (t:Task)
+CALL { WITH t SET t.reviewed = true }
+RETURN count(t) AS reviewed
+```
+
+Semantics:
+
+- **Rows** - when the body ends with `RETURN`, each row it returns is the incoming row plus
+  the returned columns; an incoming row the body returns nothing for is dropped. An
+  aggregation always returns a row, so `RETURN count(x) AS c` keeps every incoming row,
+  with `0` where nothing matched.
+- **Writes only** - a body without `RETURN` runs for its writes; the incoming rows pass
+  through unchanged.
+- **Names** - a returned column cannot have the name of an outer variable. A query cannot
+  end with a subquery that returns rows: write a `RETURN` after it.
+- **`UNION`** - the arms return the same columns; `UNION` removes duplicates for each
+  incoming row, `UNION ALL` keeps them.
+- **Access** - a write inside a subquery is a write of the statement: a READ session refuses
+  it before anything runs.
+- A schema command cannot stand inside a subquery.
+
+---
+
 ## Not yet supported
 
 These constructs **parse** but the executor returns `ExecError::Unsupported` with a task
@@ -4143,6 +4196,7 @@ error rather than a crash or a silent wrong answer.
 |-----------|--------|
 | User-defined / `apoc.*` / `gds.*` procedures | only the built-in `db.*` introspection procedures exist — see [CALL](#call) |
 | Variable-length paths in `CREATE` | executor returns `Unsupported` (semantically meaningless — how many edges?) |
+| `CALL { ... } IN TRANSACTIONS` | parsed; the executor returns `Unsupported`. A [CALL subquery](#call-subquery) runs in the statement's transaction |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)
 or [Python](sdk-reference.md#python-sdk) API, which expose the underlying traversal, FTS, and

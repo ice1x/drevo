@@ -4110,28 +4110,26 @@ impl NativeService {
 /// ([`context_records_trace`]).
 fn query_calls_writing_procedure(query: &Query, params: &HashMap<String, Value>) -> bool {
     use crate::cypher::ast::Clause;
-    query.parts.iter().any(|part| {
-        part.query.clauses.iter().any(|c| {
-            let Clause::Call(call) = c else {
-                return false;
-            };
-            match call.name.join(".").as_str() {
-                "drevo.memory.addMessage"
-                | "drevo.memory.recordReasoning"
-                | "drevo.memory.rememberEntity"
-                | "drevo.memory.assertFact"
-                | "drevo.memory.retractFact"
-                | "drevo.memory.addSource"
-                | "drevo.memory.addChunks"
-                | "drevo.entity.merge"
-                | "drevo.rag.pruneTraces"
-                | "drevo.extract.ingest"
-                | "drevo.community.summarize" => true,
-                name if ingest_changes_jobs(name) => true,
-                "drevo.rag.context" => context_records_trace(call.args.get(1), params),
-                _ => false,
-            }
-        })
+    query.clauses_deep().into_iter().any(|c| {
+        let Clause::Call(call) = c else {
+            return false;
+        };
+        match call.name.join(".").as_str() {
+            "drevo.memory.addMessage"
+            | "drevo.memory.recordReasoning"
+            | "drevo.memory.rememberEntity"
+            | "drevo.memory.assertFact"
+            | "drevo.memory.retractFact"
+            | "drevo.memory.addSource"
+            | "drevo.memory.addChunks"
+            | "drevo.entity.merge"
+            | "drevo.rag.pruneTraces"
+            | "drevo.extract.ingest"
+            | "drevo.community.summarize" => true,
+            name if ingest_changes_jobs(name) => true,
+            "drevo.rag.context" => context_records_trace(call.args.get(1), params),
+            _ => false,
+        }
     })
 }
 
@@ -4199,27 +4197,25 @@ fn context_records_trace(
 /// beside the log.
 fn query_changes_schema(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
-    query.parts.iter().any(|part| {
-        part.query.clauses.iter().any(|c| match c {
-            Clause::CreateVectorIndex(_)
-            | Clause::CreatePathIndex(_)
-            | Clause::DropIndex(_)
-            | Clause::CreateConstraint(_)
-            | Clause::DropConstraint(_) => true,
-            Clause::Call(call) => {
-                let name = call.name.join(".");
-                matches!(
+    query.clauses_deep().into_iter().any(|c| match c {
+        Clause::CreateVectorIndex(_)
+        | Clause::CreatePathIndex(_)
+        | Clause::DropIndex(_)
+        | Clause::CreateConstraint(_)
+        | Clause::DropConstraint(_) => true,
+        Clause::Call(call) => {
+            let name = call.name.join(".");
+            matches!(
+                name.as_str(),
+                "drevo.semantic.register" | "drevo.semantic.registerRel"
+            ) || (name.starts_with("apoc.trigger.") && name != "apoc.trigger.list")
+                || matches!(
                     name.as_str(),
-                    "drevo.semantic.register" | "drevo.semantic.registerRel"
-                ) || (name.starts_with("apoc.trigger.") && name != "apoc.trigger.list")
-                    || matches!(
-                        name.as_str(),
-                        "drevo.sequence.create" | "drevo.sequence.drop"
-                    )
-                    || name == "drevo.indexes.setSecondary"
-            }
-            _ => false,
-        })
+                    "drevo.sequence.create" | "drevo.sequence.drop"
+                )
+                || name == "drevo.indexes.setSecondary"
+        }
+        _ => false,
     })
 }
 
@@ -4227,18 +4223,16 @@ fn query_changes_schema(query: &Query) -> bool {
 /// `REMOVE`, `DELETE`, `FOREACH`) in any `UNION` arm.
 fn query_writes(query: &Query) -> bool {
     use crate::cypher::ast::Clause;
-    query.parts.iter().any(|part| {
-        part.query.clauses.iter().any(|c| {
-            matches!(
-                c,
-                Clause::Create(_)
-                    | Clause::Merge(_)
-                    | Clause::Set(_)
-                    | Clause::Remove(_)
-                    | Clause::Delete(_)
-                    | Clause::Foreach(_)
-            )
-        })
+    query.clauses_deep().into_iter().any(|c| {
+        matches!(
+            c,
+            Clause::Create(_)
+                | Clause::Merge(_)
+                | Clause::Set(_)
+                | Clause::Remove(_)
+                | Clause::Delete(_)
+                | Clause::Foreach(_)
+        )
     })
 }
 

@@ -165,6 +165,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Pattern predicate (`WHERE (a)-[:R]->(b)`, `NOT (a)-[:R]->()`) | ✅ Supported (existence test; anchored on bound vars; `null` anchor → `null`). |
 | Existential subquery (`EXISTS { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (optional `MATCH` keyword + inner `WHERE`; bare node legal; `null` anchor → `null`). The deprecated `exists(n.prop)` function form is not — use `n.prop IS NOT NULL`. |
 | Counting subquery (`COUNT { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (integer match count; same surface as `EXISTS { … }`; `null` anchor → `null`; distinct from the `count(*)` aggregation). |
+| `CALL { ... }` subquery (`CALL (a, b) { ... }`, importing `WITH`, `UNION` inside) | ✅ Supported (runs once per incoming row; `IN TRANSACTIONS` is not). |
 | Anonymous nodes in `MATCH` (`(:Label)-->(b)`, `()-->(b)`, `(a)-->()-->(c)`) | ✅ Supported (head & intermediate). |
 | `shortestPath` / `allShortestPaths` (`p = shortestPath((a)-[*]-(b))`) | ✅ Supported (breadth-first; wraps one variable-length leg; `allShortestPaths` returns every minimal-length path; disconnected → no rows). |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
