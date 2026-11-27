@@ -239,7 +239,8 @@ impl<'s> CardinalityEstimator<'s> {
             | BinaryOp::RegexMatch => DEFAULT_STRING_MATCH_SELECTIVITY,
             // Arithmetic operators are not boolean predicates; treat any such
             // shape with the opaque fallback.
-            BinaryOp::Add
+            BinaryOp::Concat
+            | BinaryOp::Add
             | BinaryOp::Sub
             | BinaryOp::Mul
             | BinaryOp::Div

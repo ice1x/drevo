@@ -1210,6 +1210,8 @@ pub enum BinaryOp {
     Ge,
     /// `=~` — regex match.
     RegexMatch,
+    /// `||` - concatenation of two strings or two lists.
+    Concat,
     /// `AND`.
     And,
     /// `OR`.

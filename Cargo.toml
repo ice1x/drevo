@@ -85,6 +85,8 @@ crate-type = ["lib", "cdylib", "staticlib"]
 # re-exported below so `drevo::model::…` keeps resolving. See `drevo-core/`.
 drevo-core = { path = "drevo-core" }
 thiserror = "2"
+# Unicode normalization forms for the Cypher `normalize()` function.
+unicode-normalization = "0.1"
 serde = { version = "1", features = ["derive"] }
 bincode = { version = "2", features = ["serde"] }
 # Optional HTTP body formats (issue #581), behind `format-cbor` /

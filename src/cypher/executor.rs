@@ -2793,6 +2793,10 @@ const SCALAR_FUNCTIONS: &[&str] = &[
     "right",
     "reverse",
     "toString",
+    "btrim",
+    "char_length",
+    "character_length",
+    "normalize",
     "apoc.text.levenshteinDistance",
     "apoc.text.levenshteinSimilarity",
     "drevo.entity.normalise",
@@ -2838,6 +2842,8 @@ const SCALAR_FUNCTIONS: &[&str] = &[
     "last",
     "tail",
     "coalesce",
+    "nullIf",
+    "valueType",
     "range",
     "keys",
     "labels",
@@ -16894,6 +16900,22 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     if name == "coalesce" {
         return scalar_coalesce(args, span);
     }
+    // These two also see a `null`: `nullIf(1, null)` is `1`, and
+    // `valueType(null)` is `'NULL'`.
+    if name == "nullif" {
+        let [value, other] = <[Value; 2]>::try_from(args).map_err(|args| {
+            fn_err(
+                "nullIf",
+                format!("expected 2 argument(s), got {}", args.len()),
+                span,
+            )
+        })?;
+        return Ok(if value == other { Value::Null } else { value });
+    }
+    if name == "valuetype" {
+        let value = take_one("valueType", args, span)?;
+        return Ok(Value::String(value_type(&value, true)));
+    }
     if args.iter().any(|v| matches!(v, Value::Null)) {
         return Ok(Value::Null);
     }
@@ -16920,6 +16942,15 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "left" => scalar_left_right(name, args, span, true),
         "right" => scalar_left_right(name, args, span, false),
         "tostring" => scalar_tostring(args, span),
+        "char_length" | "character_length" => {
+            let text = take_one(name, args, span)?;
+            let text = string_arg(name, &text, "the", span)?;
+            Ok(Value::Integer(
+                i64::try_from(text.chars().count()).unwrap_or(i64::MAX),
+            ))
+        }
+        "btrim" => scalar_btrim(args, span),
+        "normalize" => scalar_normalize(args, span),
         "apoc.text.levenshteindistance" => {
             let (a, b) = two_strings("apoc.text.levenshteinDistance", &args, span)?;
             Ok(Value::Integer(
@@ -17046,7 +17077,114 @@ fn fn_err(name: &str, message: impl Into<String>, span: Span) -> ExecError {
 /// The scalar functions that take a date, a datetime or a duration as a
 /// value.
 fn takes_temporal(name: &str) -> bool {
-    matches!(name, "date" | "datetime" | "duration") || name.starts_with("duration.")
+    matches!(
+        name,
+        "date" | "datetime" | "duration" | "nullif" | "valuetype"
+    ) || name.starts_with("duration.")
+}
+
+/// The type of `value` as `valueType()` names it (Neo4j 5): `INTEGER NOT
+/// NULL`, `LIST<STRING NOT NULL> NOT NULL`, `NULL`. `outer` is `false` for
+/// the element type inside a list of mixed nullability.
+fn value_type(value: &Value, not_null: bool) -> String {
+    use crate::cypher::temporal::Temporal;
+    let name = match value {
+        Value::Null => return "NULL".into(),
+        Value::Bool(_) => "BOOLEAN".to_string(),
+        Value::Integer(_) => "INTEGER".to_string(),
+        Value::Float(_) => "FLOAT".to_string(),
+        Value::String(_) => "STRING".to_string(),
+        Value::Map(_) => "MAP".to_string(),
+        Value::Node(_) => "NODE".to_string(),
+        Value::Relationship(_) => "RELATIONSHIP".to_string(),
+        Value::Path(_) => "PATH".to_string(),
+        Value::Temporal(Temporal::Date(_)) => "DATE".to_string(),
+        Value::Temporal(Temporal::DateTime(_)) => "ZONED DATETIME".to_string(),
+        Value::Temporal(Temporal::Duration(_)) => "DURATION".to_string(),
+        Value::List(items) => {
+            let has_null = items.iter().any(|item| matches!(item, Value::Null));
+            let mut inner: Vec<String> = items
+                .iter()
+                .filter(|item| !matches!(item, Value::Null))
+                .map(|item| value_type(item, false))
+                .collect();
+            inner.sort();
+            inner.dedup();
+            let element = match inner.as_slice() {
+                [] if has_null => "NULL".to_string(),
+                [] => "NOTHING".to_string(),
+                [one] if has_null => one.clone(),
+                [one] => format!("{one} NOT NULL"),
+                _ => "ANY".to_string(),
+            };
+            format!("LIST<{element}>")
+        }
+    };
+    if not_null {
+        format!("{name} NOT NULL")
+    } else {
+        name
+    }
+}
+
+/// `btrim(text)` trims white space from both ends; `btrim(text, chars)`
+/// trims the characters of `chars`.
+fn scalar_btrim(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    match args.as_slice() {
+        [text] => Ok(Value::String(
+            string_arg("btrim", text, "first", span)?.trim().to_string(),
+        )),
+        [text, chars] => {
+            let chars: Vec<char> = string_arg("btrim", chars, "second", span)?
+                .chars()
+                .collect();
+            Ok(Value::String(
+                string_arg("btrim", text, "first", span)?
+                    .trim_matches(chars.as_slice())
+                    .to_string(),
+            ))
+        }
+        _ => Err(fn_err(
+            "btrim",
+            format!("expected 1 or 2 argument(s), got {}", args.len()),
+            span,
+        )),
+    }
+}
+
+/// `normalize(text)` gives the Unicode normal form NFC of `text`;
+/// `normalize(text, form)` the form named: `'NFC'`, `'NFD'`, `'NFKC'` or
+/// `'NFKD'`.
+fn scalar_normalize(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
+    use unicode_normalization::UnicodeNormalization;
+    let (text, form) = match args.as_slice() {
+        [text] => (text, "NFC".to_string()),
+        [text, form] => (
+            text,
+            string_arg("normalize", form, "second", span)?.to_ascii_uppercase(),
+        ),
+        _ => {
+            return Err(fn_err(
+                "normalize",
+                format!("expected 1 or 2 argument(s), got {}", args.len()),
+                span,
+            ))
+        }
+    };
+    let text = string_arg("normalize", text, "first", span)?;
+    Ok(Value::String(match form.as_str() {
+        "NFC" => text.nfc().collect(),
+        "NFD" => text.nfd().collect(),
+        "NFKC" => text.nfkc().collect(),
+        "NFKD" => text.nfkd().collect(),
+        other => {
+            return Err(fn_err(
+                "normalize",
+                format!("the form must be NFC, NFD, NFKC or NFKD, got `{other}`"),
+                span,
+            ))
+        }
+    }))
 }
 
 /// A temporal value as its ISO 8601 text; any other value as it is.
@@ -18422,6 +18560,26 @@ fn eval_binary(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<
         And | Or | Xor => boolean(op, lhs, rhs, span),
         StartsWith | EndsWith | Contains => string_test(op, lhs, rhs, span),
         RegexMatch => regex_match(lhs, rhs, span),
+        Concat => concat(lhs, rhs, span),
+    }
+}
+
+/// `a || b`: two strings joined, or two lists joined; `null` when either
+/// side is `null`. Unlike `+` it takes nothing else: `1 || 2` is an error,
+/// not a sum.
+fn concat(lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value> {
+    match (lhs, rhs) {
+        (Value::Null, _) | (_, Value::Null) => Ok(Value::Null),
+        (Value::String(a), Value::String(b)) => Ok(Value::String(a + &b)),
+        (Value::List(mut a), Value::List(b)) => {
+            a.extend(b);
+            Ok(Value::List(a))
+        }
+        (lhs, rhs) => Err(ExecError::TypeMismatch {
+            expected: "String || String or List || List".into(),
+            got: format!("{} || {}", lhs.type_name(), rhs.type_name()),
+            span,
+        }),
     }
 }
 

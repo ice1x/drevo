@@ -1146,6 +1146,7 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
         BinaryOp::Gt => ">",
         BinaryOp::Ge => ">=",
         BinaryOp::RegexMatch => "=~",
+        BinaryOp::Concat => "||",
         BinaryOp::And => "AND",
         BinaryOp::Or => "OR",
         BinaryOp::Xor => "XOR",

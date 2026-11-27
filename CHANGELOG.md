@@ -8,6 +8,15 @@ history and the in-repo issue tracker; format loosely follows
 
 ### Added
 
+- **Cypher: small pieces of Neo4j 5** (issue #870). Functions `nullIf(a, b)`,
+  `valueType(x)`, `char_length(s)` / `character_length(s)`,
+  `btrim(s[, chars])` and `normalize(s[, form])`; the `||` operator, which
+  joins two strings or two lists; `exists(pattern)`, the function form of a
+  pattern predicate (`exists(n.prop)` is refused with what to write
+  instead); and `COLLECT { MATCH ... RETURN expr }`, the list of `expr` over
+  the matches for each row. `normalize` adds the `unicode-normalization`
+  crate.
+
 - **drevo-py: read-only statements and time limits** (issue #853).
   `Drevo.execute(..., access="read", timeout_ms=...)` and
   `Drevo.begin(access="read", timeout_ms=...)` give embedded drevo the rules
