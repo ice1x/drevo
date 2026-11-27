@@ -513,6 +513,22 @@ RETURN n.title AS item, n:Bug|Feature AS tracked
 - In relationship patterns, only `[r:A|B]` is supported. For other type expressions, filter
   with `WHERE r:!A`.
 
+### WHERE inside a pattern
+
+A `WHERE` can stand inside a node's parentheses or a relationship's brackets, after the
+labels and the property map. The node or relationship matches only when the predicate is
+true; the predicate may use its own variable and the variables bound before it.
+
+```cypher
+MATCH (a:Author WHERE a.title STARTS WITH 'A')-[w:WROTE WHERE w.year > 2020]->(post:Post)
+RETURN a.title AS author, post.title AS post
+```
+
+It means the same as that predicate in the clause's `WHERE`, and is checked while the
+pattern is matched: in an `OPTIONAL MATCH` a node the predicate rejects leaves the row
+with `null`, and it works inside a pattern comprehension, `EXISTS { }` and `COUNT { }`.
+It is not allowed in `CREATE` or `MERGE`, or on a variable-length relationship.
+
 ---
 
 ## Projecting — RETURN and WITH

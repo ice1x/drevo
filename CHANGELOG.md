@@ -28,6 +28,14 @@ history and the in-repo issue tracker; format loosely follows
   through. A write inside a subquery is refused in a READ session before
   anything runs. `IN TRANSACTIONS` parses and is refused by name.
 
+- **Cypher: `WHERE` inside a node or relationship pattern** (issue #867).
+  `MATCH (p:Person WHERE p.age > 28)` and
+  `MATCH (a)-[r:KNOWS WHERE r.since > 2020]->(b WHERE b.age > a.age)` filter
+  while the pattern is matched; the predicate may use its own variable and
+  the variables bound before it. It works in `OPTIONAL MATCH`, pattern
+  comprehensions, `EXISTS { }` and `COUNT { }`, and is refused by name in
+  `CREATE`, `MERGE` and on a variable-length relationship.
+
 - **Web UI: show or hide relationships by type** (issue #858). Under the
   label chips, a "Relationships" row has one chip per relationship type on
   the canvas, with its count, most common first. A click hides the edges of

@@ -616,6 +616,11 @@ pub struct NodePattern {
     pub label_expr: Option<LabelExpr>,
     /// Optional inline property map literal.
     pub properties: Option<MapLiteral>,
+    /// `WHERE predicate` written inside the parentheses
+    /// (`(p:Person WHERE p.age > 28)`, issue #867): the node matches only
+    /// when it holds. It may use the node's own variable and the variables
+    /// bound before the node. MATCH only.
+    pub predicate: Option<Box<Expression>>,
     /// Span of the leading `(`.
     pub span: Span,
 }
@@ -725,6 +730,11 @@ pub struct RelationshipPattern {
     pub length: Option<RelLength>,
     /// Optional inline property map literal.
     pub properties: Option<MapLiteral>,
+    /// `WHERE predicate` written inside the brackets
+    /// (`-[r:KNOWS WHERE r.since > 2020]->`, issue #867): the relationship
+    /// matches only when it holds. MATCH only, and not on a
+    /// variable-length relationship.
+    pub predicate: Option<Box<Expression>>,
     /// Span of the leading `-` or `<-`.
     pub span: Span,
 }
