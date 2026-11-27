@@ -70,6 +70,17 @@ history and the in-repo issue tracker; format loosely follows
   text with `1` added); text functions still take it as its text. Named time
   zones, `time`, the `local` types and `truncate` are not supported.
 
+- **Cypher: schema procedures, `SHOW PROCEDURES` and `SHOW FUNCTIONS`**
+  (issue #869). `db.schema.nodeTypeProperties()` and
+  `db.schema.relTypeProperties()` return each property of every label set
+  and relationship type with its value types and whether every element has
+  it; `db.schema.visualization()` returns the labels and which relationship
+  types join them; `dbms.components()` returns the server's name, version
+  and edition. `SHOW PROCEDURES` lists every procedure of the build with
+  its mode (`READ` / `WRITE`) and output columns, `SHOW FUNCTIONS` every
+  built-in function with its category. All of them are reads. The schema
+  procedures read every node and relationship once per call.
+
 - **`drevo.path.timetable`: `arriveBy` — be there by a time, leave as late
   as possible** (issue #776). `arriveBy` (seconds after midnight of the query
   date) replaces `departAt`; giving both, or neither, is refused. Each row is

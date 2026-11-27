@@ -172,6 +172,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Anonymous nodes in `MATCH` (`(:Label)-->(b)`, `()-->(b)`, `(a)-->()-->(c)`) | ✅ Supported (head & intermediate). |
 | `shortestPath` / `allShortestPaths` (`p = shortestPath((a)-[*]-(b))`) | ✅ Supported (breadth-first; wraps one variable-length leg; `allShortestPaths` returns every minimal-length path; disconnected → no rows). |
 | Multi-label nodes | ✅ Via `kind` + `_labels` (any-of match). |
+| `db.schema.nodeTypeProperties`, `db.schema.relTypeProperties`, `db.schema.visualization`, `dbms.components`, `SHOW PROCEDURES`, `SHOW FUNCTIONS` | ✅ Supported. `visualization` returns maps, not virtual nodes; `SHOW PROCEDURES` gives `name`, `mode`, `outputs`. |
 | APOC export → import | ✅ Via this migration tool. |
 
 When a query relies on an unsupported construct, express the intent through drevo's

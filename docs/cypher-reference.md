@@ -869,6 +869,10 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `db.labels()` | `label` | every distinct node label (the primary kind plus any secondary `:Extra` labels), sorted |
 | `db.relationshipTypes()` | `relationshipType` | every distinct relationship type, sorted |
 | `db.propertyKeys()` | `propertyKey` | every distinct property key across nodes and relationships, sorted (the reserved `_labels` key is never exposed) |
+| `db.schema.nodeTypeProperties()` | `nodeType, nodeLabels, propertyName, propertyTypes, mandatory` | for every set of labels a node has, each property seen on such nodes: its value types (`String`, `Long`, `Double`, `Boolean`, `StringArray`, `List`, `Map`) and whether every such node has it. A label set with no properties has one row with `propertyName` `null` |
+| `db.schema.relTypeProperties()` | `relType, propertyName, propertyTypes, mandatory` | the same for every relationship type |
+| `db.schema.visualization()` | `nodes, relationships` | one row: the labels as maps `{name}` and each (start label, type, end label) that exists as a map `{type, from, to}` |
+| `dbms.components()` | `name, versions, edition` | the server: `drevo`, its version in a one-element list, `community` |
 | `drevo.info()` | `version, git_sha, build_date, protocol` | the running build's version + metadata, so a Bolt client can assert a minimum-compatible drevo (issue #303) |
 | `drevo.engine.status()` | `engine, mirror_fresh, native_hits, kv_fallbacks, kv_routed, rebuild_errors` | which engine serves this database's Cypher (`kv` or `native`) and the native read mirror's routing counters (RFC #307) |
 | `drevo.pagerank([config])` | `node, score` | PageRank centrality over the whole graph, computed over an immutable adjacency snapshot; rows come back most-central-first, ties by node id. The optional config map takes the keys of `drevo.pagerank.personalized` except `sourceWeights` (`maxIterations` defaults to `100` here) — see [Personalized PageRank](#personalized-pagerank) |
@@ -920,6 +924,31 @@ WITH ann
 CALL drevo.stableMatching('Mentee', 'Mentor', 'PREFERS', 'rank')
 YIELD proposer, acceptor, proposerRank, acceptorRank
 RETURN proposer.name, acceptor.name, proposerRank, acceptorRank
+```
+
+### SHOW PROCEDURES and SHOW FUNCTIONS
+
+`SHOW PROCEDURES` lists every procedure of the running build: `name`, `mode` (`READ` when a
+READ session may call it, `WRITE` otherwise) and `outputs`, the columns it returns.
+`SHOW FUNCTIONS` lists every built-in function: `name`, as it is written in this
+reference, and `category` (`scalar` or `aggregating`). Both take `YIELD` and `WHERE` like
+the other `SHOW` commands.
+
+```cypher
+SHOW PROCEDURES YIELD name, mode WHERE name STARTS WITH 'db.' RETURN name, mode
+```
+
+```cypher
+SHOW FUNCTIONS YIELD name, category WHERE category = 'aggregating' RETURN name
+```
+
+The schema procedures read every node and relationship once per call, so what they report
+is exact; on a large graph they take as long as a full scan.
+
+```cypher
+CALL db.schema.nodeTypeProperties()
+YIELD nodeLabels, propertyName, propertyTypes, mandatory
+RETURN nodeLabels, propertyName, propertyTypes, mandatory
 ```
 
 ### CALL

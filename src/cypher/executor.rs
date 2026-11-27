@@ -160,6 +160,7 @@ mod entity_procs;
 /// `drevo.rag.evaluate` and `drevo.rag.evaluateSummary`: retrieval
 /// strategies scored against a gold set.
 mod rag_eval_procs;
+mod schema_procs;
 
 /// The `drevo.community.*` procedures and the global scope of the graph-RAG
 /// pipeline.
@@ -1456,9 +1457,15 @@ pub const READ_PROCEDURES: &[&str] = &[
     "db.labels",
     "db.propertyKeys",
     "db.relationshipTypes",
+    "db.schema.nodeTypeProperties",
+    "db.schema.relTypeProperties",
+    "db.schema.visualization",
     "db.showConstraints",
     "db.showIndexes",
+    "dbms.components",
     "dbms.listConnections",
+    "dbms.showFunctions",
+    "dbms.showProcedures",
     "dbms.showTransactions",
     "drevo.betweenness",
     "drevo.closeness",
@@ -1558,6 +1565,97 @@ pub fn read_access_refusal(query: &Query) -> Option<String> {
 #[cfg(test)]
 mod read_procedures_tests {
     use super::*;
+
+    /// Every function validation accepts is handled where it is evaluated.
+    #[test]
+    fn every_listed_function_is_handled() {
+        let span = Span {
+            start: 0,
+            end: 0,
+            line: 0,
+            column: 0,
+        };
+        for name in SCALAR_FUNCTIONS {
+            let lower = name.to_ascii_lowercase();
+            assert!(is_builtin_scalar_function(&lower), "{name}");
+            // With no arguments a function may refuse them, but `call_scalar`
+            // must know it.
+            if let Err(ExecError::Unsupported { feature, .. }) = call_scalar(&lower, vec![], span) {
+                panic!("`{name}` is listed and not handled: {feature}");
+            }
+        }
+        for name in STORE_FUNCTIONS {
+            let parts: Vec<String> = name.split('.').map(str::to_string).collect();
+            assert!(is_scalar_function_name(&parts), "{name}");
+        }
+        for name in AGGREGATIONS {
+            assert!(is_aggregation_name(&[(*name).to_string()]), "{name}");
+            assert!(is_aggregation_name(&[name.to_uppercase()]), "{name}");
+        }
+        let all = SCALAR_FUNCTIONS
+            .iter()
+            .chain(STORE_FUNCTIONS)
+            .chain(AGGREGATIONS);
+        let mut lowered: Vec<String> = all.map(|name| name.to_ascii_lowercase()).collect();
+        let total = lowered.len();
+        lowered.sort();
+        lowered.dedup();
+        assert_eq!(lowered.len(), total, "each function is listed once");
+    }
+
+    /// Every quoted dotted name in the executor's sources that is a
+    /// procedure must be in `PROCEDURE_NAMES`, so `SHOW PROCEDURES` cannot
+    /// miss a procedure added later.
+    #[test]
+    fn show_procedures_lists_every_procedure_the_executor_knows() {
+        let sources = [
+            include_str!("executor.rs"),
+            include_str!("executor/community_procs.rs"),
+            include_str!("executor/entity_procs.rs"),
+            include_str!("executor/extract_procs.rs"),
+            include_str!("executor/ingest_procs.rs"),
+            include_str!("executor/rag_eval_procs.rs"),
+            include_str!("executor/schema_procs.rs"),
+        ];
+        let mut missing: Vec<&str> = Vec::new();
+        for source in sources {
+            // Every piece between two quotes: code between two literals
+            // is not a dotted name, so nothing but names passes below.
+            for quoted in source.split('"') {
+                let dotted = quoted.contains('.')
+                    && quoted
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_');
+                if dotted
+                    && procedure_columns(quoted).is_some()
+                    && !PROCEDURE_NAMES.contains(&quoted)
+                    && !missing.contains(&quoted)
+                {
+                    missing.push(quoted);
+                }
+            }
+        }
+        missing.sort_unstable();
+        assert!(
+            missing.is_empty(),
+            "add to PROCEDURE_NAMES:\n{}",
+            missing
+                .iter()
+                .map(|name| format!("    \"{name}\","))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        for name in PROCEDURE_NAMES {
+            assert!(
+                procedure_columns(name).is_some() || cfg!(not(feature = "http")),
+                "PROCEDURE_NAMES lists `{name}`, which is not a procedure"
+            );
+        }
+        let mut sorted = PROCEDURE_NAMES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, PROCEDURE_NAMES, "sorted, each name once");
+    }
 
     #[test]
     fn every_read_procedure_is_a_procedure_and_listed_once() {
@@ -2607,19 +2705,9 @@ fn is_aggregation_name(name: &[String]) -> bool {
     if name.len() != 1 {
         return false;
     }
-    matches!(
-        name[0].to_ascii_lowercase().as_str(),
-        "count"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "collect"
-            | "stdev"
-            | "stdevp"
-            | "percentilecont"
-            | "percentiledisc"
-    )
+    AGGREGATIONS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(&name[0]))
 }
 
 /// `true` when `lower` (an already-lowercased aggregation name) is one of the
@@ -2683,127 +2771,133 @@ fn sequence_error(name: &str, e: crate::sequence::SequenceError, span: Span) -> 
     }
 }
 
-/// `true` when `lower` (an already-lowercased function name) is one of the
-/// built-in scalar functions the executor evaluates in [`Executor::call_scalar`].
+/// The built-in scalar functions the executor evaluates in
+/// [`Executor::call_scalar`], as they are written in the documentation.
+/// A name is matched whatever its case.
 ///
-/// Kept deliberately in lock-step with the `call_scalar` dispatch: a name
-/// accepted here that `call_scalar` does not handle would surface a confusing
-/// "unsupported" error *after* the upfront validation sweep passed, and a name
-/// `call_scalar` handles but this rejects would be blocked before it ever runs.
+/// This list is the functions' one source: validation accepts a name that
+/// is here ([`is_builtin_scalar_function`]) and `SHOW FUNCTIONS` lists it.
+/// A name here that `call_scalar` does not handle would pass the upfront
+/// sweep and then fail as not supported; a test calls every one of them.
+const SCALAR_FUNCTIONS: &[&str] = &[
+    // Text.
+    "toLower",
+    "toUpper",
+    "trim",
+    "ltrim",
+    "rtrim",
+    "substring",
+    "replace",
+    "split",
+    "left",
+    "right",
+    "reverse",
+    "toString",
+    "apoc.text.levenshteinDistance",
+    "apoc.text.levenshteinSimilarity",
+    "drevo.entity.normalise",
+    // Numbers and conversions.
+    "abs",
+    "ceil",
+    "floor",
+    "round",
+    "sign",
+    "sqrt",
+    "toInteger",
+    "toFloat",
+    "toBoolean",
+    "toIntegerList",
+    "toFloatList",
+    "toBooleanList",
+    "toStringList",
+    "toIntegerOrNull",
+    "toFloatOrNull",
+    "toBooleanOrNull",
+    "toStringOrNull",
+    // Trigonometry and logarithms.
+    "e",
+    "exp",
+    "log",
+    "log10",
+    "sin",
+    "cos",
+    "tan",
+    "cot",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "degrees",
+    "radians",
+    "pi",
+    "haversin",
+    // Lists, maps and graph values.
+    "size",
+    "length",
+    "head",
+    "last",
+    "tail",
+    "coalesce",
+    "range",
+    "keys",
+    "labels",
+    "type",
+    "id",
+    "elementId",
+    "properties",
+    "isEmpty",
+    "isNaN",
+    "nodes",
+    "relationships",
+    // A fresh value on every call.
+    "rand",
+    "randomUUID",
+    // Time: `timestamp()` is epoch milliseconds, the rest are the temporal
+    // values of issue #866.
+    "timestamp",
+    "datetime",
+    "date",
+    "duration",
+    "duration.between",
+    "duration.inMonths",
+    "duration.inDays",
+    "duration.inSeconds",
+    // The cosine score of two vectors (issue #202), next to the `similar()`
+    // threshold predicate.
+    "cosine_similarity",
+];
+
+/// The scalar functions that read the store and so are evaluated by the
+/// executor itself rather than `call_scalar`.
+const STORE_FUNCTIONS: &[&str] = &[
+    "similar",
+    "keywords",
+    "startNode",
+    "endNode",
+    "drevo.sequence.next",
+    "drevo.sequence.current",
+];
+
+/// The aggregating functions.
+const AGGREGATIONS: &[&str] = &[
+    "count",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "collect",
+    "stDev",
+    "stDevP",
+    "percentileCont",
+    "percentileDisc",
+];
+
+/// `true` when `lower` (an already-lowercased function name) is one of
+/// [`SCALAR_FUNCTIONS`].
 fn is_builtin_scalar_function(lower: &str) -> bool {
-    matches!(
-        lower,
-        // String functions.
-        "tolower"
-            | "toupper"
-            | "trim"
-            | "ltrim"
-            | "rtrim"
-            | "substring"
-            | "replace"
-            | "split"
-            | "left"
-            | "right"
-            | "reverse"
-            | "tostring"
-            // Edit distance (issue #593), under their APOC names.
-            | "apoc.text.levenshteindistance"
-            | "apoc.text.levenshteinsimilarity"
-            // The compared form of a name (entity resolution).
-            | "drevo.entity.normalise"
-            // Numeric functions.
-            | "abs"
-            | "ceil"
-            | "floor"
-            | "round"
-            | "sign"
-            | "sqrt"
-            | "tointeger"
-            | "tofloat"
-            | "toboolean"
-            // List value-conversion functions (task `00157`) — element-wise
-            // siblings of the scalar conversions above.
-            | "tointegerlist"
-            | "tofloatlist"
-            | "tobooleanlist"
-            | "tostringlist"
-            // Fully-lenient scalar conversions (task `00158`) — the Neo4j 5
-            // `*OrNull` siblings of `toInteger` / `toFloat` / `toBoolean` /
-            // `toString` that yield `NULL` for any unconvertible value.
-            | "tointegerornull"
-            | "tofloatornull"
-            | "tobooleanornull"
-            | "tostringornull"
-            // Trigonometric / logarithmic functions (task `00156`).
-            | "e"
-            | "exp"
-            | "log"
-            | "log10"
-            | "sin"
-            | "cos"
-            | "tan"
-            | "cot"
-            | "asin"
-            | "acos"
-            | "atan"
-            | "atan2"
-            | "degrees"
-            | "radians"
-            | "pi"
-            | "haversin"
-            // List / scalar functions.
-            | "size"
-            | "length"
-            | "head"
-            | "last"
-            | "tail"
-            | "coalesce"
-            | "range"
-            | "keys"
-            | "labels"
-            | "type"
-            | "id"
-            // The Bolt 5 element id, as a string (#707).
-            | "elementid"
-            | "properties"
-            // Container predicate (task `00159`) — empty-test over the three
-            // container types (String / List / Map). Fills the gap `size`
-            // leaves: `size` rejects a Map, so `size(m) = 0` cannot express it.
-            | "isempty"
-            // Numeric predicate (task `00162`) — `isNaN(n)` tells the IEEE-754
-            // NaN value apart from every other number. The only way to test
-            // for NaN in Cypher, since `NaN = NaN` is false.
-            | "isnan"
-            // Path functions.
-            | "nodes"
-            | "relationships"
-            // Non-deterministic value functions (task `00161`) — the two
-            // zero-argument generators Neo4j exposes: `rand()` (uniform Float
-            // in `[0,1)`) and `randomUUID()` (a fresh version-4 UUID string).
-            | "rand"
-            | "randomuuid"
-            // Temporal value functions (task `00163`) — `timestamp()` (epoch
-            // milliseconds as an Integer) and `datetime()` (the current UTC
-            // instant as an ISO-8601 String; drevo's Cypher has no dedicated
-            // temporal value type). Zero-argument and non-deterministic, like
-            // `rand`/`randomUUID`. Needed by Neo4j-compatible clients that
-            // stamp `created_at` / `updated_at` on writes (e.g. the Bolt
-            // drop-in of the knowledge-graph MCP).
-            | "timestamp"
-            | "datetime"
-            // Dates and durations (issue #866).
-            | "date"
-            | "duration"
-            | "duration.between"
-            | "duration.inmonths"
-            | "duration.indays"
-            | "duration.inseconds"
-            // Vector similarity (issue #202) — `cosine_similarity(a, b)`
-            // returns the cosine SCORE of two numeric-list vectors (in
-            // `[-1, 1]`) for `RETURN` / `ORDER BY`, complementing the
-            // `similar()` threshold predicate.
-            | "cosine_similarity"
-    )
+    SCALAR_FUNCTIONS
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(lower))
 }
 
 fn contains_aggregation(expr: &Expression) -> bool {
@@ -12729,6 +12823,12 @@ impl<'a> Executor<'a> {
             "drevo.memory.evidence" => self.proc_memory_evidence(args, span),
             #[cfg(feature = "http")]
             "drevo.cypher.fromText" => self.proc_cypher_from_text(args, span),
+            "db.schema.nodeTypeProperties" => self.proc_schema_node_type_properties(),
+            "db.schema.relTypeProperties" => self.proc_schema_rel_type_properties(),
+            "db.schema.visualization" => self.proc_schema_visualization(),
+            "dbms.components" => Ok(Self::proc_components()),
+            "dbms.showProcedures" => Ok(Self::proc_show_procedures()),
+            "dbms.showFunctions" => Ok(Self::proc_show_functions()),
             "db.labels" => {
                 let mut labels: Vec<String> = Vec::new();
                 for node in self.engine().all_nodes()? {
@@ -15461,11 +15561,149 @@ fn mentions_variable(expr: &Expression) -> bool {
     }
 }
 
+/// The names of the procedures, for `SHOW PROCEDURES`. A test reads the
+/// executor's sources and fails when a name [`procedure_columns`] knows is
+/// missing here; a name of another build (a feature that is off) is left
+/// out of the listing by `procedure_columns` itself.
+const PROCEDURE_NAMES: &[&str] = &[
+    "apoc.trigger.add",
+    "apoc.trigger.drop",
+    "apoc.trigger.dropAll",
+    "apoc.trigger.install",
+    "apoc.trigger.list",
+    "apoc.trigger.pause",
+    "apoc.trigger.remove",
+    "apoc.trigger.removeAll",
+    "apoc.trigger.resume",
+    "apoc.trigger.start",
+    "apoc.trigger.stop",
+    "db.index.fulltext.queryNodes",
+    "db.index.vector.queryNodes",
+    "db.index.vector.queryRelationships",
+    "db.labels",
+    "db.propertyKeys",
+    "db.relationshipTypes",
+    "db.schema.nodeTypeProperties",
+    "db.schema.relTypeProperties",
+    "db.schema.visualization",
+    "db.showConstraints",
+    "db.showIndexes",
+    "dbms.components",
+    "dbms.killConnections",
+    "dbms.listConnections",
+    "dbms.showFunctions",
+    "dbms.showProcedures",
+    "dbms.showTransactions",
+    "dbms.terminateTransactions",
+    "drevo.betweenness",
+    "drevo.closeness",
+    "drevo.community.of",
+    "drevo.community.query",
+    "drevo.community.stale",
+    "drevo.community.summarize",
+    "drevo.cypher.fromText",
+    "drevo.engine.status",
+    "drevo.entity.aliases",
+    "drevo.entity.candidates",
+    "drevo.entity.merge",
+    "drevo.events.post",
+    "drevo.extract.chunks",
+    "drevo.extract.entities",
+    "drevo.extract.facts",
+    "drevo.extract.ingest",
+    "drevo.extract.status",
+    "drevo.graph.expand",
+    "drevo.indexes.secondary",
+    "drevo.indexes.setSecondary",
+    "drevo.info",
+    "drevo.ingest.cancel",
+    "drevo.ingest.errors",
+    "drevo.ingest.list",
+    "drevo.ingest.pause",
+    "drevo.ingest.purge",
+    "drevo.ingest.resume",
+    "drevo.ingest.retryFailed",
+    "drevo.ingest.status",
+    "drevo.ingest.submit",
+    "drevo.louvain",
+    "drevo.memory.addChunks",
+    "drevo.memory.addMessage",
+    "drevo.memory.addSource",
+    "drevo.memory.assertFact",
+    "drevo.memory.evidence",
+    "drevo.memory.factsAt",
+    "drevo.memory.getConversation",
+    "drevo.memory.recall",
+    "drevo.memory.recallSemantic",
+    "drevo.memory.recallVector",
+    "drevo.memory.recordReasoning",
+    "drevo.memory.rememberEntity",
+    "drevo.memory.retractFact",
+    "drevo.pagerank",
+    "drevo.pagerank.personalized",
+    "drevo.path.reachable",
+    "drevo.path.timetable",
+    "drevo.path.weighted",
+    "drevo.rag.context",
+    "drevo.rag.evaluate",
+    "drevo.rag.evaluateSummary",
+    "drevo.rag.explain",
+    "drevo.rag.pruneTraces",
+    "drevo.rag.replay",
+    "drevo.rag.retrieve",
+    "drevo.rag.traces",
+    "drevo.ricciCurvature",
+    "drevo.scc",
+    "drevo.search.hybrid",
+    "drevo.search.hybridRelationships",
+    "drevo.semantic.embed",
+    "drevo.semantic.info",
+    "drevo.semantic.query",
+    "drevo.semantic.queryRel",
+    "drevo.semantic.register",
+    "drevo.semantic.registerRel",
+    "drevo.semantic.reindex",
+    "drevo.semantic.reindexRel",
+    "drevo.semantic.status",
+    "drevo.sequence.create",
+    "drevo.sequence.drop",
+    "drevo.sequence.list",
+    "drevo.spatial.nearest",
+    "drevo.stableMatching",
+    "drevo.text.fuzzy",
+    "drevo.triangles",
+    "drevo.tx.commitPrepared",
+    "drevo.tx.heuristicRollback",
+    "drevo.tx.listPrepared",
+    "drevo.tx.prepare",
+    "drevo.tx.rollbackPrepared",
+    "drevo.vector.query",
+    "drevo.wcc",
+    "fts.search",
+    "fts.searchRelationships",
+];
+
 fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "db.labels" => Some(&["label"]),
         "db.relationshipTypes" => Some(&["relationshipType"]),
         "db.propertyKeys" => Some(&["propertyKey"]),
+        // The shape of the graph and of the server (issue #869).
+        "db.schema.nodeTypeProperties" => Some(&[
+            "nodeType",
+            "nodeLabels",
+            "propertyName",
+            "propertyTypes",
+            "mandatory",
+        ]),
+        "db.schema.relTypeProperties" => {
+            Some(&["relType", "propertyName", "propertyTypes", "mandatory"])
+        }
+        "db.schema.visualization" => Some(&["nodes", "relationships"]),
+        "dbms.components" => Some(&["name", "versions", "edition"]),
+        // SHOW PROCEDURES / SHOW FUNCTIONS.
+        "dbms.showProcedures" => Some(&["name", "mode", "outputs"]),
+        "dbms.showFunctions" => Some(&["name", "category"]),
         // Vector search (issue #202): top-k nodes by cosine similarity.
         "drevo.vector.query" => Some(&["node", "score"]),
         // Semantic text search (#251 slice 3): top-k nodes by cosine
@@ -15923,6 +16161,13 @@ fn procedure_arity(name: &str) -> usize {
         // SHOW CONNECTIONS → no arguments; TERMINATE CONNECTIONS ids (issue #669).
         "dbms.listConnections" => 0,
         "dbms.killConnections" => 1,
+        // The schema procedures and SHOW PROCEDURES / FUNCTIONS (issue #869).
+        "db.schema.nodeTypeProperties"
+        | "db.schema.relTypeProperties"
+        | "db.schema.visualization"
+        | "dbms.components"
+        | "dbms.showProcedures"
+        | "dbms.showFunctions" => 0,
         // drevo.memory.recall(session, query, k) (issue #533).
         "drevo.memory.recall" => 3,
         // drevo.memory.recallVector(session, vector, k) (issue #533).

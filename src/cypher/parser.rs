@@ -1200,6 +1200,18 @@ impl Parser {
             self.consume();
             return self.finish_show_call("dbms", "listConnections", Vec::new(), span);
         }
+        // `SHOW PROCEDURES` / `SHOW FUNCTIONS` (issue #869).
+        for (word, procedure) in [
+            ("PROCEDURES", "showProcedures"),
+            ("PROCEDURE", "showProcedures"),
+            ("FUNCTIONS", "showFunctions"),
+            ("FUNCTION", "showFunctions"),
+        ] {
+            if self.is_soft_keyword(word) {
+                self.consume();
+                return self.finish_show_call("dbms", procedure, Vec::new(), span);
+            }
+        }
         // Type words, joined: `SHOW NODE KEY CONSTRAINTS` filters by "NODE KEY".
         let mut words: Vec<String> = Vec::new();
         let procedure = loop {
@@ -1209,7 +1221,9 @@ impl Parser {
                 TokenKind::All => "ALL".to_string(),
                 other => {
                     return Err(ParseError::Expected {
-                        expected: "INDEXES or CONSTRAINTS after SHOW".to_string(),
+                        expected: "INDEXES, CONSTRAINTS, PROCEDURES, FUNCTIONS, TRANSACTIONS or \
+                             CONNECTIONS after SHOW"
+                            .to_string(),
                         found: format!("{other}"),
                         span: self.peek_span(),
                     });
