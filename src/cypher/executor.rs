@@ -1904,13 +1904,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     validate_expr_supported_in_projection(expr)?;
                 }
             }
-            for item in &r.order_by {
-                // ORDER BY after aggregation typically references the
-                // aliased projection columns; sub-expressions still go
-                // through the strict validator (no function calls in
-                // ORDER BY for 00066 — use an alias instead).
-                validate_expr_supported(&item.expression)?;
-            }
+            validate_order_by_supported(&r.order_by, &r.items)?;
             if let Some(e) = &r.skip {
                 validate_expr_supported(e)?;
             }
@@ -1964,9 +1958,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     }
                 }
             }
-            for item in &w.order_by {
-                validate_expr_supported(&item.expression)?;
-            }
+            validate_order_by_supported(&w.order_by, &w.items)?;
             if let Some(e) = &w.skip {
                 validate_expr_supported(e)?;
             }
@@ -2698,6 +2690,187 @@ fn contains_aggregation(expr: &Expression) -> bool {
         }
         _ => false,
     }
+}
+
+/// Validator for the `ORDER BY` of a `RETURN` / `WITH` with `items`.
+///
+/// After an aggregating projection `ORDER BY` may repeat one of its
+/// aggregates (`RETURN p.name, count(*) ORDER BY count(*)`), so aggregation
+/// calls are allowed there; [`order_by_over_projection`] later checks that
+/// each one is an item of the projection.
+fn validate_order_by_supported(
+    order_by: &[OrderItem],
+    items: &[ProjectionItem],
+) -> ExecResultT<()> {
+    let aggregating = items.iter().any(|item| match item {
+        ProjectionItem::Expression { expr, .. } => contains_aggregation(expr),
+        ProjectionItem::Star => false,
+    });
+    for item in order_by {
+        if aggregating {
+            validate_expr_supported_in_projection(&item.expression)?;
+        } else {
+            validate_expr_supported(&item.expression)?;
+        }
+    }
+    Ok(())
+}
+
+/// The name column `index` of an aggregating projection is bound to while
+/// its `ORDER BY` runs. No query can write it.
+fn projected_column_binding(index: usize) -> String {
+    format!("\u{0}column{index}")
+}
+
+/// Whether two expressions are the same but for where they stand in the
+/// query text: `p.name` in `RETURN` and `p.name` in `ORDER BY`.
+fn same_expression(a: &Expression, b: &Expression) -> bool {
+    /// The expression's debug form without its source positions. Every part
+    /// of the syntax tree is covered, patterns and subqueries included.
+    fn without_positions(expr: &Expression) -> String {
+        let text = format!("{expr:?}");
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("Span { start: ") {
+            out.push_str(&rest[..at]);
+            rest = match rest[at..].find('}') {
+                Some(end) => &rest[at + end + 1..],
+                None => "",
+            };
+        }
+        out.push_str(rest);
+        out
+    }
+    std::mem::discriminant(a) == std::mem::discriminant(b)
+        && without_positions(a) == without_positions(b)
+}
+
+/// Rewrite an `ORDER BY` expression that follows an aggregating projection
+/// so that it reads the projected columns.
+///
+/// After an aggregation the rows are groups: the variables of the clauses
+/// before it are gone, and what can be sorted by is what the projection
+/// computed. Every part of `expr` that repeats a projected expression, be
+/// it a grouping expression (`p.name`, `type(r)`) or an aggregate
+/// (`count(*)`), becomes a reference to that column, so `ORDER BY
+/// toLower(p.name)` works when `p.name` is returned. An aggregate that is
+/// not an item of the projection is an error: it would need the rows the
+/// grouping folded away.
+fn order_by_over_projection(
+    expr: &Expression,
+    projections: &[Expression],
+) -> ExecResultT<Expression> {
+    if let Some(index) = projections.iter().position(|p| same_expression(p, expr)) {
+        return Ok(Expression::Variable(
+            projected_column_binding(index),
+            expr.span(),
+        ));
+    }
+    let over = |e: &Expression| order_by_over_projection(e, projections);
+    let over_box = |e: &Expression| over(e).map(Box::new);
+    let over_opt = |e: &Option<Box<Expression>>| e.as_deref().map(over_box).transpose();
+    Ok(match expr {
+        Expression::FunctionCall { name, span, .. } if is_aggregation_name(name) => {
+            return Err(ExecError::InvalidFunctionCall {
+                name: name.join("."),
+                message: "an aggregation in ORDER BY must also be an item of the RETURN or \
+                          WITH it sorts"
+                    .into(),
+                span: *span,
+            });
+        }
+        Expression::FunctionCall {
+            name,
+            distinct,
+            args,
+            span,
+        } => Expression::FunctionCall {
+            name: name.clone(),
+            distinct: *distinct,
+            args: args.iter().map(over).collect::<ExecResultT<_>>()?,
+            span: *span,
+        },
+        Expression::Property { base, name, span } => Expression::Property {
+            base: over_box(base)?,
+            name: name.clone(),
+            span: *span,
+        },
+        Expression::List { items, span } => Expression::List {
+            items: items.iter().map(over).collect::<ExecResultT<_>>()?,
+            span: *span,
+        },
+        Expression::Map(map) => Expression::Map(crate::cypher::ast::MapLiteral {
+            entries: map
+                .entries
+                .iter()
+                .map(|(key, value)| Ok((key.clone(), over(value)?)))
+                .collect::<ExecResultT<_>>()?,
+            span: map.span,
+        }),
+        Expression::Unary { op, expr, span } => Expression::Unary {
+            op: *op,
+            expr: over_box(expr)?,
+            span: *span,
+        },
+        Expression::Binary { op, lhs, rhs, span } => Expression::Binary {
+            op: *op,
+            lhs: over_box(lhs)?,
+            rhs: over_box(rhs)?,
+            span: *span,
+        },
+        Expression::IsNull {
+            expr,
+            negated,
+            span,
+        } => Expression::IsNull {
+            expr: over_box(expr)?,
+            negated: *negated,
+            span: *span,
+        },
+        Expression::HasLabels { expr, labels, span } => Expression::HasLabels {
+            expr: over_box(expr)?,
+            labels: labels.clone(),
+            span: *span,
+        },
+        Expression::In { expr, list, span } => Expression::In {
+            expr: over_box(expr)?,
+            list: over_box(list)?,
+            span: *span,
+        },
+        Expression::Index { base, index, span } => Expression::Index {
+            base: over_box(base)?,
+            index: over_box(index)?,
+            span: *span,
+        },
+        Expression::Slice {
+            base,
+            from,
+            to,
+            span,
+        } => Expression::Slice {
+            base: over_box(base)?,
+            from: over_opt(from)?,
+            to: over_opt(to)?,
+            span: *span,
+        },
+        Expression::Case {
+            scrutinee,
+            arms,
+            else_branch,
+            span,
+        } => Expression::Case {
+            scrutinee: over_opt(scrutinee)?,
+            arms: arms
+                .iter()
+                .map(|(when, then)| Ok((over(when)?, over(then)?)))
+                .collect::<ExecResultT<_>>()?,
+            else_branch: over_opt(else_branch)?,
+            span: *span,
+        },
+        // A leaf, or a form with a scope of its own (a comprehension, a
+        // subquery): it is sorted by as written.
+        other => other.clone(),
+    })
 }
 
 /// Validator for expressions written in a `RETURN` projection.
@@ -6409,7 +6582,7 @@ impl<'a> Executor<'a> {
         };
 
         if !r.order_by.is_empty() {
-            self.sort_keyed(&mut keyed, &r.order_by, &columns)?;
+            self.sort_projected(&mut keyed, &r.order_by, &columns, &projections)?;
         }
 
         let mut rows: Vec<Vec<Value>> = keyed.into_iter().map(|(r, _)| r).collect();
@@ -6471,7 +6644,7 @@ impl<'a> Executor<'a> {
         };
 
         if !w.order_by.is_empty() {
-            self.sort_keyed(&mut keyed, &w.order_by, &columns)?;
+            self.sort_projected(&mut keyed, &w.order_by, &columns, &projections)?;
         }
 
         let mut rows: Vec<Vec<Value>> = keyed.into_iter().map(|(r, _)| r).collect();
@@ -12306,6 +12479,43 @@ impl<'a> Executor<'a> {
         Ok((columns, projections))
     }
 
+    /// Sort the rows of a `RETURN` / `WITH` by its `ORDER BY`.
+    ///
+    /// After an aggregation the sort reads the projected columns: see
+    /// [`order_by_over_projection`]. A variable that is neither a column nor
+    /// part of a projected expression is refused by the rule, not as an
+    /// unknown name - it exists, the grouping folded it away.
+    fn sort_projected(
+        &self,
+        keyed: &mut KeyedRows,
+        order_by: &[OrderItem],
+        columns: &[String],
+        projections: &[Expression],
+    ) -> ExecResultT<()> {
+        if !projections.iter().any(contains_aggregation) {
+            return self.sort_keyed(keyed, order_by, columns);
+        }
+        let mut over_columns = Vec::with_capacity(order_by.len());
+        for item in order_by {
+            over_columns.push(OrderItem {
+                expression: order_by_over_projection(&item.expression, projections)?,
+                ..item.clone()
+            });
+        }
+        self.sort_keyed(keyed, &over_columns, columns)
+            .map_err(|e| match e {
+                ExecError::UnboundVariable { name, span } => ExecError::Unsupported {
+                    feature: format!(
+                        "ORDER BY `{name}` after an aggregation (only the columns, the \
+                         grouping expressions and the aggregates of the same RETURN or WITH \
+                         can be sorted by)"
+                    ),
+                    span,
+                },
+                other => other,
+            })
+    }
+
     fn sort_keyed(
         &self,
         keyed: &mut KeyedRows,
@@ -12395,13 +12605,15 @@ impl<'a> Executor<'a> {
             for &ai in &agg_indices {
                 row[ai] = self.eval_with_agg(&projections[ai], &rows_in_group)?;
             }
-            // Build a synthetic per-row scope so the subsequent
-            // ORDER BY can resolve column aliases. Raw pattern
-            // variables (`n`, `r`) are *not* in scope after
-            // aggregation — users must reference the projected alias.
+            // The scope the subsequent ORDER BY runs in: every column by
+            // its name, and by position for an ORDER BY expression that
+            // repeats a projected one (`order_by_over_projection`). Raw
+            // pattern variables (`n`, `r`) are *not* in scope after
+            // aggregation.
             let mut scope: Bindings = HashMap::new();
-            for (col, val) in columns.iter().zip(row.iter()) {
+            for (index, (col, val)) in columns.iter().zip(row.iter()).enumerate() {
                 scope.insert(col.clone(), val.clone());
+                scope.insert(projected_column_binding(index), val.clone());
             }
             out.push((row, scope));
         }
