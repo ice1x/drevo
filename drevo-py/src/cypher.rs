@@ -167,6 +167,8 @@ fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<PyObject> {
         Value::Integer(i) => i.into_pyobject(py)?.into_any().unbind(),
         Value::Float(f) => f.into_pyobject(py)?.into_any().unbind(),
         Value::String(s) => s.into_pyobject(py)?.into_any().unbind(),
+        // A date, datetime or duration is its ISO 8601 text.
+        Value::Temporal(t) => t.to_string().into_pyobject(py)?.into_any().unbind(),
         Value::List(items) => {
             let list = PyList::empty(py);
             for item in items {

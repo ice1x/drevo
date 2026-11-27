@@ -180,6 +180,7 @@ use crate::cypher::provenance::{
     default_chunk_id, locate_quote, quote_at, quote_not_at, quote_not_found, remember_options,
     ChunkRef, ChunkSpec, Provenance, SourceRef, SourceSpec,
 };
+use crate::cypher::temporal::Duration;
 use crate::engine::GraphEngine;
 use crate::error::DrevoError;
 use crate::model::{Direction as ModelDirection, Edge, NewEdge, NewNode, Node, Properties};
@@ -218,6 +219,10 @@ pub enum Value {
     /// A bound path — an alternating node / relationship sequence produced by
     /// a named pattern (`MATCH p = (a)-->(b)`). See [`PathValue`].
     Path(Arc<PathValue>),
+    /// A date, a datetime or a duration (`date('2026-11-27')`,
+    /// `datetime()`, `duration('P1D')`). Outside a query it is its ISO 8601
+    /// text: that is what a client receives and what a property stores.
+    Temporal(crate::cypher::temporal::Temporal),
 }
 
 /// A node as seen by the Cypher runtime.
@@ -597,6 +602,7 @@ pub type ExecResultT<T> = Result<T, ExecError>;
 /// With no deadline set, `tick` is a single thread-local read.
 mod extract_procs;
 mod ingest_procs;
+mod temporal_fns;
 pub(crate) use extract_procs::{ingest_failed, opens_with_ingest, upfront_ingest};
 use extract_procs::{
     EXTRACT_CHUNKS, EXTRACT_ENTITIES, EXTRACT_FACTS, EXTRACT_INGEST, EXTRACT_STATUS,
@@ -1015,6 +1021,12 @@ impl PartialEq for Value {
                         .zip(b.relationships.iter())
                         .all(|(x, y)| x.id == y.id)
             }
+            (Self::Temporal(a), Self::Temporal(b)) => a == b,
+            // A stored date, datetime or duration is its ISO 8601 text: it
+            // equals the value it reads as.
+            (Self::Temporal(a), Self::String(text)) | (Self::String(text), Self::Temporal(a)) => {
+                a.parse_same_kind(text).is_some_and(|b| b == *a)
+            }
             _ => false,
         }
     }
@@ -1034,6 +1046,7 @@ impl Value {
             Self::Node(_) => "Node",
             Self::Relationship(_) => "Relationship",
             Self::Path(_) => "Path",
+            Self::Temporal(t) => t.type_name(),
         }
     }
 
@@ -1109,6 +1122,8 @@ pub(crate) fn value_to_json(v: &Value) -> Option<serde_json::Value> {
         // storing a bound graph value into a property map would be a
         // programming error and is rejected by InvalidCreate at the call site.
         Value::Node(_) | Value::Relationship(_) | Value::Path(_) => return None,
+        // A property stores a temporal value as its ISO 8601 text.
+        Value::Temporal(t) => serde_json::Value::String(t.to_string()),
     })
 }
 
@@ -2689,6 +2704,13 @@ fn is_builtin_scalar_function(lower: &str) -> bool {
             // drop-in of the knowledge-graph MCP).
             | "timestamp"
             | "datetime"
+            // Dates and durations (issue #866).
+            | "date"
+            | "duration"
+            | "duration.between"
+            | "duration.inmonths"
+            | "duration.indays"
+            | "duration.inseconds"
             // Vector similarity (issue #202) — `cosine_similarity(a, b)`
             // returns the cosine SCORE of two numeric-list vectors (in
             // `[-1, 1]`) for `RETURN` / `ORDER BY`, complementing the
@@ -3413,6 +3435,13 @@ struct Executor<'a> {
     /// and relationship type, for this statement: one lookup per element
     /// instead of one privilege check per element and property.
     read_memo: std::cell::RefCell<ReadMemo>,
+    /// Set while a procedure runs: what it evaluates (its arguments, its
+    /// configuration map) reaches it with every temporal value as ISO 8601
+    /// text, the form procedures were written for (`asOf: datetime()`).
+    in_procedure: std::cell::Cell<bool>,
+    /// How deep [`eval`](Self::eval) is in an expression, so that only the
+    /// value of the whole expression is turned to text for a procedure.
+    eval_depth: std::cell::Cell<u32>,
     /// Conjunctive equality / `IN` constraints lifted from the current `MATCH`'s
     /// `WHERE` clause (`variable → [constraint]`), so a term like
     /// `WHERE n.status = 'open'` or `WHERE n.status IN ['open','pending']`
@@ -3462,6 +3491,8 @@ impl<'a> Executor<'a> {
                 .restriction
                 .filter(|r| !r.context.reads_everything(r.database)),
             read_memo: std::cell::RefCell::default(),
+            in_procedure: std::cell::Cell::new(false),
+            eval_depth: std::cell::Cell::new(0),
             pushdown: HashMap::new(),
             match_cap: None,
             match_top: None,
@@ -6938,6 +6969,15 @@ impl<'a> Executor<'a> {
     /// is a standalone query whose result columns are the procedure's full
     /// output signature.
     fn run_call(&mut self, c: &CallClause) -> ExecResultT<()> {
+        let outer = self.in_procedure.replace(true);
+        let depth = self.eval_depth.replace(0);
+        let result = self.run_procedure(c);
+        self.in_procedure.set(outer);
+        self.eval_depth.set(depth);
+        result
+    }
+
+    fn run_procedure(&mut self, c: &CallClause) -> ExecResultT<()> {
         let name = c.name.join(".");
         // `procedure_columns` / arity / yield-column validity were all
         // checked in the upfront sweep, so resolution here cannot fail on
@@ -8669,7 +8709,7 @@ impl<'a> Executor<'a> {
                 ("role", Value::String(role)),
                 ("text", Value::String(text.clone())),
                 ("body", Value::String(text)),
-                ("created_at", scalar_datetime(Vec::new(), span)?),
+                ("created_at", now_text()),
             ],
             span,
         )?;
@@ -8708,7 +8748,7 @@ impl<'a> Executor<'a> {
                 ("step", Value::String(step)),
                 ("tool", tool),
                 ("outcome", outcome),
-                ("created_at", scalar_datetime(Vec::new(), span)?),
+                ("created_at", now_text()),
             ],
             span,
         )?;
@@ -8769,8 +8809,8 @@ impl<'a> Executor<'a> {
     /// Current wall-clock time as the ISO-8601 UTC string `datetime()` returns.
     /// Temporal validity compares these strings, whose fixed format orders
     /// lexicographically in time.
-    fn memory_now(span: Span) -> ExecResultT<Value> {
-        scalar_datetime(Vec::new(), span)
+    fn memory_now(_span: Span) -> ExecResultT<Value> {
+        Ok(now_text())
     }
 
     /// The relation name of a `RELATED_TO` fact edge: its `type` property, or
@@ -11913,7 +11953,7 @@ impl<'a> Executor<'a> {
                     config.session.as_deref().map_or(Value::Null, text),
                 ),
                 ("query", text(query)),
-                ("created_at", scalar_datetime(Vec::new(), span)?),
+                ("created_at", now_text()),
                 ("format", text(config.render.format.as_str())),
                 ("tokenizer", text(config.render.tokenizer.as_str())),
                 ("tokens", int(rendered.tokens)),
@@ -13215,6 +13255,24 @@ impl<'a> Executor<'a> {
     // ----- Expression evaluation ------------------------------------------
 
     fn eval(&self, expr: &Expression, row: &Bindings) -> ExecResultT<Value> {
+        if !self.in_procedure.get() {
+            return self.eval_expression(expr, row);
+        }
+        // For a procedure: temporal values stay values inside the
+        // expression (`datetime() - duration('P7D')`), and the result of
+        // the whole expression is handed over as text.
+        let depth = self.eval_depth.get();
+        self.eval_depth.set(depth + 1);
+        let value = self.eval_expression(expr, row);
+        self.eval_depth.set(depth);
+        if depth == 0 {
+            value.map(temporal_as_text_deep)
+        } else {
+            value
+        }
+    }
+
+    fn eval_expression(&self, expr: &Expression, row: &Bindings) -> ExecResultT<Value> {
         deadline::tick()?;
         match expr {
             Expression::Integer(i, _) => Ok(Value::Integer(*i)),
@@ -16068,6 +16126,11 @@ fn eq_allowed(
     key: &str,
     value: &Value,
 ) -> Option<std::collections::BTreeSet<u64>> {
+    // A temporal value equals every text that reads as it (`10:00Z` and
+    // `12:00+02:00`), which one index key cannot find: the exact filter does.
+    if matches!(value, Value::Temporal(_)) {
+        return None;
+    }
     let json = value_to_json(value)?;
     if !crate::native_property_index::is_indexable(&json) {
         return None;
@@ -16094,6 +16157,9 @@ fn in_allowed(
     };
     let mut union = std::collections::BTreeSet::new();
     for item in items {
+        if matches!(item, Value::Temporal(_)) {
+            return None;
+        }
         let json = value_to_json(item)?;
         if !crate::native_property_index::is_indexable(&json) {
             return None;
@@ -16113,6 +16179,9 @@ fn range_allowed(
     op: crate::native_property_index::RangeOp,
     bound: &Value,
 ) -> Option<std::collections::BTreeSet<u64>> {
+    if matches!(bound, Value::Temporal(_)) {
+        return None;
+    }
     let json = value_to_json(bound)?;
     idx.range_ids(key, op, &json)
 }
@@ -16218,6 +16287,7 @@ fn get_property(base: &Value, name: &str, _span: Span) -> Value {
         Value::Node(nv) => nv.properties.get(name).cloned().unwrap_or(Value::Null),
         Value::Relationship(rv) => rv.properties.get(name).cloned().unwrap_or(Value::Null),
         Value::Map(map) => map.get(name).cloned().unwrap_or(Value::Null),
+        Value::Temporal(t) => temporal_fns::component(t, name),
         _ => Value::Null,
     }
 }
@@ -16385,6 +16455,14 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     if args.iter().any(|v| matches!(v, Value::Null)) {
         return Ok(Value::Null);
     }
+    // Only the temporal functions take a temporal value as one; any other
+    // function takes it as its ISO 8601 text (`left(datetime(), 10)`),
+    // which is also what it is stored as.
+    let args = if takes_temporal(name) {
+        args
+    } else {
+        args.into_iter().map(temporal_as_text).collect()
+    };
     match name {
         // ---- String ----
         "tolower" => str_map(name, args, span, |s| s.to_lowercase()),
@@ -16484,7 +16562,27 @@ fn call_scalar(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         "rand" => scalar_rand(args, span),
         "randomuuid" => scalar_random_uuid(args, span),
         "timestamp" => scalar_timestamp(args, span),
-        "datetime" => scalar_datetime(args, span),
+        "datetime" => temporal_fns::scalar_datetime(args, span),
+        "date" => temporal_fns::scalar_date(args, span),
+        "duration" => temporal_fns::scalar_duration(args, span),
+        "duration.between" => {
+            temporal_fns::scalar_duration_between("duration.between", Duration::between, args, span)
+        }
+        "duration.inmonths" => temporal_fns::scalar_duration_between(
+            "duration.inMonths",
+            Duration::in_months,
+            args,
+            span,
+        ),
+        "duration.indays" => {
+            temporal_fns::scalar_duration_between("duration.inDays", Duration::in_days, args, span)
+        }
+        "duration.inseconds" => temporal_fns::scalar_duration_between(
+            "duration.inSeconds",
+            Duration::in_seconds,
+            args,
+            span,
+        ),
         // Unreachable: `is_builtin_scalar_function` gates entry, so any name
         // reaching here is a missing arm rather than user input.
         other => Err(ExecError::Unsupported {
@@ -16500,6 +16598,33 @@ fn fn_err(name: &str, message: impl Into<String>, span: Span) -> ExecError {
         name: name.into(),
         message: message.into(),
         span,
+    }
+}
+
+/// The scalar functions that take a date, a datetime or a duration as a
+/// value.
+fn takes_temporal(name: &str) -> bool {
+    matches!(name, "date" | "datetime" | "duration") || name.starts_with("duration.")
+}
+
+/// A temporal value as its ISO 8601 text; any other value as it is.
+fn temporal_as_text(value: Value) -> Value {
+    match value {
+        Value::Temporal(t) => Value::String(t.to_string()),
+        other => other,
+    }
+}
+
+/// [`temporal_as_text`] for a value and everything a list or a map holds.
+fn temporal_as_text_deep(value: Value) -> Value {
+    match value {
+        Value::List(items) => Value::List(items.into_iter().map(temporal_as_text_deep).collect()),
+        Value::Map(map) => Value::Map(
+            map.into_iter()
+                .map(|(key, value)| (key, temporal_as_text_deep(value)))
+                .collect(),
+        ),
+        other => temporal_as_text(other),
     }
 }
 
@@ -16653,9 +16778,10 @@ fn scalar_timestamp(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
 /// ISO-8601 *string*: storable, Bolt-serialisable, and lexicographically
 /// ordering like the instant itself — enough for the common "stamp
 /// `created_at` / `updated_at`" use. Non-deterministic, like `timestamp()`.
-fn scalar_datetime(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
-    expect_arity("datetime", &args, 0, span)?;
-    Ok(Value::String(iso8601_utc(unix_millis_now())))
+/// The current moment as the ISO 8601 UTC text `datetime()` is stored as
+/// (`2026-11-27T10:00:00.000Z`): texts of this fixed form sort in time.
+fn now_text() -> Value {
+    Value::String(iso8601_utc(unix_millis_now()))
 }
 
 /// Current wall-clock time in milliseconds since the Unix epoch. A clock set
@@ -17727,7 +17853,7 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         }
         (Value::Node(a), Value::Node(b)) => a.id.cmp(&b.id),
         (Value::Relationship(a), Value::Relationship(b)) => a.id.cmp(&b.id),
-        _ => Ordering::Equal,
+        _ => temporal_fns::compare(a, b).unwrap_or(Ordering::Equal),
     }
 }
 
@@ -17868,6 +17994,7 @@ fn regex_match(lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value> {
     if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
         return Ok(Value::Null);
     }
+    let lhs = temporal_as_text(lhs);
     let (Value::String(text), Value::String(pattern)) = (&lhs, &rhs) else {
         return Err(ExecError::TypeMismatch {
             expected: "String =~ String".into(),
@@ -17912,11 +18039,20 @@ fn arith(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value>
                         return Ok(Value::String(a + &b));
                     }
                 }
-                return arith_numbers(op, lhs, rhs, span);
+                return arith_scalars(op, lhs, rhs, span);
             }
         }
     }
-    arith_numbers(op, lhs, rhs, span)
+    arith_scalars(op, lhs, rhs, span)
+}
+
+/// Arithmetic on two values that are not lists or texts: on dates and
+/// durations when either is one, on numbers otherwise.
+fn arith_scalars(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Value> {
+    match temporal_fns::arith(op, &lhs, &rhs, span) {
+        Some(result) => result,
+        None => arith_numbers(op, lhs, rhs, span),
+    }
 }
 
 /// The text a value adds to a string under `+`: what `toString()` gives
@@ -17927,6 +18063,7 @@ fn concat_text(value: &Value) -> Option<String> {
         Value::Integer(i) => Some(i.to_string()),
         Value::Float(f) => Some(format_float(*f)),
         Value::Bool(b) => Some(b.to_string()),
+        Value::Temporal(t) => Some(t.to_string()),
         _ => None,
     }
 }
@@ -17991,7 +18128,8 @@ fn compare(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<Valu
         (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)),
         (Value::Node(a), Value::Node(b)) => Some(a.id.cmp(&b.id)),
         (Value::Relationship(a), Value::Relationship(b)) => Some(a.id.cmp(&b.id)),
-        _ => None,
+        // Two temporal values, or one and a text that is read as one.
+        _ => temporal_fns::compare(&lhs, &rhs),
     };
     if op == BinaryOp::Eq {
         return Ok(Value::Bool(lhs == rhs));
@@ -18080,6 +18218,8 @@ fn string_test(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResultT<
     if matches!(lhs, Value::Null) || matches!(rhs, Value::Null) {
         return Ok(Value::Null);
     }
+    // A temporal value is tested as its ISO 8601 text.
+    let (lhs, rhs) = (temporal_as_text(lhs), temporal_as_text(rhs));
     let needle = rhs.as_string(span)?.to_string();
     let haystack = lhs.as_string(span)?.to_string();
     Ok(Value::Bool(match op {
@@ -21184,7 +21324,7 @@ mod tests {
             Err(ExecError::InvalidFunctionCall { .. })
         ));
         assert!(matches!(
-            super::scalar_datetime(vec![Value::Integer(1)], zero_span()),
+            super::temporal_fns::scalar_datetime(vec![Value::Integer(1)], zero_span()),
             Err(ExecError::InvalidFunctionCall { .. })
         ));
     }
@@ -21200,15 +21340,21 @@ mod tests {
     }
 
     #[test]
-    fn datetime_returns_iso8601_string() {
-        match super::scalar_datetime(Vec::new(), zero_span()).unwrap() {
-            Value::String(s) => {
+    fn datetime_is_a_moment_whose_text_is_iso8601() {
+        match super::temporal_fns::scalar_datetime(Vec::new(), zero_span()).unwrap() {
+            Value::Temporal(moment) => {
+                let s = moment.to_string();
                 assert_eq!(s.len(), 24, "iso8601 len: {s:?}");
                 assert!(s.ends_with('Z'), "{s:?}");
                 assert_eq!(&s[4..5], "-");
                 assert_eq!(&s[10..11], "T");
+                // The text a property stores, which `now_text` also writes.
+                match super::now_text() {
+                    Value::String(stored) => assert_eq!(stored.len(), s.len()),
+                    other => panic!("expected String, got {other:?}"),
+                }
             }
-            other => panic!("expected String, got {other:?}"),
+            other => panic!("expected a temporal value, got {other:?}"),
         }
     }
 

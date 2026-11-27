@@ -2099,6 +2099,8 @@ fn cypher_to_pack(v: CypherValue) -> Value {
         CypherValue::Integer(i) => Value::Integer(i),
         CypherValue::Float(f) => Value::Float(f),
         CypherValue::String(s) => Value::String(s),
+        // A date, datetime or duration goes out as its ISO 8601 text.
+        CypherValue::Temporal(t) => Value::String(t.to_string()),
         CypherValue::List(items) => Value::List(items.into_iter().map(cypher_to_pack).collect()),
         CypherValue::Map(m) => {
             let mut out = BTreeMap::new();
