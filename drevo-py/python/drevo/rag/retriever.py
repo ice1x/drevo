@@ -1,4 +1,4 @@
-"""`Retriever`, `Context`, and `ContextStats` — the headline graph-RAG API.
+"""`Retriever`, `Context`, and `ContextStats` - the headline graph-RAG API.
 
 `Retriever` resolves a seed (FTS query / node id / UUID) to one or
 more seed nodes, expands each seed `hops` deep via
@@ -6,7 +6,7 @@ more seed nodes, expands each seed `hops` deep via
 for `to_text(...)` consumption by an LLM prompt template.
 
 `Context.to_text` is deterministic given the same context (sorted by
-`(kind, title, id)` per RFC §8.4) — this is what `00120` e2e tests
+`(kind, title, id)` per RFC §8.4) - this is what `00120` e2e tests
 assert on.
 """
 
@@ -43,7 +43,7 @@ class ContextStats:
 
 @dataclass(frozen=True)
 class Context:
-    """Retriever output — the slice of the graph relevant to a query.
+    """Retriever output - the slice of the graph relevant to a query.
 
     `seeds` are the nodes the retriever hit first (FTS matches, the
     looked-up id, etc.). `neighbours` is the expanded BFS frontier
@@ -63,9 +63,9 @@ class Context:
         """Format the context as LLM-ready text.
 
         Supported formats:
-          - `"markdown"` — headings + bullet lists (default)
-          - `"json"`     — JSON object {seeds, neighbours, edges, stats}
-          - `"turtle"`   — RDF Turtle (for SPARQL / RAG hybrid stacks)
+          - `"markdown"` - headings + bullet lists (default)
+          - `"json"`     - JSON object {seeds, neighbours, edges, stats}
+          - `"turtle"`   - RDF Turtle (for SPARQL / RAG hybrid stacks)
 
         Output is deterministic: nodes are sorted by `(kind, title, id)`
         and edges by `(from_id, to_id, id)`. The 00120 e2e test asserts
@@ -100,7 +100,7 @@ class Retriever:
     Construct once per workload (`hops`, `kind_filter`, `max_nodes`
     are baked in) and call `retrieve(...)` for each query. The class
     is intentionally stateless apart from the constructor args so the
-    same Retriever can be reused across threads — `drevo.Drevo`
+    same Retriever can be reused across threads - `drevo.Drevo`
     releases the GIL around every storage I/O.
     """
 
@@ -146,7 +146,7 @@ class Retriever:
         *,
         limit: int = 10,
     ) -> Context:
-        """Vector-similarity variant — RFC §8.3.
+        """Vector-similarity variant - RFC §8.3.
 
         Resolves the seed nodes by nearest-neighbour search over drevo's
         first-class embedding store (`Drevo.vector_search`, Phase 12 task
@@ -167,9 +167,9 @@ class Retriever:
         if isinstance(seed, _uuid.UUID):
             node = self._drevo.get_node_by_uuid(seed.bytes)
             return [node] if node is not None else []
-        # bool is a subclass of int — handle it before int.
+        # bool is a subclass of int - handle it before int.
         if isinstance(seed, bool):
-            raise TypeError("Retriever.retrieve: seed cannot be bool — pass int, str, or UUID")
+            raise TypeError("Retriever.retrieve: seed cannot be bool - pass int, str, or UUID")
         if isinstance(seed, int):
             node = self._drevo.get_node(seed)
             return [node] if node is not None else []

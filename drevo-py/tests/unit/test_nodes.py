@@ -29,7 +29,7 @@ def test_create_node_assigns_positive_id(drevo_db: drevo.Drevo) -> None:
 def test_create_node_ids_are_monotonic(drevo_db: drevo.Drevo) -> None:
     """Sequential `create_node` calls produce strictly increasing ids.
 
-    Locks the redb auto-increment behaviour at the Python surface — a
+    Locks the redb auto-increment behaviour at the Python surface - a
     future change that switches to random ids would break this and
     deserves an RFC.
     """
@@ -98,7 +98,7 @@ def test_get_node_returns_existing(drevo_db: drevo.Drevo) -> None:
 
 
 def test_get_node_returns_none_for_missing(drevo_db: drevo.Drevo) -> None:
-    """`get_node` follows the Optional contract — `None`, not raise."""
+    """`get_node` follows the Optional contract - `None`, not raise."""
     assert drevo_db.get_node(99_999) is None
 
 
@@ -149,7 +149,7 @@ def test_update_node_patches_properties(drevo_db: drevo.Drevo) -> None:
 
 
 def test_update_node_missing_raises_node_not_found(drevo_db: drevo.Drevo) -> None:
-    """RFC §5.1 — updating a missing id raises `NodeNotFoundError`."""
+    """RFC §5.1 - updating a missing id raises `NodeNotFoundError`."""
     with pytest.raises(drevo.NodeNotFoundError):
         drevo_db.update_node(99_999, drevo.NodePatch(title="x"))
 

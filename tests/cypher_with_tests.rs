@@ -1,11 +1,11 @@
-//! End-to-end Cypher `WITH` tests — Phase 10 task `00068`.
+//! End-to-end Cypher `WITH` tests - Phase 10 task `00068`.
 //!
 //! Exercises query pipelining (intermediate projection, DISTINCT,
 //! ORDER BY / SKIP / LIMIT, post-projection WHERE, aggregation-then-
 //! filter, multi-stage WITH chains, variable-scope reshape) across
 //! the five drevo target scenario domains plus cross-scenario
 //! regressions. `WITH` is the only point at which the variable
-//! scope can be reshaped — projecting `n.team AS team` drops `n`
+//! scope can be reshaped - projecting `n.team AS team` drops `n`
 //! from the scope of downstream clauses.
 
 use std::collections::HashMap;
@@ -45,7 +45,7 @@ fn string(rows: &[Vec<Value>], r: usize, c: usize) -> String {
     }
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_chained_with_filters_to_frequent_moods() {
@@ -66,7 +66,7 @@ fn cbt_chained_with_filters_to_frequent_moods() {
     assert_eq!(int(&rows, 0, 1), 4);
 }
 
-// ===== Scenario 2 — Story editor ============================================
+// ===== Scenario 2 - Story editor ============================================
 
 #[test]
 fn story_top_acts_by_total_words() {
@@ -97,7 +97,7 @@ fn story_top_acts_by_total_words() {
     assert_eq!(int(&rows, 1, 1), 3700);
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_manager_high_load_assignees() {
@@ -151,7 +151,7 @@ fn task_manager_with_renaming_for_downstream_use() {
     assert!(matches!(rows[1][1], Value::Null));
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_average_order_value_per_buyer_filtered() {
@@ -222,7 +222,7 @@ fn erp_multi_stage_pipeline_buyer_to_high_volume_product() {
     assert_eq!(int(&rows, 0, 1), 3);
 }
 
-// ===== Scenario 5 — Bug tracker =============================================
+// ===== Scenario 5 - Bug tracker =============================================
 
 #[test]
 fn bug_tracker_severity_distribution_filtered() {

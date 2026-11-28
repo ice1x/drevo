@@ -432,8 +432,8 @@ fn verify(dir: &Path, manifest: &BackupManifest) -> Result<(), BackupError> {
     Ok(())
 }
 
-/// Restore the backups in `chain` — a full backup, then any incrementals in
-/// the order they were taken — into a new store whose log is `wal_path`.
+/// Restore the backups in `chain` - a full backup, then any incrementals in
+/// the order they were taken - into a new store whose log is `wal_path`.
 /// Every file is checked against its manifest and the chain against itself
 /// before anything is written; the sidecars come from the last backup.
 ///

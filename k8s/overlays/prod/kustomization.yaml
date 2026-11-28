@@ -1,18 +1,18 @@
-# drevo — Kustomize overlay: prod
+# drevo - Kustomize overlay: prod
 #
 # Phase 8 task 00050. Wraps the base manifests under `k8s/` with
 # production-environment patches:
 #   * `namespace: drevo-prod` so the prod deployment lives in its own
 #     namespace (network-policy boundary, RBAC scope, kubectl context
-#     switch — all cluster-operator conveniences).
-#   * `images.newTag: v0.1.0` is intentionally identical to the base —
+#     switch - all cluster-operator conveniences).
+#   * `images.newTag: v0.1.0` is intentionally identical to the base -
 #     prod follows the canonical release tag. Bump in lockstep when
 #     cutting a new release; keeping the tag explicit (not inherited)
 #     means a base override below a future overlay cannot silently
 #     downgrade prod.
 #   * Strategic-merge patches raise the container resource ceiling
 #     (prod needs head-room for FTS index rebuilds and concurrent HTTP
-#     load) and request a 20 Gi PVC — graph workloads in the use cases
+#     load) and request a 20 Gi PVC - graph workloads in the use cases
 #     the project targets routinely hit tens of GiB once FTS indices
 #     are populated.
 #

@@ -39,7 +39,7 @@ fn edge(engine: &impl GraphEngine, from: u64, to: u64) {
 
 /// A directed chain 0 -> 1 -> 2, a separate edge 3 -> 4, and an isolated node 5.
 /// Weakly connected, that is three components: {0,1,2}, {3,4}, {5}. Note the
-/// chain edges are *directed* one way only — WCC must still merge them.
+/// chain edges are *directed* one way only - WCC must still merge them.
 fn three_components<E: GraphEngine>(engine: &E) -> Vec<u64> {
     let ids: Vec<u64> = (0..6).map(|i| node(engine, &format!("n{i}"))).collect();
     edge(engine, ids[0], ids[1]);

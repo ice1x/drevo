@@ -1,14 +1,14 @@
 """Shared fixtures for the Phase 16 task `00120` end-to-end suite.
 
 The e2e tier always exercises the on-disk redb backend through
-``drevo.Drevo.open(tempfile)`` — same boundary as the 00119
+``drevo.Drevo.open(tempfile)`` - same boundary as the 00119
 integration suite, but each scenario drives a full domain workflow
 top-to-bottom rather than a single cross-component invariant.
 
 Fixtures own the temp directory life-cycle so individual tests stay
 free of cleanup boilerplate. The deterministic embedder lives here
 because every scenario that touches ``drevo.rag.ingest_documents``
-wants the same byte-stable vectors — keeping it in one place stops
+wants the same byte-stable vectors - keeping it in one place stops
 test drift.
 """
 
@@ -33,7 +33,7 @@ def tmp_db_path() -> Iterator[str]:
     reopen the same path within one test (durability sub-checks) hold
     onto ``path`` after the first ``open(...)`` returns and call
     ``Drevo.open(path)`` again once they have closed the original
-    handle — the on-disk lockfile is released by ``close()``.
+    handle - the on-disk lockfile is released by ``close()``.
     """
     with tempfile.TemporaryDirectory(prefix="drevo-e2e-") as td:
         yield os.path.join(td, "graph.drevo")
@@ -62,7 +62,7 @@ def deterministic_embedder() -> Callable[[list[str]], list[list[float]]]:
     Yields a deterministic 8-dimensional vector per string. The
     Phase 12 vector index (task ``00075``) is not yet wired into the
     Python surface, so the embedder output only needs to round-trip
-    through node properties — actual similarity is not exercised here.
+    through node properties - actual similarity is not exercised here.
     Keeping the function tiny (no numpy dependency) means the e2e
     suite stays runnable inside a bare wheel install.
     """

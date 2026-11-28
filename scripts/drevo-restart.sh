@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# drevo-restart.sh — (re)start the local drevo container in ONE command.
+# drevo-restart.sh - (re)start the local drevo container in ONE command.
 #
 # A bare-`docker run` alternative to docker-compose.yml for single-host setups
 # that don't use Compose. Force-recreates the container from a LOCAL image (no
@@ -18,7 +18,7 @@
 #
 # Env (all optional):
 #   DREVO_NAME            container name                 (default: drevo)
-#   DREVO_IMAGE           image ref                      (default: ice1x/drevo:latest — Docker Hub)
+#   DREVO_IMAGE           image ref                      (default: ice1x/drevo:latest - Docker Hub)
 #   DREVO_DATA_DIR        host data dir bind-mounted /data (default: ./data)
 #   DREVO_HTTP_PORT       host port -> container 8080     (default: 8080)
 #   DREVO_BOLT_PORT_HOST  host port -> container 7687     (default: 7687)
@@ -47,7 +47,7 @@
 #   DREVO_OIDC_ISSUER / _AUDIENCE / _USERNAME_CLAIM / _ROLES_CLAIM / _ROLE_MAP
 #                                                     OIDC sign-in
 #
-# Not passed on, because the variable alone is not enough — use
+# Not passed on, because the variable alone is not enough - use
 # docker-compose.yml or your own `docker run` for these:
 #   DREVO_ENCRYPTION_KEY_FILE, DREVO_TLS_CERT, DREVO_TLS_KEY, DREVO_BACKUP_DIR
 #                                                     name a path inside the container: need a mount
@@ -88,9 +88,9 @@ BOLT_PORT="${DREVO_BOLT_PORT_HOST:-7687}"   # host -> container 7687 (Bolt)
 
 command -v "${DREVO_DOCKER:-docker}" >/dev/null 2>&1 || { echo "docker not found on PATH" >&2; exit 1; }
 DOCKER="${DREVO_DOCKER:-docker}"
-"$DOCKER" info >/dev/null 2>&1 || { echo "docker daemon unreachable — is Docker running?" >&2; exit 1; }
+"$DOCKER" info >/dev/null 2>&1 || { echo "docker daemon unreachable - is Docker running?" >&2; exit 1; }
 mkdir -p "$DATA_DIR"
-[ -f "${DATA_DIR}/drevo.redb" ] || echo "note: ${DATA_DIR}/drevo.redb not found yet — a fresh DB will be created."
+[ -f "${DATA_DIR}/drevo.redb" ] || echo "note: ${DATA_DIR}/drevo.redb not found yet - a fresh DB will be created."
 
 # Server settings forwarded into the container when set (in the shell or the
 # env file): the embeddings proxy (issue #217; needs the `embeddings-proxy`
@@ -98,7 +98,7 @@ mkdir -p "$DATA_DIR"
 # extraction and LLM community summaries (DREVO_EXTRACT_*, each falling back
 # to its DREVO_TEXT2CYPHER_* twin), the ingest job workers and retries
 # (DREVO_INGEST_*), DREVO_COMMUNITY_MAX_LLM_SYNC, the engine, the statement
-# and idle-session timeouts, and DREVO_AUTH — `none` keeps a server without
+# and idle-session timeouts, and DREVO_AUTH - `none` keeps a server without
 # users open to clients that send no credentials, such as an MCP server.
 # The rest of the list is every other setting the server reads that needs
 # nothing but its value (see the header); tests/watchdog_script_tests.rs
@@ -116,7 +116,7 @@ echo "Recreating '${NAME}' from ${IMAGE}  (HTTP :${HTTP_PORT}, Bolt :${BOLT_PORT
 "$DOCKER" rm -f "${NAME}" >/dev/null 2>&1 || true
 # --restart unless-stopped: the daemon relaunches the container after a crash,
 # OOM-kill, or Docker/host reboot. It does NOT fight an intentional stop, and it
-# cannot resurrect a *removed* container — that is what the watchdog is for.
+# cannot resurrect a *removed* container - that is what the watchdog is for.
 "$DOCKER" run -d --restart unless-stopped --name "${NAME}" \
   -p "${HTTP_PORT}:8080" -p "${BOLT_PORT}:7687" \
   --user "$(id -u):$(id -g)" \
@@ -131,7 +131,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 if [ "$healthy" -ne 1 ]; then
-  echo "drevo did not become healthy within 30s — check: ${DOCKER} logs ${NAME}" >&2
+  echo "drevo did not become healthy within 30s - check: ${DOCKER} logs ${NAME}" >&2
   exit 1
 fi
 

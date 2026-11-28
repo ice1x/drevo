@@ -4,7 +4,7 @@
 //! relationship. Phase one of a two-phase commit follows the same rule: a
 //! commit elsewhere in the graph does not make `drevo.tx.prepare` fail, and a
 //! prepared transaction holds back only the transactions that overlap what
-//! it wrote — another transaction on other records can be prepared too.
+//! it wrote - another transaction on other records can be prepared too.
 //!
 //! The four cases are the table of the issue, over Bolt as a driver runs
 //! them, and through `NativeService` as drevo-py does.
@@ -89,7 +89,7 @@ fn bolt_a_commit_elsewhere_does_not_outdate_a_prepare() {
     let mut a = hello(&svc);
     let mut b = hello(&svc);
 
-    // Row 1 of the table: A commits after B's autocommit — fine today.
+    // Row 1 of the table: A commits after B's autocommit - fine today.
     begin(&mut a);
     assert_eq!(run(&mut a, "CREATE (:ReproA)"), None);
     assert_eq!(run(&mut b, "CREATE (:ReproB)"), None);
@@ -121,7 +121,7 @@ fn bolt_a_second_transaction_on_other_records_prepares_too() {
     assert_eq!(run(&mut a, "CALL drevo.tx.prepare('gid-a')"), None);
     commit(&mut a);
 
-    // Row 3: an autocommit write elsewhere goes through — fine today.
+    // Row 3: an autocommit write elsewhere goes through - fine today.
     assert_eq!(run(&mut b, "CREATE (:ReproB)"), None);
 
     // Row 4: an explicit transaction elsewhere, prepared.

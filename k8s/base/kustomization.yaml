@@ -1,4 +1,4 @@
-# drevo — Kustomize bundle for the Phase 8 base manifests
+# drevo - Kustomize bundle for the Phase 8 base manifests
 #
 # `kubectl apply -k k8s/` applies the Deployment, Service, and PVC in
 # one shot. Operators who want environment-specific overlays (dev,
@@ -12,6 +12,6 @@ resources:
   - service.yaml
 
 # Each manifest already carries the canonical
-# `app.kubernetes.io/{name,component,part-of}` labels — no
+# `app.kubernetes.io/{name,component,part-of}` labels - no
 # `commonLabels` block here keeps us off the kustomize deprecation
 # warning (`commonLabels` → `labels` migration).

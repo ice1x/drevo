@@ -1,4 +1,4 @@
-// drevo browser — pure helpers for database access in the top bar: whether
+// drevo browser - pure helpers for database access in the top bar: whether
 // the active database is read-only, how each one is labelled in the picker,
 // and which write actions stay available. DOM-free so they can be
 // unit-tested under `node --test` (see db_access.test.js).

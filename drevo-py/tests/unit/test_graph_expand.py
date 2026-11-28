@@ -1,4 +1,4 @@
-"""Unit tests for `CALL drevo.graph.expand` from Python — a breadth-first walk
+"""Unit tests for `CALL drevo.graph.expand` from Python - a breadth-first walk
 from seed nodes inside the database, each node returned once at its shortest
 distance with the relationship that reached it.
 

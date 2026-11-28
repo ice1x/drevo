@@ -7,7 +7,7 @@
 //! native scan is rebuilding the Cypher-facing [`crate::cypher::executor::NodeValue`] (labels vector +
 //! `BTreeMap` property map, every string cloned) for **every node on every
 //! query**. The projection of an unchanged node never changes, so it can be
-//! built once and shared — this cache is the memo, maintained off the write
+//! built once and shared - this cache is the memo, maintained off the write
 //! path by tailing the change-feed like the label/property indexes do.
 //!
 //! # Why it can never serve a stale value
@@ -17,10 +17,10 @@
 //! executor validates a hit with [`std::sync::Arc::ptr_eq`] against the **live** record it
 //! is enumerating: same allocation ⇒ same content ⇒ the cached projection is
 //! exact. Any write replaces the stored record with a fresh allocation (the
-//! native engine clones-out and re-inserts on update — and the cache's own
+//! native engine clones-out and re-inserts on update - and the cache's own
 //! strong reference pins the old allocation, so its address cannot be reused
 //! while the entry exists). A mismatch simply falls back to building the
-//! projection from the live node — a stale or unsynced cache costs speed,
+//! projection from the live node - a stale or unsynced cache costs speed,
 //! never answers.
 
 use std::collections::HashMap;
@@ -143,7 +143,7 @@ impl NativeValueCache {
                     },
                 );
             }
-            // Deleted (or unreadable) between the op and now — drop it.
+            // Deleted (or unreadable) between the op and now - drop it.
             _ => {
                 self.entries.remove(&id);
             }

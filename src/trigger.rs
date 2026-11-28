@@ -285,11 +285,11 @@ fn diff_properties(
 /// as in APOC:
 ///
 /// * `createdNodes`, `deletedNodes`, `createdRelationships`,
-///   `deletedRelationships` — lists of nodes / relationships (a deleted one
+///   `deletedRelationships` - lists of nodes / relationships (a deleted one
 ///   as it was before the transaction);
-/// * `assignedLabels`, `removedLabels` — `{label: [node, …]}`;
-/// * `assignedNodeProperties` — `{key: [{key, old, new, node}, …]}`, and
-///   `removedNodeProperties` — `{key: [{key, old, node}, …]}`; likewise
+/// * `assignedLabels`, `removedLabels` - `{label: [node, …]}`;
+/// * `assignedNodeProperties` - `{key: [{key, old, new, node}, …]}`, and
+///   `removedNodeProperties` - `{key: [{key, old, node}, …]}`; likewise
 ///   `assignedRelationshipProperties` / `removedRelationshipProperties` with
 ///   `relationship`.
 ///

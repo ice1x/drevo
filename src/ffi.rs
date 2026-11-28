@@ -9,16 +9,16 @@
 //! ## Design
 //!
 //! - **Opaque handle**: [`crate::ffi::DrevoHandle`] is a type alias for the
-//!   Rust struct. C consumers receive `*mut DrevoHandle` — an opaque pointer.
+//!   Rust struct. C consumers receive `*mut DrevoHandle` - an opaque pointer.
 //! - **JSON serialization**: complex types (Node, Edge, SubGraph, etc.) cross
 //!   the FFI boundary as JSON-encoded C strings (`*mut c_char`).
 //! - **Error reporting**: thread-local `LAST_ERROR` stores the most recent error
 //!   message. On success it is cleared; on failure it is set. Call
 //!   [`crate::ffi::drevo_last_error`] to retrieve (and the caller must free) it.
 //! - **Memory ownership**: every `*mut c_char` returned by an FFI function is
-//!   owned by the caller — free it with [`crate::ffi::drevo_free_string`].
+//!   owned by the caller - free it with [`crate::ffi::drevo_free_string`].
 //!
-//! ## Panic safety — required by `drevo-rust` §"No panics across FFI"
+//! ## Panic safety - required by `drevo-rust` §"No panics across FFI"
 //!
 //! Panics across an `extern "C"` boundary are **undefined behavior**. Every
 //! entry point in this module wraps its body in [`std::panic::catch_unwind`]
@@ -32,7 +32,7 @@
 //!    entries, `-1` for `i32`-returning entries).
 //!
 //! Production paths in `Drevo` are panic-free after Phase 8.5 tasks
-//! `00103`–`00109`, but the guard remains as defense-in-depth against:
+//! `00103`-`00109`, but the guard remains as defense-in-depth against:
 //!
 //! - allocator failures (`alloc::handle_alloc_error`),
 //! - stack-overflow on pathological inputs,
@@ -48,22 +48,22 @@
 //! - **Single owner.** Once [`crate::ffi::drevo_close`] returns, the pointer
 //!   is invalid.
 //! - **Double-free is UB.** Calling [`crate::ffi::drevo_close`] twice on the
-//!   same pointer is undefined behavior — the second call dereferences freed
+//!   same pointer is undefined behavior - the second call dereferences freed
 //!   memory. Callers MUST set their handle variable to `NULL` after closing.
 //! - **Use-after-close is UB.** Calling any other `drevo_*` function on a
 //!   closed handle is undefined behavior for the same reason.
 //! - **`NULL` handle is detected.** Passing `NULL` to any function that
 //!   accepts a handle returns the error sentinel and sets
-//!   `"null db handle"` — never UB.
+//!   `"null db handle"` - never UB.
 //!
 //! Best-effort runtime double-free detection (e.g. a magic-sentinel pattern)
-//! is deferred — see `audit/AUDIT-ffi.md` finding F2 for the trade-off
+//! is deferred - see `audit/AUDIT-ffi.md` finding F2 for the trade-off
 //! analysis.
 //!
 //! ## Thread-local error
 //!
 //! `LAST_ERROR` is `thread_local!`, so each OS thread has an independent
-//! error slot. Cross-thread error reads are impossible by construction —
+//! error slot. Cross-thread error reads are impossible by construction -
 //! a C consumer that calls drevo from multiple threads must call
 //! [`crate::ffi::drevo_last_error`] on the same thread that produced the
 //! error.
@@ -101,7 +101,7 @@ fn clear_error() {
 // ---------------------------------------------------------------------------
 //
 // Every `extern "C"` function in this module must route its body through one
-// of these two macros — see the module-level "Panic safety" doc-comment.
+// of these two macros - see the module-level "Panic safety" doc-comment.
 //
 // The macros wrap the body in `std::panic::catch_unwind` (via
 // `AssertUnwindSafe`, because `LAST_ERROR` is a `RefCell` and therefore
@@ -233,7 +233,7 @@ fn direction_from_int(d: i32) -> Option<Direction> {
 
 /// Open a disk-backed database at the given path.
 ///
-/// **Deprecated — always fails.** The disk-backed redb KV store was removed in
+/// **Deprecated - always fails.** The disk-backed redb KV store was removed in
 /// epic #444; there is no durable embedded KV engine to open. The C symbol is
 /// retained so the generated header stays stable, but every call fails with a
 /// clear error. Use [`drevo_open_in_memory`] for an ephemeral database, or run
@@ -269,12 +269,12 @@ pub unsafe extern "C" fn drevo_open(path: *const c_char) -> *mut DrevoHandle {
 /// Returns an opaque handle on success, or `NULL` on failure.
 ///
 /// # Safety
-/// No preconditions — this function is always safe to call.
+/// No preconditions - this function is always safe to call.
 #[no_mangle]
 pub unsafe extern "C" fn drevo_open_in_memory() -> *mut DrevoHandle {
     ffi_guard_ptr!("drevo_open_in_memory", {
         clear_error();
-        // Ephemeral native store — infallible to construct.
+        // Ephemeral native store - infallible to construct.
         Box::into_raw(Box::new(NativeService::in_memory()))
     })
 }
@@ -298,7 +298,7 @@ pub unsafe extern "C" fn drevo_close(db: *mut DrevoHandle) -> i32 {
         }
         // Dropping the handle releases the store. The durable native engine
         // persists every write to its WAL as it happens (it is the crash-safe
-        // store of record), so there is nothing to flush on close — unlike the
+        // store of record), so there is nothing to flush on close - unlike the
         // retired KV backend, close cannot fail.
         drop(Box::from_raw(db));
         0
@@ -315,13 +315,13 @@ pub unsafe extern "C" fn drevo_close(db: *mut DrevoHandle) -> i32 {
 /// [`drevo_free_string`].
 ///
 /// # Safety
-/// No preconditions — this function is always safe to call.
+/// No preconditions - this function is always safe to call.
 #[no_mangle]
 pub unsafe extern "C" fn drevo_last_error() -> *mut c_char {
     ffi_guard_ptr!("drevo_last_error", {
         // Clone the message OUT of the RefCell before calling `to_c_string`,
         // because `to_c_string` may itself call `set_error` (on an interior
-        // NUL byte) — which takes a `borrow_mut()` on the same cell. A
+        // NUL byte) - which takes a `borrow_mut()` on the same cell. A
         // nested `borrow_mut()` over a live `borrow()` would panic with
         // `BorrowMutError`. Cloning releases the borrow first.
         let msg: Option<String> = LAST_ERROR.with(|e| e.borrow().clone());
@@ -968,7 +968,7 @@ mod panic_guard_tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// Global lock for tests that mutate the panic hook — otherwise parallel
+    /// Global lock for tests that mutate the panic hook - otherwise parallel
     /// tests trample each other's hooks and noisy stack traces leak to stderr.
     static PANIC_HOOK_LOCK: Mutex<()> = Mutex::new(());
 
@@ -985,7 +985,7 @@ mod panic_guard_tests {
     fn ffi_guard_ptr_catches_panic_returns_null_and_sets_error() {
         let result: *mut c_char = with_silenced_panics(|| {
             ffi_guard_ptr!("synthetic_ptr_fn", {
-                panic!("intentional test panic — ptr variant");
+                panic!("intentional test panic - ptr variant");
             })
         });
         assert!(result.is_null(), "panic guard must return null");
@@ -1005,7 +1005,7 @@ mod panic_guard_tests {
     fn ffi_guard_int_catches_panic_returns_minus_one_and_sets_error() {
         let rc: i32 = with_silenced_panics(|| {
             ffi_guard_int!("synthetic_int_fn", {
-                panic!("intentional test panic — int variant");
+                panic!("intentional test panic - int variant");
             })
         });
         assert_eq!(rc, -1, "panic guard must return -1");

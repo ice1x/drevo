@@ -4,13 +4,13 @@
 //!
 //! Each indexed value is padded with two start markers and two end markers
 //! and cut into every three-character window, so `"save"` yields `⟨⟨s`,
-//! `⟨sa`, `sav`, `ave`, `ve⟩`, `e⟩⟩`. A lookup cuts the needle the same way —
+//! `⟨sa`, `sav`, `ave`, `ve⟩`, `e⟩⟩`. A lookup cuts the needle the same way -
 //! unpadded for `CONTAINS`, start-padded for `STARTS WITH`, end-padded for
-//! `ENDS WITH` — and intersects the posting lists of its trigrams. A string
+//! `ENDS WITH` - and intersects the posting lists of its trigrams. A string
 //! that matches holds every one of those trigrams, so the result is a
 //! **superset** of the matches; the caller still checks each candidate.
 //!
-//! A lookup returns `None` — scan instead — when:
+//! A lookup returns `None` - scan instead - when:
 //!
 //! - no declared spec covers the path for the pattern's labels (a spec for
 //!   label `L` has only seen nodes carrying `L`);
@@ -107,7 +107,7 @@ pub struct TextIndexSpec {
 }
 
 impl TextIndexSpec {
-    /// A spec over `path` — `["title"]` for `n.title`, `["meta", "author"]`
+    /// A spec over `path` - `["title"]` for `n.title`, `["meta", "author"]`
     /// for `n.meta.author`.
     ///
     /// # Errors
@@ -280,7 +280,7 @@ impl NativeTextIndex {
     }
 
     /// Ids of the nodes whose string at `path` may satisfy `op` with `needle`,
-    /// for a pattern requiring `labels` — a superset of the matches. `None`
+    /// for a pattern requiring `labels` - a superset of the matches. `None`
     /// when the index cannot narrow (see the [module docs](self)).
     #[must_use]
     pub fn candidates(
@@ -299,7 +299,7 @@ impl NativeTextIndex {
     }
 
     /// Ids of the nodes indexed by the spec declared exactly as `label` /
-    /// `path` whose string may be within `max_edits` edits of `query` — a
+    /// `path` whose string may be within `max_edits` edits of `query` - a
     /// superset, ascending. Every indexed string is a candidate when the
     /// trigram bound cannot filter (a short query or a large budget). `None`
     /// when no such spec is declared.

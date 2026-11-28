@@ -1,15 +1,15 @@
-//! End-to-end Cypher map-projection tests — Phase 10 follow-up task `00149`.
+//! End-to-end Cypher map-projection tests - Phase 10 follow-up task `00149`.
 //!
 //! A map projection `base { selector, … }` builds a new map by projecting
 //! selected entries off `base` (a node, relationship, or map value). It is the
 //! shaping idiom that lets a query return a tailored record per row without
-//! enumerating every property by hand — `RETURN p {.title, .priority, tag:
+//! enumerating every property by hand - `RETURN p {.title, .priority, tag:
 //! 'urgent'}`. Four selector forms compose in any mix:
 //!
-//! * `.key`     — copy property `key` off the base (absent → `null`),
-//! * `.*`       — copy every property of the base,
-//! * `key: expr`— a computed entry (`expr` evaluated in the current row),
-//! * `var`      — shorthand for `var: var`, an in-scope variable.
+//! * `.key`     - copy property `key` off the base (absent → `null`),
+//! * `.*`       - copy every property of the base,
+//! * `key: expr`- a computed entry (`expr` evaluated in the current row),
+//! * `var`      - shorthand for `var: var`, an in-scope variable.
 //!
 //! Semantics exercised here mirror Neo4j:
 //!

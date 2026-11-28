@@ -1,4 +1,4 @@
-//! Streaming ingestion — Phase 15 task `00096`.
+//! Streaming ingestion - Phase 15 task `00096`.
 //!
 //! A knowledge graph rarely lives in isolation: domain events flow in from
 //! message brokers (a Kafka topic of journal entries, a NATS subject of task
@@ -7,31 +7,31 @@
 //! events into graph mutations, with the delivery guarantees a real broker
 //! demands.
 //!
-//! It models streaming ingestion the way every consumer does — pull a batch,
+//! It models streaming ingestion the way every consumer does - pull a batch,
 //! decode it, apply it, commit the offset:
 //!
-//! * [`IngestEvent`](crate::streaming::IngestEvent) — the decoded form of one
+//! * [`IngestEvent`](crate::streaming::IngestEvent) - the decoded form of one
 //!   broker message: upsert / delete a node or edge, addressed by a
 //!   producer-owned [`EntityKey`](crate::streaming::EntityKey) (never drevo's
 //!   internal id). Travels as tagged JSON; every upsert carries full state so
 //!   replay is idempotent.
-//! * [`StreamSource`](crate::streaming::StreamSource) — the broker-partition
+//! * [`StreamSource`](crate::streaming::StreamSource) - the broker-partition
 //!   abstraction ([`poll`](crate::streaming::StreamSource::poll) /
 //!   [`commit`](crate::streaming::StreamSource::commit) /
 //!   [`committed`](crate::streaming::StreamSource::committed)) with monotonic
 //!   [`Offset`](crate::streaming::Offset)s. drevo ships the in-memory
 //!   [`MemorySource`](crate::streaming::MemorySource); a deployment implements
 //!   the trait over `rdkafka`, `async-nats`, or an HTTP long-poll.
-//! * [`IngestSink`](crate::streaming::IngestSink) — where decoded events land.
+//! * [`IngestSink`](crate::streaming::IngestSink) - where decoded events land.
 //!   The reference [`MemoryGraphSink`](crate::streaming::MemoryGraphSink)
 //!   materializes the stream into a key-addressed node/edge map; a deployment
 //!   implements the trait over a live `Drevo` handle.
-//! * [`IngestConsumer`](crate::streaming::IngestConsumer) — the engine that
+//! * [`IngestConsumer`](crate::streaming::IngestConsumer) - the engine that
 //!   drives a source into a sink under an
 //!   [`ErrorPolicy`](crate::streaming::ErrorPolicy), tracking offsets for
 //!   at-least-once, idempotent ingestion and routing un-ingestable messages to
 //!   a [`DeadLetter`](crate::streaming::DeadLetter) queue.
-//! * [`SchemaMap`](crate::streaming::SchemaMap) (task `00097`) — the
+//! * [`SchemaMap`](crate::streaming::SchemaMap) (task `00097`) - the
 //!   change-data-capture bridge: decode the wal2json output of a Postgres
 //!   logical-replication slot into [`CdcChange`](crate::streaming::CdcChange)s
 //!   and map each relational row change into the
@@ -53,21 +53,21 @@
 //! bad ones (or halts, per policy), and commits the high-water offset. After a
 //! crash the consumer resumes from the committed offset; the source re-delivers
 //! everything past it (at-least-once), and because every
-//! [`IngestEvent`](crate::streaming::IngestEvent) is idempotent — upsert is
-//! last-writer-wins, delete-of-absent is a no-op — the replayed window
+//! [`IngestEvent`](crate::streaming::IngestEvent) is idempotent - upsert is
+//! last-writer-wins, delete-of-absent is a no-op - the replayed window
 //! converges on the same graph state.
 //!
 //! # Scope
 //!
 //! Like the replication (`00095`), authorization (`00094`), and planner
-//! (`00085`–`00089`) engines, this is the ingestion *substrate* — the event
-//! model, the broker/sink seams, the offset/error/idempotency machinery — and
+//! (`00085`-`00089`) engines, this is the ingestion *substrate* - the event
+//! model, the broker/sink seams, the offset/error/idempotency machinery - and
 //! is **not yet wired into the executor / HTTP API / Bolt session**, nor does
 //! it bundle a concrete broker client: a deployment supplies a
 //! [`StreamSource`](crate::streaming::StreamSource) over its transport of
 //! choice (see [`Transport`](crate::streaming::Transport)). It is
 //! dependency-free (only `serde`/`serde_json`/`std`), always compiled, and
-//! WASM-safe — it holds opaque payloads and performs no I/O of its own. It
+//! WASM-safe - it holds opaque payloads and performs no I/O of its own. It
 //! keeps its own [`StreamError`](crate::streaming::StreamError) channel rather
 //! than widening the crate-wide `DrevoError`.
 
@@ -89,7 +89,7 @@ pub use source::{MemorySource, Offset, StreamMessage, StreamSource};
 
 /// The kind of broker transport a [`StreamSource`] represents.
 ///
-/// drevo's engine is transport-agnostic — it consumes any [`StreamSource`] — so
+/// drevo's engine is transport-agnostic - it consumes any [`StreamSource`] - so
 /// this enum carries no behaviour of its own. It exists to label a source for
 /// logs, metrics, and a status endpoint ("which broker is this partition
 /// from?"), the way a `Role` label distinguishes a replication node.
@@ -102,7 +102,7 @@ pub enum Transport {
     /// Change-data-capture tail of an upstream database (e.g. Postgres logical
     /// replication, Debezium).
     Cdc,
-    /// An in-process source ([`MemorySource`]) — tests and embedded replay.
+    /// An in-process source ([`MemorySource`]) - tests and embedded replay.
     InMemory,
 }
 

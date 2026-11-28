@@ -1,4 +1,4 @@
-//! End-to-end tests for #266 — server-side auto-embedding for
+//! End-to-end tests for #266 - server-side auto-embedding for
 //! **relationships/edges** (registerRel / auto-embed on rel write / queryRel /
 //! reindexRel / status coverage).
 //!

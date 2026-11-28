@@ -1,20 +1,20 @@
-//! Cardinality estimation — turning [`GraphStatistics`] into row-count guesses
+//! Cardinality estimation - turning [`GraphStatistics`] into row-count guesses
 //! for the building blocks of a query plan.
 //!
 //! A [`CardinalityEstimator`] borrows a statistics snapshot and answers three
 //! questions a planner asks of every operator:
 //!
-//! * **scan** — how many nodes does `MATCH (n:Label)` produce?
+//! * **scan** - how many nodes does `MATCH (n:Label)` produce?
 //!   ([`estimate_node_scan`](CardinalityEstimator::estimate_node_scan))
-//! * **expand** — given `R` input rows, how many does a relationship hop
+//! * **expand** - given `R` input rows, how many does a relationship hop
 //!   produce? ([`estimate_expand`](CardinalityEstimator::estimate_expand))
-//! * **filter** — what fraction of input rows survives a `WHERE` predicate?
+//! * **filter** - what fraction of input rows survives a `WHERE` predicate?
 //!   ([`selectivity`](CardinalityEstimator::selectivity) /
 //!   [`estimate_filter`](CardinalityEstimator::estimate_filter))
 //!
 //! Estimates are deliberately coarse: when the catalogue carries no figure
 //! (an unknown label, a property with no distinct-value count) the estimator
-//! falls back to the documented `DEFAULT_*` constants below — the textbook
+//! falls back to the documented `DEFAULT_*` constants below - the textbook
 //! magic numbers a planner uses in the absence of statistics. Refining them
 //! with histograms is future work; this task establishes the contract.
 
@@ -117,7 +117,7 @@ impl<'s> CardinalityEstimator<'s> {
     }
 
     /// Estimate the rows produced by expanding a relationship from `input_rows`
-    /// already-bound rows **in the worst case** — when the expansion drives out
+    /// already-bound rows **in the worst case** - when the expansion drives out
     /// of a supernode (task `00087`).
     ///
     /// Where [`estimate_expand`](Self::estimate_expand) uses the *average*
@@ -141,7 +141,7 @@ impl<'s> CardinalityEstimator<'s> {
 
     /// Whether expanding outward from nodes carrying `anchor_labels` risks
     /// driving through a supernode (task `00087`): any label is known to contain
-    /// one, or — with no per-label degree information (an unlabelled anchor) —
+    /// one, or - with no per-label degree information (an unlabelled anchor) -
     /// the graph's degree distribution is heavily skewed
     /// (`degree_skew >= `[`DEFAULT_SUPERNODE_THRESHOLD_FACTOR`]).
     pub fn expand_risks_supernode(&self, anchor_labels: &[String]) -> bool {

@@ -4,7 +4,7 @@ The embedded handle has no chat endpoint, so the model-backed procedures
 report the capability error naming `drevo.extract.status()`; config errors
 are reported before any model call. `drevo.extract.chunks` needs no model:
 its passages are checked against faker-generated manuscripts and, with
-hypothesis, against arbitrary text (Cyrillic and emoji included) — offsets
+hypothesis, against arbitrary text (Cyrillic and emoji included) - offsets
 are exact character positions, passages respect the size, never split a
 character, and overlap rather than leave a gap.
 """

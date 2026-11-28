@@ -1,5 +1,5 @@
 //! `CALL drevo.pagerank.personalized(sourceNodes[, config]) YIELD node,
-//! score` — PageRank whose random walk teleports back to the source nodes —
+//! score` - PageRank whose random walk teleports back to the source nodes -
 //! and the config map `drevo.pagerank([config])` accepts (issue #781).
 //!
 //! The fixture has two components:
@@ -262,7 +262,7 @@ fn seeds_collected_from_a_query_work_like_the_graph_rag_example() {
 }
 
 /// The graph-RAG example of docs/cypher-reference.md: hybrid-search hits
-/// (BM25 only here — no embedder) seed the walk; no hit, no call.
+/// (BM25 only here - no embedder) seed the walk; no hit, no call.
 #[test]
 fn hybrid_search_hits_seed_the_walk() {
     let db = NativeService::in_memory();

@@ -4,7 +4,7 @@
 //! orchestrators** (LangGraph / Temporal / Claude Code / Cursor / CrewAI …),
 //! alongside the existing CBT-journal / story-editor / task-manager / ERP /
 //! bug-tracker scenarios. Everything here runs on drevo's *existing*
-//! primitives — no new engine features — which is the point: the use case is
+//! primitives - no new engine features - which is the point: the use case is
 //! already served by the graph + FTS + traversal surface; this test pins the
 //! orchestrator hot-path so it cannot regress.
 //!
@@ -27,7 +27,7 @@ use drevo::native_service::NativeService;
 use std::collections::HashMap;
 
 // =========================================================================
-// Helpers — the tiny "agent memory API" an orchestrator would wrap.
+// Helpers - the tiny "agent memory API" an orchestrator would wrap.
 // =========================================================================
 
 fn memory_db() -> NativeService {
@@ -91,7 +91,7 @@ fn record_observation(
     obs.id
 }
 
-/// `recall(query, limit)` restricted to observations — the retrieval hot path.
+/// `recall(query, limit)` restricted to observations - the retrieval hot path.
 fn recall_observations(db: &NativeService, query: &str, limit: usize) -> Vec<Node> {
     db.search_fts(query, limit)
         .into_iter()
@@ -108,7 +108,7 @@ fn confidence_of(n: &Node) -> f64 {
 }
 
 /// `compact` candidates: every `observation` whose confidence is below
-/// `threshold`. A scan by kind (not a search) — compaction inspects the whole
+/// `threshold`. A scan by kind (not a search) - compaction inspects the whole
 /// memory surface, not just what matches a query.
 fn stale_observations(db: &NativeService, threshold: f64) -> Vec<u64> {
     db.list_nodes_by_kind("observation", 10_000, 0)
@@ -175,7 +175,7 @@ fn agent_memory_full_orchestrator_flow() {
         "hunch",
         "maybe the dark mode toggle is flaky but unsure",
         "guess",
-        0.2, // low confidence — a compact() candidate
+        0.2, // low confidence - a compact() candidate
     );
 
     // --- recall: FTS + kind filter finds the dark-mode memory -----------
@@ -249,7 +249,7 @@ fn recall_ranks_and_filters_by_kind() {
         .create_node(node("session", "s", "", Properties::default()))
         .unwrap();
     // A same-text `preference` node must NOT come back from an observation
-    // recall — kind filtering is what keeps recall on the intended surface.
+    // recall - kind filtering is what keeps recall on the intended surface.
     db.create_node(node(
         "preference",
         "pref",

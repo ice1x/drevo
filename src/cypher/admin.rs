@@ -1,4 +1,4 @@
-//! Catalog-level Cypher admin commands — `SHOW DATABASES`, `USE`,
+//! Catalog-level Cypher admin commands - `SHOW DATABASES`, `USE`,
 //! `CREATE DATABASE` and `ALTER DATABASE … SET ACCESS`.
 //!
 //! These are *not* graph queries: they list, select, and create the named
@@ -7,7 +7,7 @@
 //! these commands are recognised here, at the string level, and handled by
 //! the catalog-aware HTTP layer *before* the query reaches the parser.
 //!
-//! This module is pure syntax — it classifies a query string and extracts
+//! This module is pure syntax - it classifies a query string and extracts
 //! the operands. Name validation and the actual create/list/select happen in
 //! the caller against the live `Catalog`.
 //!
@@ -26,13 +26,13 @@
 /// A recognised catalog admin command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdminCommand {
-    /// `SHOW DATABASES` — list every database in the catalog.
+    /// `SHOW DATABASES` - list every database in the catalog.
     ShowDatabases,
     /// `CREATE DATABASE <name> [IF NOT EXISTS]`.
     CreateDatabase {
         /// Requested database name (validated by the catalog, not here).
         name: String,
-        /// `IF NOT EXISTS` present — a pre-existing name is a no-op, not an
+        /// `IF NOT EXISTS` present - a pre-existing name is a no-op, not an
         /// error.
         if_not_exists: bool,
     },
@@ -72,7 +72,7 @@ pub fn parse(input: &str) -> Option<AdminCommand> {
         }
         "CREATE" => {
             if !words.next()?.eq_ignore_ascii_case("DATABASE") {
-                return None; // e.g. `CREATE (n) …` — a real graph write.
+                return None; // e.g. `CREATE (n) …` - a real graph write.
             }
             let name = words.next()?.trim_end_matches(';').to_string();
             // Only a trailing `IF NOT EXISTS` (or nothing) is accepted; any

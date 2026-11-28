@@ -49,11 +49,11 @@
 //!
 //! # Where to start
 //!
-//! - [`native::NativeGraph`] — the engine: create, read, update and delete
+//! - [`native::NativeGraph`] - the engine: create, read, update and delete
 //!   nodes and edges, traverse, take snapshots, run transactions
 //!   ([`begin`](native::NativeGraph::begin)) and two-phase commits.
-//! - [`engine::GraphEngine`] — the trait that operations are written against.
-//! - [`model`] — [`Node`](model::Node), [`Edge`](model::Edge) and their
+//! - [`engine::GraphEngine`] - the trait that operations are written against.
+//! - [`model`] - [`Node`](model::Node), [`Edge`](model::Edge) and their
 //!   create/patch inputs.
 //! - Indexes: [`native_fts`] (BM25 full-text search),
 //!   [`native_label_index`], [`native_property_index`], and opt-in indexes on

@@ -1,6 +1,6 @@
-//! Stable matching (Gale–Shapley deferred acceptance) — issue #541.
+//! Stable matching (Gale-Shapley deferred acceptance) - issue #541.
 //!
-//! Two sides — **proposers** and **acceptors** — each rank members of the other
+//! Two sides - **proposers** and **acceptors** - each rank members of the other
 //! side. A matching pairs them one-to-one; it is **stable** when no proposer and
 //! acceptor would both rather be with each other than with their assigned
 //! partners (or than staying single). Gale and Shapley (1962) showed a stable
@@ -39,7 +39,7 @@ pub type Preferences = (u64, Vec<u64>);
 
 /// Proposer-optimal stable matching of `proposers` to `acceptors`.
 ///
-/// Gale–Shapley deferred acceptance: the result is the proposer-optimal stable
+/// Gale-Shapley deferred acceptance: the result is the proposer-optimal stable
 /// matching (every proposer gets the best partner it can have in any stable
 /// matching), which is unique, so the output does not depend on input order.
 /// Returns `(proposer, acceptor)` pairs sorted by proposer id.
@@ -123,7 +123,7 @@ mod tests {
     use super::*;
 
     /// Is `matching` a one-to-one, mutually-acceptable, stable matching of the
-    /// instance? Brute force over every pair — the definition, not the
+    /// instance? Brute force over every pair - the definition, not the
     /// algorithm.
     fn assert_stable(
         proposers: &[Preferences],

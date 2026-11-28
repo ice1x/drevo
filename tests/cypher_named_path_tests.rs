@@ -1,4 +1,4 @@
-//! End-to-end Cypher named-path tests — Phase 10 follow-up task `00141`.
+//! End-to-end Cypher named-path tests - Phase 10 follow-up task `00141`.
 //!
 //! The parser already produces a `NamedPattern` with an optional `variable`
 //! for `MATCH p = (a)-->(b)` (`00062`); this task makes the executor *bind*
@@ -6,7 +6,7 @@
 //! semantics:
 //!
 //! * A path is an alternating sequence of nodes and relationships
-//!   `n0, r1, n1, …, rk, nk`, captured in traversal order — including
+//!   `n0, r1, n1, …, rk, nk`, captured in traversal order - including
 //!   **anonymous** endpoints that carry no variable of their own.
 //! * `length(p)` is the number of relationships (`k`); `nodes(p)` and
 //!   `relationships(p)` return the node / relationship lists in path order.
@@ -158,7 +158,7 @@ fn relationships_of_named_path_returns_relationships_in_order() {
 fn named_path_captures_anonymous_intermediate_nodes() {
     let d = db();
     // The middle node carries no variable in the pattern, yet must appear in
-    // `nodes(p)` — paths capture every endpoint, bound or not.
+    // `nodes(p)` - paths capture every endpoint, bound or not.
     exec("CREATE (a:Bug {title: 'crash'})-[:DUPLICATES]->(b:Bug {title: 'dup'})-[:DUPLICATES]->(c:Bug {title: 'root'})", &d);
     let v = one("MATCH p = (src:Bug {title: 'crash'})-[:DUPLICATES]->(:Bug)-[:DUPLICATES]->(dst:Bug) RETURN length(p)", &d);
     assert_eq!(as_i64(&v), 2);

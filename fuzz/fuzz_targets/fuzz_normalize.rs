@@ -14,7 +14,7 @@
 //!
 //! Inputs are decoded as `&str` via `libfuzzer-sys`'s built-in `Arbitrary`
 //! impl, which means the fuzzer reads UTF-8 windows out of the raw byte
-//! corpus — invalid UTF-8 is filtered before this body runs.
+//! corpus - invalid UTF-8 is filtered before this body runs.
 
 #![no_main]
 
@@ -40,7 +40,7 @@ fuzz_target!(|input: &str| {
         "normalize leaked consecutive spaces: {out:?} from {input:?}"
     );
 
-    // 2. Idempotence — re-normalizing the output is a no-op. This is the
+    // 2. Idempotence - re-normalizing the output is a no-op. This is the
     //    canonical fixed-point property and is the strongest single
     //    invariant we can assert; if it fires, either `normalize` is
     //    losing information or the post-conditions above are wrong.

@@ -1,8 +1,8 @@
-"""Maximum Marginal Relevance reranker — `MMRReranker`.
+"""Maximum Marginal Relevance reranker - `MMRReranker`.
 
 Closed-form pure-Python math. No `drevo.Drevo` dependency: the
 reranker works on a list of candidates and an embedder callable. This
-is deliberate per RFC §8.5 — the algorithm has zero storage I/O so the
+is deliberate per RFC §8.5 - the algorithm has zero storage I/O so the
 unit tests in `00118` can drive it without spinning up a database.
 
 The semantics of `lambda_` are fixed in RFC §10 Q-4:
@@ -24,12 +24,12 @@ from typing import Any, Callable, Sequence
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    """Cosine similarity. Returns 0.0 for any zero vector — that matches
+    """Cosine similarity. Returns 0.0 for any zero vector - that matches
     the limit of `dot(a, b) / (|a| * |b|)` as either norm goes to zero
     *and* avoids a NaN propagating into the reranker's max operator."""
     if len(a) != len(b):
         raise ValueError(
-            f"_cosine: vector dim mismatch ({len(a)} != {len(b)}) — the "
+            f"_cosine: vector dim mismatch ({len(a)} != {len(b)}) - the "
             f"embedder returned inconsistently-sized vectors"
         )
     dot = sum(x * y for x, y in zip(a, b))
@@ -73,14 +73,14 @@ class MMRReranker:
             return []
 
         # Embed once up-front. The embedder is the expensive operation
-        # in any real retrieval pipeline — we never call it inside the
+        # in any real retrieval pipeline - we never call it inside the
         # picking loop.
         texts = [str(getattr(c.node, "title", "")) for c in candidates]
         embeddings = embedder(texts)
         if len(embeddings) != len(candidates):
             raise ValueError(
                 f"embedder returned {len(embeddings)} vectors for "
-                f"{len(candidates)} candidates — counts must match"
+                f"{len(candidates)} candidates - counts must match"
             )
 
         lam = self.lambda_

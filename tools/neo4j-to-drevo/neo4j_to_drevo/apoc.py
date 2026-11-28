@@ -1,17 +1,17 @@
-"""APOC-JSON dump source — the offline dump → load path.
+"""APOC-JSON dump source - the offline dump → load path.
 
-Reads a file produced by Neo4j's APOC export —
+Reads a file produced by Neo4j's APOC export -
 
     // in neo4j (APOC installed):
     CALL apoc.export.json.all('graph.json', {useTypes:true})
 
-— and presents it as the engine's source-agnostic `GraphSource`. The dump
+and presents it as the engine's source-agnostic `GraphSource`. The dump
 is **JSON Lines**: one JSON object per line, each tagged with
 `"type": "node"` or `"type": "relationship"`. A node carries `labels` +
 `properties`; a relationship carries `label` (its type), `start`/`end`
 endpoint objects, and `properties`.
 
-Pure standard-library `json` — no `neo4j` driver and no database
+Pure standard-library `json` - no `neo4j` driver and no database
 connection needed at load time, so a graph can be migrated long after the
 source Neo4j is gone, on a machine that never had Bolt access.
 """
@@ -33,7 +33,7 @@ def _element_id(obj: dict[str, Any]) -> str:
 
     APOC emits both the modern `elementId` (a string) and the legacy
     numeric `id`. We prefer `elementId` when present and fall back to
-    `id` — applied identically to nodes and to relationship `start`/`end`
+    `id` - applied identically to nodes and to relationship `start`/`end`
     endpoints, so the id used to *wire* an edge always matches the id the
     node was *recorded* under.
     """

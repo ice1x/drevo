@@ -1,5 +1,5 @@
 //! The change feed keeps only the recent history event subscribers resume
-//! from — also right after a store is opened, when the engine seeds it with a
+//! from - also right after a store is opened, when the engine seeds it with a
 //! copy of the whole graph, and as soon as the history setting is lowered.
 
 use drevo::model::{NewNode, Properties};

@@ -1,14 +1,14 @@
-//! End-to-end Cypher non-deterministic value-function tests — Phase 10
+//! End-to-end Cypher non-deterministic value-function tests - Phase 10
 //! follow-up task `00161`.
 //!
 //! Neo4j 5 exposes two zero-argument *non-deterministic* scalar functions that
 //! round out the value-generation side of the function library:
 //!
-//! * `rand()` — a uniformly-distributed random `Float` in the half-open
+//! * `rand()` - a uniformly-distributed random `Float` in the half-open
 //!   interval `[0.0, 1.0)`. Backed by a fast, per-thread, non-cryptographic
 //!   generator (mirroring Neo4j's `ThreadLocalRandom`); every evaluation is
 //!   independent, so `rand()` re-draws per row.
-//! * `randomUUID()` — a randomly-generated version-4 UUID rendered as the
+//! * `randomUUID()` - a randomly-generated version-4 UUID rendered as the
 //!   canonical 36-character `8-4-4-4-12` lowercase-hex string. Backed by the
 //!   OS CSPRNG (mirroring Neo4j's `SecureRandom`); every evaluation is a fresh,
 //!   practically-unique identifier.

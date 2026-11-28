@@ -6,8 +6,8 @@
 //! plus the I/O and JSON
 //! boundaries (`Io`, `Json`).
 //!
-//! Failures from layers built on top — vector indexes, transaction state in a
-//! server — have no structured home here; they travel in the opaque
+//! Failures from layers built on top - vector indexes, transaction state in a
+//! server - have no structured home here; they travel in the opaque
 //! [`crate::error::CoreError::Backend`] variant, carrying the lower layer's
 //! rendered message.
 //!
@@ -34,8 +34,8 @@ pub enum CoreError {
     #[error("edge not found: {0}")]
     EdgeNotFound(u64),
 
-    /// A title clash. Node writes no longer produce it — titles are ordinary
-    /// values that any number of nodes may share — but the variant stays so
+    /// A title clash. Node writes no longer produce it - titles are ordinary
+    /// values that any number of nodes may share - but the variant stays so
     /// code matching on it keeps compiling.
     #[error("duplicate title: {0}")]
     DuplicateTitle(String),
@@ -43,7 +43,7 @@ pub enum CoreError {
     /// An edge weight failed validation: it is not a finite `f32`
     /// (NaN, +Inf, or -Inf are rejected at edge create / update). `Edge`
     /// derives `PartialEq`, which `f32::NAN != f32::NAN` would break.
-    #[error("invalid edge weight: {0} — weight must be a finite f32")]
+    #[error("invalid edge weight: {0} - weight must be a finite f32")]
     InvalidWeight(f32),
 
     /// An I/O error occurred (e.g. reading or writing a dump file).
@@ -74,8 +74,8 @@ pub enum CoreError {
     #[error("the database is read-only")]
     ReadOnly,
 
-    /// A failure from a layer built on top — a vector-index error, a
-    /// transaction-state error — that has no structured variant here. Carries
+    /// A failure from a layer built on top - a vector-index error, a
+    /// transaction-state error - that has no structured variant here. Carries
     /// the lower layer's
     /// rendered message so nothing is lost on the wire, even though the
     /// structured variant is not preserved.
@@ -125,7 +125,7 @@ mod tests {
         );
         assert_eq!(
             CoreError::InvalidWeight(f32::NAN).to_string(),
-            "invalid edge weight: NaN — weight must be a finite f32"
+            "invalid edge weight: NaN - weight must be a finite f32"
         );
         assert_eq!(
             CoreError::Backend("scan failed".into()).to_string(),

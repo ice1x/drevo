@@ -1,9 +1,9 @@
-//! Phase 12 task `00079` — text-level scaffolding tests for the Python
+//! Phase 12 task `00079` - text-level scaffolding tests for the Python
 //! embedding-integration surface.
 //!
 //! Same pattern as `python_rag_idioms_tests.rs` (`00117`) and the other
 //! `python_*_tests.rs` scaffolding files: these tests do **not** boot a
-//! Python interpreter — they grep the on-disk files so the Rust-only CI
+//! Python interpreter - they grep the on-disk files so the Rust-only CI
 //! runners gate the *shape* of the embedding surface before the wheel
 //! build job ever fires `pytest`. The runtime behaviour is exercised by
 //! the pytest suites (`drevo-py/tests/unit/` + `tests/integration/`) under

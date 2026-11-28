@@ -1,7 +1,7 @@
-# RFC — Extracting the MCP servers into a separate repository
+# RFC - Extracting the MCP servers into a separate repository
 
 Date: 2026-06-29
-Status: IMPLEMENTED (2026-07-02). All in-tree MCP surfaces were removed — the two
+Status: IMPLEMENTED (2026-07-02). All in-tree MCP surfaces were removed - the two
 Python packages (`tools/drevo-mcp`, `tools/drevo-mcp-bolt`) AND the embedded Rust
 `src/mcp/` + `src/bin/mcp.rs` binary. The MCP server now lives in a separate
 repository: https://github.com/ice1x/drevo-mcp. The path references below are
@@ -16,7 +16,7 @@ vector-coverage findings below).
 
 ## 1. Does MCP use vectors?
 
-**No — none of the three MCP surfaces expose a dedicated vector/embedding
+**No - none of the three MCP surfaces expose a dedicated vector/embedding
 tool.** The vector subsystem lives entirely in the core library
 (`drevo::db::Drevo::{set_embedding, set_embeddings_batch, get_embedding,
 delete_embedding, embedding_count, vector_search, build_vector_index}`), the
@@ -33,9 +33,9 @@ Implication for extraction: vectors are *not* a coupling concern for the MCP
 move. If a first-class vector MCP tool is ever wanted, it would be new surface,
 not a relocation.
 
-## 2. Can MCP be extracted? — Yes, with per-component effort
+## 2. Can MCP be extracted? - Yes, with per-component effort
 
-### 2a. Python HTTP MCP (`tools/drevo-mcp/`) — trivial
+### 2a. Python HTTP MCP (`tools/drevo-mcp/`) - trivial
 
 Already a self-contained pip package (own `pyproject.toml`, `tests/`). It talks
 to drevo only over HTTP via `DrevoHttpClient`. **Zero source dependency on the
@@ -43,15 +43,15 @@ Rust crate.** Extraction = `git filter-repo --subdirectory-filter
 tools/drevo-mcp` into a new repo, then publish to PyPI. Its tests
 (`test_client.py`, `test_compose.py`, `test_tools.py`) travel unchanged.
 
-### 2b. Python Bolt MCP (`tools/drevo-mcp-bolt/`) — trivial
+### 2b. Python Bolt MCP (`tools/drevo-mcp-bolt/`) - trivial
 
 Same shape: standalone package, talks Bolt only. No crate-source coupling.
 Extraction is identical to 2a. Tests (`test_config.py`, `test_integration.py`)
-travel unchanged. `test_integration.py` needs a running drevo Bolt endpoint —
+travel unchanged. `test_integration.py` needs a running drevo Bolt endpoint -
 the CI for the new repo must either spin up `drevo-server`/Bolt from a published
 binary/container or mark those tests as requiring an external endpoint.
 
-### 2c. Rust embedded MCP (`src/mcp/`, `src/bin/mcp.rs`, bin `drevo-mcp`) — feasible, one caveat
+### 2c. Rust embedded MCP (`src/mcp/`, `src/bin/mcp.rs`, bin `drevo-mcp`) - feasible, one caveat
 
 It consumes only the **public** API: `drevo::db::Drevo` and
 `drevo::model::Direction`. No private internals. It can become its own crate
@@ -90,11 +90,11 @@ Tests that move with it: `tests/drevo_mcp_e2e_tests.rs`,
   outside core* applies to wire-protocol adapters; the embedded MCP is closer to
   a first-class server binary like `drevo-server`, which stays in core.)
 - **More CI pipelines** on a single self-hosted runner (memory: CI is
-  single-runner-contended) — every extracted repo is another serialized build.
+  single-runner-contended) - every extracted repo is another serialized build.
 
 ### Recommendation
 
-- Extract the **two Python MCPs** first — they are pure wire-protocol clients,
+- Extract the **two Python MCPs** first - they are pure wire-protocol clients,
   zero crate coupling, lowest risk, and match the adapter-outside-core convention.
 - Keep the **Rust embedded MCP** in-tree as a binary unless there is a concrete
   packaging/release driver; if it does move, resolve `python_api` via option (A).

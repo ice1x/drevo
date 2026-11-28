@@ -1,4 +1,4 @@
-//! Query plans — the annotated operator tree a cost-based planner produces.
+//! Query plans - the annotated operator tree a cost-based planner produces.
 //!
 //! A [`PlanNode`] is one operator (a scan, an expand, a filter, a projection,
 //! …) carrying its estimated output-row count and a cumulative cost, with its
@@ -10,8 +10,8 @@
 //!
 //! [`plan_single_query`] / [`plan_query`] produce the *un-optimised* plan:
 //! operators stay in source order. The cost-based optimiser added in task
-//! `00086` — [`optimize_single_query`] / [`optimize_query`], also wrapped by
-//! [`PlanOptimizer`] — produces a cheaper plan from the same statistics by
+//! `00086` - [`optimize_single_query`] / [`optimize_query`], also wrapped by
+//! [`PlanOptimizer`] - produces a cheaper plan from the same statistics by
 //! **anchoring the scan at the most selective node** and expanding outward
 //! (pattern reordering), **seeking an index** when a node carries an equality
 //! on a statistically-known property ([`Operator::NodeIndexSeek`], index
@@ -127,10 +127,10 @@ pub enum Operator {
     },
     /// `UNION` of several sub-plans.
     Union,
-    /// A single empty input row — the seed for a `RETURN`/`UNWIND` with no
+    /// A single empty input row - the seed for a `RETURN`/`UNWIND` with no
     /// preceding `MATCH` (`RETURN 1`).
     SingleRow,
-    /// No rows — a write-only query with nothing to read back.
+    /// No rows - a write-only query with nothing to read back.
     EmptyResult,
 }
 
@@ -456,7 +456,7 @@ impl PlanBuilder<'_> {
                 | Clause::CallSubquery(_)
                 // `EXPLAIN` / `PROFILE` describe a statement of their own.
                 | Clause::Explain(_)
-                // Schema DDL (issue #532) produces no rows — pass through.
+                // Schema DDL (issue #532) produces no rows - pass through.
                 | Clause::CreateVectorIndex(_)
                 | Clause::CreatePathIndex(_)
                 | Clause::DropIndex(_)
@@ -595,7 +595,7 @@ impl PlanBuilder<'_> {
     }
 
     /// Plan a fresh (no prior binding) path: pick the most selective node as the
-    /// scan/seek anchor, then expand outward — rightward in source direction and
+    /// scan/seek anchor, then expand outward - rightward in source direction and
     /// leftward with the relationship directions flipped (the same edges,
     /// traversed backwards).
     fn plan_fresh_path_opt(&mut self, path: &PathPattern) -> PlanNode {
@@ -613,7 +613,7 @@ impl PlanBuilder<'_> {
             self.bindings.insert(var.clone(), np.labels.clone());
         }
 
-        // 2. Score each node by the cheapest cardinality it can be reached at —
+        // 2. Score each node by the cheapest cardinality it can be reached at -
         //    an index seek when an equality on a known property is available,
         //    otherwise the label/all-nodes scan. The lowest wins (ties keep the
         //    earliest node, preferring the source-order head).
@@ -670,7 +670,7 @@ impl PlanBuilder<'_> {
                 nodes[i],
             );
         }
-        // 5. Expand leftward (directions flipped — the edge is traversed back).
+        // 5. Expand leftward (directions flipped - the edge is traversed back).
         for i in (0..anchor).rev() {
             let seg = &path.tail[i];
             let dir = flip_direction(seg.relationship.direction);
@@ -744,8 +744,8 @@ impl PlanBuilder<'_> {
     /// the destination node's inline equality properties as filters.
     ///
     /// When the source variable is bound to a label known to contain a supernode
-    /// (task `00087`), the expansion is costed with the *worst-case* fan-out —
-    /// the busiest node's degree — instead of the average, so a plan that drives
+    /// (task `00087`), the expansion is costed with the *worst-case* fan-out -
+    /// the busiest node's degree - instead of the average, so a plan that drives
     /// out of a hub is honestly more expensive than one that expands into it.
     fn expand_between(
         &self,
@@ -962,7 +962,7 @@ struct IndexSeek {
     selectivity: f64,
 }
 
-/// Flip an expansion direction — traversing the same edge backwards.
+/// Flip an expansion direction - traversing the same edge backwards.
 fn flip_direction(direction: Direction) -> Direction {
     match direction {
         Direction::Outgoing => Direction::Incoming,
@@ -1535,7 +1535,7 @@ mod tests {
     #[test]
     fn optimizer_avoids_anchoring_at_a_supernode() {
         // Tag (50) is rarer than Post (9000), so a count-only optimiser would
-        // anchor at Tag — but driving out of the Tag hub fans out across 9000
+        // anchor at Tag - but driving out of the Tag hub fans out across 9000
         // edges. Supernode handling drives from Post and expands into the Tag.
         let s = supernode_stats();
         let p = opt_with("MATCH (p:Post)-[:TAGGED]->(t:Tag) RETURN p, t", &s);
@@ -1549,7 +1549,7 @@ mod tests {
     #[test]
     fn without_degree_stats_optimizer_anchors_at_the_rarer_label() {
         // The same shape with no degree statistics falls back to pure
-        // cardinality and anchors at the rarer Tag — the choice supernode
+        // cardinality and anchors at the rarer Tag - the choice supernode
         // handling overrides above.
         let mut s = GraphStatistics::new()
             .with_total_nodes(9050)
@@ -1568,7 +1568,7 @@ mod tests {
     #[test]
     fn driving_into_a_supernode_uses_average_fanout() {
         // When the hub is on the destination side, the expansion is costed with
-        // the (cheap) average fan-out — only driving *out* of a hub is penalised.
+        // the (cheap) average fan-out - only driving *out* of a hub is penalised.
         let s = supernode_stats();
         let p = opt_with("MATCH (p:Post)-[:TAGGED]->(t:Tag) RETURN p, t", &s);
         // Anchor is Post (9000); the single expand into Tag uses average degree
@@ -1587,8 +1587,8 @@ mod tests {
 
     #[test]
     fn supernode_handling_is_inert_without_an_expansion() {
-        // A lone hub scan (no hop) is never penalised — there is nothing to
-        // fan out — so the plan matches the plain optimiser.
+        // A lone hub scan (no hop) is never penalised - there is nothing to
+        // fan out - so the plan matches the plain optimiser.
         let s = supernode_stats();
         let p = opt_with("MATCH (t:Tag) RETURN t", &s);
         let leaf = driving_leaf(&p);

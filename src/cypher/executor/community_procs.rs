@@ -109,7 +109,7 @@ fn texts_of(node: &NodeValue) -> impl Iterator<Item = String> + '_ {
 
 impl Executor<'_> {
     /// `CALL drevo.community.summarize([config]) YIELD community, size,
-    /// summary, keywords, mode` — once per input row.
+    /// summary, keywords, mode` - once per input row.
     pub(super) fn run_community_summarize(
         &mut self,
         c: &CallClause,
@@ -125,7 +125,7 @@ impl Executor<'_> {
     }
 
     /// `CALL drevo.community.query(query, k[, config]) YIELD community,
-    /// score, summary` — once per input row.
+    /// score, summary` - once per input row.
     pub(super) fn run_community_query(
         &mut self,
         c: &CallClause,
@@ -142,7 +142,7 @@ impl Executor<'_> {
         })
     }
 
-    /// `CALL drevo.community.of(node) YIELD community, level` — once per
+    /// `CALL drevo.community.of(node) YIELD community, level` - once per
     /// input row.
     pub(super) fn run_community_of(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
         self.run_per_row(c, columns, &mut |exec, row| {
@@ -151,7 +151,7 @@ impl Executor<'_> {
         })
     }
 
-    /// `CALL drevo.community.stale() YIELD community, size, changed` — once
+    /// `CALL drevo.community.stale() YIELD community, size, changed` - once
     /// per input row.
     pub(super) fn run_community_stale(
         &mut self,
@@ -234,7 +234,7 @@ impl Executor<'_> {
         )
     }
 
-    /// Whether `layer` holds a `:Community` the caller may see — whether the
+    /// Whether `layer` holds a `:Community` the caller may see - whether the
     /// global scope of `drevo.rag.context` has anything to retrieve there.
     pub(super) fn has_visible_community(&self, layer: &str) -> ExecResultT<bool> {
         Ok(self
@@ -726,7 +726,7 @@ impl Executor<'_> {
 
     /// The graph-RAG pipeline in the config's scope: the local pipeline
     /// ([`Self::rag_subgraph`]), the global one
-    /// ([`Self::rag_global_subgraph`]), or — under `'auto'` — global when
+    /// ([`Self::rag_global_subgraph`]), or - under `'auto'` - global when
     /// the local search finds no seed, the question matches the global hint,
     /// or both search legs ran and the best seed scores below the global
     /// threshold; local when that finds no community.
@@ -783,8 +783,8 @@ impl Executor<'_> {
     /// The global scope: the `k` communities of `communityLayer` best
     /// matching `query` (topped up with the largest others when fewer
     /// match) as seeds, then
-    /// their members — best in-community rank first, taken in turns across
-    /// the communities up to `maxNodes` — and the relationships between
+    /// their members - best in-community rank first, taken in turns across
+    /// the communities up to `maxNodes` - and the relationships between
     /// them all. `None` when the layer has no community.
     fn rag_global_subgraph(
         &self,

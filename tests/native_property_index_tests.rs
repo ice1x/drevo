@@ -1,10 +1,10 @@
 //! The native property-value index (RFC `docs/rfc-native-core.md`, #307,
-//! Phase 6.7) — a change-feed consumer indexing `(property key, value)` pairs so
+//! Phase 6.7) - a change-feed consumer indexing `(property key, value)` pairs so
 //! a `MATCH (n {key: value})` equality pattern skips the full node scan.
 //!
 //! These lock: it indexes indexable scalar values in ascending id order,
 //! reflects value changes / deletes after `sync`, rebuilds when the feed was
-//! trimmed past its cursor, and — the headline — makes a native
+//! trimmed past its cursor, and - the headline - makes a native
 //! `MATCH (n {..})` return the **same rows as the full-scan path and as the KV
 //! store**, including patterns that mix an indexable and a non-indexable filter.
 
@@ -79,7 +79,7 @@ fn indexes_scalar_values_in_ascending_id_order() {
         .is_empty());
     assert!(idx.node_ids("score", &serde_json::json!(3.5)).is_empty());
     // All four nodes are tracked: a, b, c via their explicit indexable
-    // properties, and every node (d included) via the `title` alias — the
+    // properties, and every node (d included) via the `title` alias - the
     // model title/body fields are surfaced as ordinary Cypher properties by
     // the executor, so the index serves them too (`MATCH (n {title: 'd'})`).
     assert_eq!(idx.len(), 4);
@@ -238,7 +238,7 @@ fn indexed_property_scan_equals_full_scan_and_kv() {
 
 #[test]
 fn indexed_label_and_property_intersection_equals_full_scan_and_kv() {
-    // `MATCH (n:Label {key: value})` — the common form — must use the
+    // `MATCH (n:Label {key: value})` - the common form - must use the
     // intersection of the label and property candidate sets on native and still
     // agree with the full scan and the KV store. The graph mixes the label
     // `user` as a primary kind and (for one node) as a secondary label, with
@@ -349,7 +349,7 @@ fn where_equality_pushdown_equals_full_scan_and_kv() {
         "MATCH (n:task) WHERE n.status = 'open' RETURN n",
         // two conjunctive equalities
         "MATCH (n) WHERE n.status = 'open' AND n.prio = 1 RETURN n",
-        // OR must NOT be pushed down — pushing either side would drop matches
+        // OR must NOT be pushed down - pushing either side would drop matches
         "MATCH (n) WHERE n.status = 'open' OR n.status = 'closed' RETURN n",
         // inline property + WHERE equality + label, all combined
         "MATCH (n:task {prio: 1}) WHERE n.status = 'open' RETURN n",
@@ -383,7 +383,7 @@ fn where_equality_pushdown_equals_full_scan_and_kv() {
 #[test]
 fn where_in_pushdown_equals_full_scan_and_kv() {
     // `WHERE n.prop IN [...]` narrows through the property index as the UNION of
-    // the elements' postings — but only when every element is indexable. All
+    // the elements' postings - but only when every element is indexable. All
     // shapes must agree across native full-scan, native indexed, and KV.
     let build = |eng: &dyn GraphEngine| {
         eng.create_node(node(
@@ -563,7 +563,7 @@ fn range_on_mixed_type_key_falls_back_without_diverging() {
     // When a key also holds a non-numeric value, drevo type-errors on an ordering
     // comparison. The range index must REFUSE to serve that key (so it can't
     // silently exclude the offending node and turn the error into a success):
-    // both the full scan and the indexed path must behave identically — here,
+    // both the full scan and the indexed path must behave identically - here,
     // both error.
     let build = |eng: &dyn GraphEngine| {
         eng.create_node(node("task", "a", &[("val", serde_json::json!(10))]))
@@ -582,7 +582,7 @@ fn range_on_mixed_type_key_falls_back_without_diverging() {
     let full = execute_on_engine(&query, &native, HashMap::new());
     let indexed =
         execute_on_engine_with_indexes(&query, &native, None, None, Some(&props), HashMap::new());
-    // The string value makes `n.val > 20` a type error on every path — the
+    // The string value makes `n.val > 20` a type error on every path - the
     // index must not paper over it by excluding the string node.
     assert!(
         full.is_err(),

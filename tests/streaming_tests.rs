@@ -40,7 +40,7 @@ fn edge(key: &str, from: &str, to: &str, kind: &str) -> IngestEvent {
     }
 }
 
-/// CBT journal — a wellbeing app streams journal entries and the cognitive
+/// CBT journal - a wellbeing app streams journal entries and the cognitive
 /// distortions / emotions the user tagged, plus the links between them. The
 /// consumer materializes the journal graph in real time.
 #[test]
@@ -91,7 +91,7 @@ fn cbt_journal_stream_materializes_entries_and_tags() {
     assert_eq!(source.committed(), Offset(3));
 }
 
-/// Story / book editor — chapters arrive, then a later edit revises a chapter
+/// Story / book editor - chapters arrive, then a later edit revises a chapter
 /// title (an upsert under the same key) and deletes a scrapped scene. Last
 /// writer wins; the graph reflects the latest state.
 #[test]
@@ -143,7 +143,7 @@ fn story_editor_stream_applies_revisions_and_deletions() {
     assert!(sink.node("scene-1a").is_none());
 }
 
-/// IT task manager — a CI system streams task status changes faster than they
+/// IT task manager - a CI system streams task status changes faster than they
 /// can be consumed; a small batch size means several polling rounds. Every
 /// update lands and the offset advances monotonically.
 #[test]
@@ -171,7 +171,7 @@ fn task_manager_high_volume_stream_drains_in_batches() {
     assert_eq!(consumer.applied_total(), 50);
 }
 
-/// ERP — an upstream Postgres CDC tail streams purchase orders and the
+/// ERP - an upstream Postgres CDC tail streams purchase orders and the
 /// supplier they belong to, but referential integrity matters: an edge whose
 /// endpoints have not yet arrived must not silently create a dangling link.
 /// The strict sink dead-letters the premature edge; a later replay (after the
@@ -228,7 +228,7 @@ fn erp_cdc_stream_dead_letters_dangling_edges() {
     assert_eq!(sink.edge("po-belongs-1").unwrap().to, "supplier-acme");
 }
 
-/// Bug tracker — a flaky producer interleaves valid bug events with a corrupt
+/// Bug tracker - a flaky producer interleaves valid bug events with a corrupt
 /// payload. Under the dead-letter policy the corrupt message is quarantined and
 /// ingestion continues; the dead-letter queue preserves the raw bytes for
 /// inspection.
@@ -268,7 +268,7 @@ fn bug_tracker_stream_quarantines_corrupt_payloads() {
     assert!(dl.reason.contains("malformed") || !dl.reason.is_empty());
 }
 
-/// At-least-once delivery — a consumer crashes after applying a batch but
+/// At-least-once delivery - a consumer crashes after applying a batch but
 /// before committing all of it. On restart the broker re-delivers the
 /// uncommitted suffix; idempotent upserts mean the graph is identical to a
 /// crash-free run, with no duplicates.
@@ -290,7 +290,7 @@ fn at_least_once_replay_is_idempotent_after_crash() {
     let mut sink = MemoryGraphSink::new();
 
     // First run: process the first 4 in two batches, but the second commit is
-    // "lost" to a crash — only offset 2 made it to durable storage.
+    // "lost" to a crash - only offset 2 made it to durable storage.
     let mut c1 = IngestConsumer::new().with_batch_size(2);
     c1.run_once(&mut source, &mut sink).unwrap(); // n0,n1 -> commit 2
     c1.run_once(&mut source, &mut sink).unwrap(); // n2,n3 applied to sink…

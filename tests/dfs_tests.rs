@@ -168,7 +168,7 @@ fn dfs_edge_kind_filter_multi_hop() {
     db.create_edge(make_edge(b.id, d.id, "tagged_with"))
         .unwrap();
 
-    // Only follow "links_to" — should reach B and C but not D
+    // Only follow "links_to" - should reach B and C but not D
     let result = db
         .dfs(a.id, 3, Direction::Outgoing, Some("links_to"))
         .unwrap();
@@ -328,7 +328,7 @@ fn dfs_bidirectional_edges() {
 // Use-case scenarios
 // ---------------------------------------------------------------
 
-/// CBT Journal: trace a thought chain via DFS — goes deep along one path first.
+/// CBT Journal: trace a thought chain via DFS - goes deep along one path first.
 #[test]
 fn scenario_cbt_thought_chain_dfs() {
     let db = NativeService::in_memory();
@@ -353,11 +353,11 @@ fn scenario_cbt_thought_chain_dfs() {
     db.create_edge(make_edge(distortion.id, rational.id, "reframed_as"))
         .unwrap();
 
-    // DFS from situation, depth 3 — should reach all 4 nodes
+    // DFS from situation, depth 3 - should reach all 4 nodes
     let result = db.dfs(situation.id, 3, Direction::Outgoing, None).unwrap();
     assert_eq!(result.len(), 4);
 
-    // Filter by "triggered_by" — only thought
+    // Filter by "triggered_by" - only thought
     let result = db
         .dfs(situation.id, 1, Direction::Outgoing, Some("triggered_by"))
         .unwrap();
@@ -389,7 +389,7 @@ fn scenario_story_editor_tree_dfs() {
     db.create_edge(make_edge(scene1.id, char1.id, "involves"))
         .unwrap();
 
-    // Only "contains" edges, depth 3 — DFS should reach ch1, ch2, scene1, scene2
+    // Only "contains" edges, depth 3 - DFS should reach ch1, ch2, scene1, scene2
     let result = db
         .dfs(book.id, 3, Direction::Outgoing, Some("contains"))
         .unwrap();
@@ -418,7 +418,7 @@ fn scenario_task_dependency_chain_dfs() {
     db.create_edge(make_edge(bugfix.id, review.id, "depends_on"))
         .unwrap();
 
-    // DFS from tests via "depends_on" — reaches bugfix and review
+    // DFS from tests via "depends_on" - reaches bugfix and review
     let result = db
         .dfs(tests.id, 5, Direction::Outgoing, Some("depends_on"))
         .unwrap();

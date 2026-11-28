@@ -139,7 +139,7 @@ def test_bugs_fixed_in_release_v1_1(disk_db: drevo.Drevo) -> None:
 
 def test_uncovered_bug_detected_via_inverse_lookup(disk_db: drevo.Drevo) -> None:
     """A bug is "uncovered" if it has no inbound ``covers`` edge.
-    Both bugs in this scenario *are* covered — assert that the inverse
+    Both bugs in this scenario *are* covered - assert that the inverse
     check finds zero gaps. Inserting a new bug without a test should
     surface; we verify that too.
     """
@@ -157,7 +157,7 @@ def test_uncovered_bug_detected_via_inverse_lookup(disk_db: drevo.Drevo) -> None
 
 
 def test_fts_finds_bug_by_body_phrase(disk_db: drevo.Drevo) -> None:
-    """Body-text FTS recovers the bug — the "search the bug tracker"
+    """Body-text FTS recovers the bug - the "search the bug tracker"
     feature in an actual UI.
     """
     _build_tracker(disk_db)

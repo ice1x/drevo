@@ -1,5 +1,5 @@
 //! `CALL drevo.events.post(name, payload)`: named application events,
-//! delivered on commit — over `GET /events` as `posted` events, and through
+//! delivered on commit - over `GET /events` as `posted` events, and through
 //! [`NativeService::event_bus`] for embedders.
 //!
 //! - An event reaches subscribers only once its statement or transaction

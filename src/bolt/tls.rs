@@ -1,9 +1,9 @@
-//! TLS for Bolt — Phase 11 task `00073`.
+//! TLS for Bolt - Phase 11 task `00073`.
 //!
 //! Wraps the existing async TCP listener ([`crate::bolt::listener`])
 //! in a [`tokio_rustls::TlsAcceptor`] so the same handshake +
 //! session loop work over an encrypted transport. Gated behind the
-//! `bolt-tls` Cargo feature (which itself implies `http`) — default
+//! `bolt-tls` Cargo feature (which itself implies `http`) - default
 //! builds keep their dep graph free of `rustls`, `tokio-rustls`, and
 //! `rustls-pemfile`.
 //!
@@ -12,7 +12,7 @@
 //! drevo's deployment story is "ship a static binary or an embedded
 //! library that runs on any of {Linux glibc, macOS, Windows, iOS,
 //! Android}". OpenSSL bindings drag in a system library that breaks
-//! that property — and on the embedded targets (iOS / Android via C
+//! that property - and on the embedded targets (iOS / Android via C
 //! FFI) it isn't even available. `rustls` is pure Rust, uses the
 //! same `ring` crypto provider the rest of the Rust ecosystem
 //! already pins, and integrates cleanly with `tokio` via
@@ -24,28 +24,28 @@
 //! optional-feature types so the rest of the codebase (FFI, WASM,
 //! HTTP) can match against it without `cfg` guards. The TLS error
 //! path converts `rustls::Error` / `std::io::Error` from the
-//! handshake into a `String` payload at the boundary — we never
+//! handshake into a `String` payload at the boundary - we never
 //! re-emit it as a structured `rustls::Error` further up.
 //!
 //! ## Public surface
 //!
-//! * [`crate::bolt::tls::TlsConfig`] — owns an
+//! * [`crate::bolt::tls::TlsConfig`] - owns an
 //!   `Arc<rustls::ServerConfig>`. Built via
-//!   [`crate::bolt::tls::TlsConfig::from_pem`] (in-memory bytes —
+//!   [`crate::bolt::tls::TlsConfig::from_pem`] (in-memory bytes -
 //!   used by the test suite, FFI callers that load certs themselves,
 //!   and Tauri-style embedders) or
-//!   [`crate::bolt::tls::TlsConfig::from_pem_files`] (paths on disk
-//!   — the deployment-time entry point).
-//! * [`crate::bolt::tls::accept_handshake_tls`] — performs the TLS
+//!   [`crate::bolt::tls::TlsConfig::from_pem_files`] (paths on disk -
+//!   the deployment-time entry point).
+//! * [`crate::bolt::tls::accept_handshake_tls`] - performs the TLS
 //!   handshake on a freshly accepted [`tokio::net::TcpStream`], then
 //!   runs the Bolt 20-byte handshake on the encrypted stream.
-//! * [`crate::bolt::tls::accept_and_run_session_tls`] — bundles TLS
+//! * [`crate::bolt::tls::accept_and_run_session_tls`] - bundles TLS
 //!   handshake + Bolt handshake + session loop into one call,
 //!   suitable as a `tokio::spawn`-per-connection body.
 //!
 //! Both `_tls` entry points are thin wrappers over the generic
 //! [`crate::bolt::listener::accept_handshake_on`] /
-//! [`crate::bolt::listener::run_session_on_durable`] helpers — the only
+//! [`crate::bolt::listener::run_session_on_durable`] helpers - the only
 //! TLS-specific code lives here. Plain-TCP and TLS code paths share
 //! the same session-loop bytes.
 
@@ -92,11 +92,11 @@ impl TlsConfig {
     /// The certificate chain is expected to be a concatenation of
     /// one or more `BEGIN CERTIFICATE` blocks (leaf first, intermediate
     /// certificates after). The key may be PKCS#8, PKCS#1 (RSA), or
-    /// SEC1 (EC) — whichever form is found first wins.
+    /// SEC1 (EC) - whichever form is found first wins.
     ///
     /// # Errors
     ///
-    /// * [`BoltError::Tls`] — empty / malformed PEM, missing key,
+    /// * [`BoltError::Tls`] - empty / malformed PEM, missing key,
     ///   or rustls config build failure (e.g. cert/key mismatch).
     pub fn from_pem(cert_pem: &[u8], key_pem: &[u8]) -> BoltResult<Self> {
         let certs = parse_cert_chain(cert_pem)?;
@@ -125,8 +125,8 @@ impl TlsConfig {
     ///
     /// # Errors
     ///
-    /// * [`BoltError::Io`] — either file cannot be opened or read.
-    /// * [`BoltError::Tls`] — see [`TlsConfig::from_pem`].
+    /// * [`BoltError::Io`] - either file cannot be opened or read.
+    /// * [`BoltError::Tls`] - see [`TlsConfig::from_pem`].
     pub fn from_pem_files<P: AsRef<Path>, Q: AsRef<Path>>(
         cert_path: P,
         key_path: Q,
@@ -147,7 +147,7 @@ impl TlsConfig {
         }
     }
 
-    /// Borrow the underlying `Arc<ServerConfig>` — exposed so
+    /// Borrow the underlying `Arc<ServerConfig>` - exposed so
     /// embedders that already drive their own `TlsAcceptor` can
     /// reuse the same parsed certs.
     pub fn server_config(&self) -> Arc<ServerConfig> {
@@ -210,10 +210,10 @@ fn parse_private_key(pem: &[u8]) -> BoltResult<PrivateKeyDer<'static>> {
 ///
 /// # Errors
 ///
-/// * [`BoltError::Tls`] — TLS handshake failure (bad client cert
+/// * [`BoltError::Tls`] - TLS handshake failure (bad client cert
 ///   if mTLS is configured, peer used plain TCP against a TLS-only
 ///   port, unsupported protocol version, etc.).
-/// * [`BoltError::InvalidMagic`] / [`BoltError::Io`] — propagated
+/// * [`BoltError::InvalidMagic`] / [`BoltError::Io`] - propagated
 ///   from [`crate::bolt::listener::accept_handshake_on`].
 pub async fn accept_handshake_tls(
     socket: TcpStream,
@@ -304,7 +304,7 @@ mod tests {
     use super::*;
 
     /// Empty cert PEM is the simplest "did the helper actually parse
-    /// the bytes" check — guards against returning a default config
+    /// the bytes" check - guards against returning a default config
     /// with zero certs (which would compile but fail every handshake).
     #[test]
     fn from_pem_rejects_empty_cert_chain() {
@@ -366,14 +366,14 @@ mod tests {
             .expect("valid self-signed pair");
         // Acceptor build is cheap (Arc clone); just exercise it.
         let _acceptor = cfg.acceptor();
-        // server_config returns the same Arc — sanity-check pointer
+        // server_config returns the same Arc - sanity-check pointer
         // identity so cloning never re-parses the cert chain.
         let a = cfg.server_config();
         let b = cfg.server_config();
         assert!(Arc::ptr_eq(&a, &b));
     }
 
-    /// `from_pem_files` is a thin wrapper over `from_pem` — exercise
+    /// `from_pem_files` is a thin wrapper over `from_pem` - exercise
     /// the file-read path against a tempdir so a later refactor that
     /// drops the I/O conversion is caught.
     #[test]
@@ -394,7 +394,7 @@ mod tests {
         let _acceptor = cfg.acceptor();
     }
 
-    /// Missing files surface as `BoltError::Io`, not `Tls` — the
+    /// Missing files surface as `BoltError::Io`, not `Tls` - the
     /// I/O layer is the right place for a "file not found" message.
     #[test]
     fn from_pem_files_returns_io_error_for_missing_file() {

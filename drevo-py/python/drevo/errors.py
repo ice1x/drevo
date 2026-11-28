@@ -10,7 +10,7 @@ RFC §5.3 + §12.3 amendment: ``DrevoError::InvalidWeight`` maps to
 ``PyValueError`` in the Rust mapper (``drevo-py/src/errors.rs::map_err``)
 because "you passed me a bad number" is the canonical Python idiom for
 ``ValueError``. Callers that want to narrow the catch to "specifically
-the drevo invalid-weight case" need a typed subclass — but declaring
+the drevo invalid-weight case" need a typed subclass - but declaring
 ``class InvalidWeightError(ValueError)`` in Rust via ``create_exception!``
 would conflict with the requirement that ``ValueError`` stay the parent
 class (PyO3 ``create_exception!`` insists on a single parent path that
@@ -20,7 +20,7 @@ The compromise: the cdylib raises ``PyValueError`` directly with a
 substring-matchable message; this pure-Python subclass exists so user
 code can write ``except drevo.InvalidWeightError`` once the message
 discipline is in place. The Python layer never raises this exception
-itself (the cdylib does, as a plain ``ValueError``) — it is purely a
+itself (the cdylib does, as a plain ``ValueError``) - it is purely a
 *type marker* that lets static analyzers and exception filters refer
 to a stable name.
 
@@ -39,7 +39,7 @@ class InvalidWeightError(ValueError):
     """Raised when an edge weight is non-finite (``NaN`` / ±``inf``).
 
     Subclass of :class:`ValueError` so that callers can rely on
-    ``except ValueError:`` continuing to work — the Rust mapper
+    ``except ValueError:`` continuing to work - the Rust mapper
     currently raises a plain ``PyValueError`` with a substring-matchable
     message ("invalid edge weight: ..."). Once the Python boundary
     re-raises through this subclass (follow-up patch), ``except

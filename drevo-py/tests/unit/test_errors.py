@@ -1,6 +1,6 @@
 """Unit tests for the typed exception hierarchy (RFC §5.1, 00118).
 
-`test_shim.py` (00116) already locks the *class shape* — these tests
+`test_shim.py` (00116) already locks the *class shape* - these tests
 lock the *behaviour* of every variant: a) which `Drevo` method raises
 it, b) the args carried on the exception, c) the inheritance chain
 that lets `except drevo.<RootError>:` catch it.
@@ -18,7 +18,7 @@ import pytest
 
 import drevo
 
-# ── Inheritance chain — locks RFC §5.1 ───────────────────────────────
+# ── Inheritance chain - locks RFC §5.1 ───────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -57,7 +57,7 @@ def test_exception_inherits_from_parent(cls: type, parent: type) -> None:
 
 
 def test_node_not_found_caught_by_drevo_error_root(drevo_db: drevo.Drevo) -> None:
-    """A bare `except DrevoError:` catches `NodeNotFoundError` — RFC §5.1."""
+    """A bare `except DrevoError:` catches `NodeNotFoundError` - RFC §5.1."""
     with pytest.raises(drevo.DrevoError):
         drevo_db.delete_node(99_999)
 
@@ -99,7 +99,7 @@ def test_invalid_weight_error_on_nan_weight(drevo_db: drevo.Drevo) -> None:
 
 
 def test_invalid_weight_error_is_value_error_subclass() -> None:
-    """`InvalidWeightError` ⊂ `ValueError` — the cross-cutting catch."""
+    """`InvalidWeightError` ⊂ `ValueError` - the cross-cutting catch."""
     err = drevo.InvalidWeightError("oops")
     assert isinstance(err, ValueError)
     assert isinstance(err, drevo.InvalidWeightError)
@@ -124,7 +124,7 @@ def test_drevo_error_catches_each_storage_error_path(drevo_db: drevo.Drevo, fact
 
 
 def test_locked_error_class_is_constructible() -> None:
-    """`LockedError(*args)` builds without raising — the variant is
+    """`LockedError(*args)` builds without raising - the variant is
     declared at the Python level even when it doesn't fire in the
     in-memory backend (it can only trigger on a disk-locked file).
     """
@@ -157,7 +157,7 @@ def test_node_not_found_carries_id_in_args(drevo_db: drevo.Drevo) -> None:
         assert 12345 in [arg for arg in e.args if isinstance(arg, int)] or any(
             "12345" in str(arg) for arg in e.args
         )
-    else:  # pragma: no cover — assertion failure path
+    else:  # pragma: no cover - assertion failure path
         pytest.fail("expected NodeNotFoundError")
 
 

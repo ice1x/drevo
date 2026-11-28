@@ -12,7 +12,7 @@ use drevo::cypher::ast::{
 };
 use drevo::cypher::parser::parse;
 
-// ===== Smoke tests — every clause type round-trips ===========================
+// ===== Smoke tests - every clause type round-trips ===========================
 
 #[test]
 fn parses_match_return_single_node() {
@@ -452,7 +452,7 @@ fn parses_in_and_string_predicates() {
     };
     let pred = m.where_clause.as_ref().unwrap();
     // Tree shape: ((x IN [..] AND name STARTS WITH 'A') AND name ENDS WITH 'z') AND name CONTAINS 'li'
-    // We don't pin the exact shape — just count operators.
+    // We don't pin the exact shape - just count operators.
     let mut binops = vec![];
     collect_binops(pred, &mut binops);
     assert!(binops.contains(&BinaryOp::And));
@@ -500,7 +500,7 @@ fn parses_property_access_chain() {
 #[test]
 fn parses_property_access_with_keyword_name() {
     // "type" is a Cypher keyword, but is allowed as a property name.
-    // ("type" is actually NOT in our reserved set, but "in" is — try both)
+    // ("type" is actually NOT in our reserved set, but "in" is - try both)
     let q = parse("RETURN n.in").unwrap();
     let expr = projection_expr(&q);
     match expr {

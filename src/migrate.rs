@@ -7,7 +7,7 @@
 //! point at nothing.
 //!
 //! Both engines already speak the `drevo-json-v1` [`crate::dump::Dump`]
-//! interchange — the same format that backs JSON / GraphML export/import — so a
+//! interchange - the same format that backs JSON / GraphML export/import - so a
 //! migration is just [`GraphEngine::export_dump`](crate::engine::GraphEngine::export_dump)
 //! on the source piped into
 //! [`GraphEngine::apply_dump`](crate::engine::GraphEngine::apply_dump) on the
@@ -48,7 +48,7 @@ use crate::error::Result;
 /// skipped because they already existed identically.
 ///
 /// # Errors
-/// Propagates any [`crate::error::DrevoError`] from either engine — a source
+/// Propagates any [`crate::error::DrevoError`] from either engine - a source
 /// read failure, or a destination id collision / missing endpoint / backend
 /// write failure.
 pub fn migrate(src: &dyn GraphEngine, dst: &dyn GraphEngine) -> Result<ImportReport> {

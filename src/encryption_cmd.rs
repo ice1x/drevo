@@ -7,8 +7,8 @@
 //! DREVO_ENCRYPTION_KEY_FILE=/run/secrets/old.key drevo-server rotate-key --new-key-file /run/secrets/new.key
 //! ```
 //!
-//! Every database in `DREVO_DATA_DIR` — its log, the engine's sidecars and
-//! `semantic.json` — and the server's `database_access.json`,
+//! Every database in `DREVO_DATA_DIR` - its log, the engine's sidecars and
+//! `semantic.json` - and the server's `database_access.json`,
 //! `security.json`, `embeddings_config.json`, `text2cypher_config.json` and `extract_config.json` are rewritten.
 //! The server must be stopped (a running one holds the stores' locks). Each
 //! file is replaced atomically, but not all of them at once: back the data

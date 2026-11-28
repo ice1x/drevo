@@ -1,4 +1,4 @@
-//! Integration tests for the PackStream codec — Phase 11 task `00070`.
+//! Integration tests for the PackStream codec - Phase 11 task `00070`.
 //!
 //! PackStream is the binary serialisation format used by Bolt. Every value
 //! is encoded as a one-byte *marker* followed by length / payload bytes.
@@ -409,7 +409,7 @@ fn decode_returns_trailing_bytes() {
 
 #[test]
 fn hello_struct_resembles_bolt_initialization_message() {
-    // The Bolt HELLO message is a Structure tag=0x01 with one field — a
+    // The Bolt HELLO message is a Structure tag=0x01 with one field - a
     // Dictionary carrying client metadata.
     let mut meta = BTreeMap::new();
     meta.insert(

@@ -1,9 +1,9 @@
 ---
 name: drevo-rust
-description: Rust best practices for drevo — error handling, lifetimes, async, redb transactions, FFI safety, WASM gating, Cargo workspace conventions
+description: Rust best practices for drevo - error handling, lifetimes, async, redb transactions, FFI safety, WASM gating, Cargo workspace conventions
 ---
 
-# drevo — Rust Best Practices
+# drevo - Rust Best Practices
 
 ## When to Use
 Whenever writing or modifying Rust code in this project.
@@ -38,9 +38,9 @@ pub type Result<T> = std::result::Result<T, DrevoError>;
 
 ### Rules
 - Every `pub fn` returning anything fallible returns `Result<T, DrevoError>`
-- Never `unwrap()` / `expect()` in library code — only in tests and benchmarks
+- Never `unwrap()` / `expect()` in library code - only in tests and benchmarks
 - Use `?` for propagation, not `match` with manual conversion
-- New error variants get added at the crate level — don't introduce ad-hoc `Box<dyn Error>` in deep paths
+- New error variants get added at the crate level - don't introduce ad-hoc `Box<dyn Error>` in deep paths
 
 ### Error layering across boundaries
 
@@ -99,9 +99,9 @@ let write_txn = db.begin_write()?;
 write_txn.commit()?;
 ```
 
-### Batch writes — don't open a transaction per node
+### Batch writes - don't open a transaction per node
 
-For bulk inserts (migrations, scenario test setup), open one write transaction and insert many entries before committing. Per-operation ACID transactions on 100K+ inserts are measured at ~530s on this machine — unusable.
+For bulk inserts (migrations, scenario test setup), open one write transaction and insert many entries before committing. Per-operation ACID transactions on 100K+ inserts are measured at ~530s on this machine - unusable.
 
 ### WASM doesn't support redb
 
@@ -111,18 +111,18 @@ For bulk inserts (migrations, scenario test setup), open one write transaction a
 
 ## Serialization
 
-- Internal data (KV store): `bincode v2` — compact, fast, deterministic
-- Configs and dumps: `serde_json` — human-readable
+- Internal data (KV store): `bincode v2` - compact, fast, deterministic
+- Configs and dumps: `serde_json` - human-readable
 - All persistable structs: `#[derive(Serialize, Deserialize)]`
-- `properties: HashMap<String, serde_json::Value>` — arbitrary metadata without schema migration
+- `properties: HashMap<String, serde_json::Value>` - arbitrary metadata without schema migration
 
 ---
 
 ## Async / Tokio
 
 - HTTP server uses `axum` + `tokio` (multi-thread runtime)
-- Storage layer is synchronous (redb is blocking) — wrap blocking calls in `tokio::task::spawn_blocking` if called from async handlers and the operation is expensive
-- Don't make the public API async unless it actually awaits something — `async fn` that doesn't await is a worse signature
+- Storage layer is synchronous (redb is blocking) - wrap blocking calls in `tokio::task::spawn_blocking` if called from async handlers and the operation is expensive
+- Don't make the public API async unless it actually awaits something - `async fn` that doesn't await is a worse signature
 - Future Bolt protocol (Phase 11) will be fully async via `tokio::net::TcpListener`
 
 ---
@@ -130,7 +130,7 @@ For bulk inserts (migrations, scenario test setup), open one write transaction a
 ## FFI Safety
 
 ### Opaque handle pattern
-C consumers receive `drevo_t*` — an opaque pointer. The Rust side owns the allocation; the C side never dereferences it.
+C consumers receive `drevo_t*` - an opaque pointer. The Rust side owns the allocation; the C side never dereferences it.
 
 ### JSON over the boundary
 Complex types (Node, Edge, SubGraph, ScoredNode) cross the FFI boundary as JSON C strings. This avoids ABI compatibility issues and keeps the C surface small.
@@ -191,11 +191,11 @@ http          = ["axum", "tokio", "tower"]
 
 ## Benchmarking with `criterion`
 
-- Always benchmark before optimizing — measure, don't guess
+- Always benchmark before optimizing - measure, don't guess
 - Bench files live in `benches/`
 - One `criterion_group!` per benchmark file; multiple `bench_function` per group
 - Warm-up + measurement separated; criterion handles it automatically
-- A benchmark is NOT a test — write both for performance-critical code
+- A benchmark is NOT a test - write both for performance-critical code
 
 ---
 
@@ -205,7 +205,7 @@ http          = ["axum", "tokio", "tower"]
 - **All comments / docs / commit messages in English** (per `CLAUDE.md`)
 - `cargo fmt` before every commit (CI enforces)
 - `cargo clippy -- -W clippy::all` with zero warnings
-- Max 3 levels of indentation in any function — refactor with early returns or helpers
+- Max 3 levels of indentation in any function - refactor with early returns or helpers
 - Doc-comments on every `pub` item; runnable examples in doc-comments where useful
 - Naming: `snake_case` files & functions, `PascalCase` types, `SCREAMING_SNAKE_CASE` constants
 
@@ -221,8 +221,8 @@ http          = ["axum", "tokio", "tower"]
 
 ## Common Pitfalls in This Codebase
 
-1. **Forgetting to update both `out_edges` and `in_edges`** when creating/deleting an edge — they must stay consistent. Tests cover this via cascading deletion.
-2. **Forgetting to update FTS index** on `update_node` — the index must be deindexed-then-reindexed when title or body changes.
-3. **Forgetting `#[cfg(not(target_arch = "wasm32"))]` gates** on filesystem code — breaks WASM builds. Always verify with `cargo check --target wasm32-unknown-unknown --no-default-features --features wasm`.
-4. **Per-operation redb transactions in loops** — write performance collapses. Use one transaction per logical batch.
-5. **Holding a read transaction across an `.await`** — redb transactions are `!Send` in some configs; design carefully.
+1. **Forgetting to update both `out_edges` and `in_edges`** when creating/deleting an edge - they must stay consistent. Tests cover this via cascading deletion.
+2. **Forgetting to update FTS index** on `update_node` - the index must be deindexed-then-reindexed when title or body changes.
+3. **Forgetting `#[cfg(not(target_arch = "wasm32"))]` gates** on filesystem code - breaks WASM builds. Always verify with `cargo check --target wasm32-unknown-unknown --no-default-features --features wasm`.
+4. **Per-operation redb transactions in loops** - write performance collapses. Use one transaction per logical batch.
+5. **Holding a read transaction across an `.await`** - redb transactions are `!Send` in some configs; design carefully.

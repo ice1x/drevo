@@ -125,8 +125,8 @@ impl ConflictSet {
         self.everything |= other.everything;
     }
 
-    /// A change that touches the whole graph — a schema change such as a new
-    /// constraint — and so conflicts with every other transaction.
+    /// A change that touches the whole graph - a schema change such as a new
+    /// constraint - and so conflicts with every other transaction.
     pub fn everything() -> Self {
         Self {
             everything: true,

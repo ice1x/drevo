@@ -1,4 +1,4 @@
-"""Unit tests for `CALL drevo.search.hybrid` from Python — BM25 and vector
+"""Unit tests for `CALL drevo.search.hybrid` from Python - BM25 and vector
 retrieval fused with Reciprocal Rank Fusion inside the database.
 
 The embedded handle has no text embedder, so `mode: 'auto'` runs the BM25

@@ -1,4 +1,4 @@
-//! Chunked message framing — the transport envelope every Bolt
+//! Chunked message framing - the transport envelope every Bolt
 //! message rides on after the handshake.
 //!
 //! ## Wire format
@@ -27,7 +27,7 @@
 //! `Write`) so it can be unit-tested against a `Cursor<Vec<u8>>`
 //! without a `tokio` runtime. The async TCP listener
 //! ([`super::listener`]) reads the handshake and the message body
-//! into a buffer first, then runs this sync codec on the buffer —
+//! into a buffer first, then runs this sync codec on the buffer -
 //! the same trick the MCP module uses.
 
 use std::io::{self, Read, Write};
@@ -45,7 +45,7 @@ pub const MAX_CHUNK_SIZE: usize = u16::MAX as usize;
 /// # Errors
 ///
 /// Returns [`BoltError::Io`] if the writer fails. The encoder never
-/// fails on its own — chunk boundaries are derived purely from the
+/// fails on its own - chunk boundaries are derived purely from the
 /// payload length.
 pub fn write_message<W: Write>(payload: &[u8], writer: &mut W) -> BoltResult<()> {
     for chunk in payload.chunks(MAX_CHUNK_SIZE) {
@@ -63,9 +63,9 @@ pub fn write_message<W: Write>(payload: &[u8], writer: &mut W) -> BoltResult<()>
 ///
 /// # Errors
 ///
-/// * [`BoltError::Eof`] — the reader hit EOF before a complete
+/// * [`BoltError::Eof`] - the reader hit EOF before a complete
 ///   message was assembled (e.g. a half-written length prefix).
-/// * [`BoltError::Io`] — propagated from the underlying reader.
+/// * [`BoltError::Io`] - propagated from the underlying reader.
 pub fn read_message<R: Read>(reader: &mut R) -> BoltResult<Vec<u8>> {
     let mut payload = Vec::new();
     loop {

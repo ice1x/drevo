@@ -1,4 +1,4 @@
-//! Phase 12 task `00076` — an in-memory HNSW approximate-nearest-neighbor
+//! Phase 12 task `00076` - an in-memory HNSW approximate-nearest-neighbor
 //! index over [`Vector`] embeddings.
 //!
 //! HNSW (Hierarchical Navigable Small World, Malkov & Yashunin 2016) is the
@@ -28,7 +28,7 @@
 //! the same graph so tests can assert exact recall and so a future on-disk
 //! format round-trips. The index therefore carries its own seeded
 //! [`splitmix64`](https://prng.di.unimi.it/splitmix64.c) generator
-//! ([`HnswConfig::seed`]) rather than touching global randomness — and it
+//! ([`HnswConfig::seed`]) rather than touching global randomness - and it
 //! pulls in no RNG dependency, matching the dependency-free stance of the
 //! rest of [`crate::vector`].
 //!
@@ -66,7 +66,7 @@ impl Metric {
     ///
     /// # Errors
     ///
-    /// Propagates any [`VectorError`] from the underlying kernel —
+    /// Propagates any [`VectorError`] from the underlying kernel -
     /// [`VectorError::Empty`], [`VectorError::DimensionMismatch`], or (for
     /// [`Metric::Cosine`]) [`VectorError::ZeroVector`].
     fn distance(self, a: &[f32], b: &[f32]) -> Result<f32, VectorError> {
@@ -117,7 +117,7 @@ pub struct Neighbor {
     /// The key supplied at [`HnswIndex::insert`] time (typically a
     /// [`Node::id`](crate::model::Node::id)).
     pub key: u64,
-    /// Distance to the query under the index [`Metric`] — smaller is nearer.
+    /// Distance to the query under the index [`Metric`] - smaller is nearer.
     pub distance: f32,
 }
 
@@ -244,13 +244,13 @@ impl HnswIndex {
     /// Insert an embedding under `key`.
     ///
     /// The first insert fixes the index dimension; every later insert must
-    /// match it. Keys are not deduplicated — inserting the same key twice
+    /// match it. Keys are not deduplicated - inserting the same key twice
     /// stores two elements, and a search may return either.
     ///
     /// # Errors
     ///
-    /// * [`VectorError::Empty`] — `vector` has zero dimensions.
-    /// * [`VectorError::DimensionMismatch`] — `vector`'s length differs from
+    /// * [`VectorError::Empty`] - `vector` has zero dimensions.
+    /// * [`VectorError::DimensionMismatch`] - `vector`'s length differs from
     ///   the dimension fixed by the first insert.
     pub fn insert(&mut self, key: u64, vector: Vector) -> Result<(), VectorError> {
         if vector.is_empty() {
@@ -285,7 +285,7 @@ impl HnswIndex {
         let query = self.nodes[new_id].vector.0.clone();
         let entry_level = self.nodes[entry].level();
 
-        // Phase 1 — greedy descent through the layers ABOVE the new element's
+        // Phase 1 - greedy descent through the layers ABOVE the new element's
         // top layer, narrowing the entry point to the closest element found.
         let mut lc = entry_level;
         while lc > level {
@@ -293,7 +293,7 @@ impl HnswIndex {
             lc -= 1;
         }
 
-        // Phase 2 — on each layer the new element occupies, beam-search for
+        // Phase 2 - on each layer the new element occupies, beam-search for
         // candidates, pick its neighbors, and wire the links both ways.
         let m = self.config.m;
         let top = level.min(entry_level);
@@ -336,10 +336,10 @@ impl HnswIndex {
     ///
     /// # Errors
     ///
-    /// * [`VectorError::Empty`] — `query` has zero dimensions.
-    /// * [`VectorError::DimensionMismatch`] — `query`'s length differs from
+    /// * [`VectorError::Empty`] - `query` has zero dimensions.
+    /// * [`VectorError::DimensionMismatch`] - `query`'s length differs from
     ///   the index dimension.
-    /// * [`VectorError::ZeroVector`] — under [`Metric::Cosine`], `query` (or a
+    /// * [`VectorError::ZeroVector`] - under [`Metric::Cosine`], `query` (or a
     ///   stored vector) has zero magnitude.
     pub fn search(&self, query: &[f32], k: usize) -> Result<Vec<Neighbor>, VectorError> {
         self.search_with_ef(query, k, self.config.ef_construction.max(k))
@@ -432,7 +432,7 @@ impl HnswIndex {
     /// `entry_points`, keeping the `ef` closest elements seen. Returns them
     /// sorted ascending by distance.
     ///
-    /// This is the workhorse of both insert and query — Algorithm 2 from the
+    /// This is the workhorse of both insert and query - Algorithm 2 from the
     /// HNSW paper. `candidates` is a min-heap of frontier elements to expand;
     /// `results` is a max-heap capped at `ef` so its peek is the current
     /// farthest keeper, letting the loop stop once the frontier can no longer
@@ -511,7 +511,7 @@ impl HnswIndex {
     }
 
     /// After adding a link to `node`, drop its weakest connections on `layer`
-    /// so it keeps at most `m_max` neighbors — the closest ones.
+    /// so it keeps at most `m_max` neighbors - the closest ones.
     fn prune(&mut self, node: usize, layer: usize, m_max: usize) -> Result<(), VectorError> {
         if self.nodes[node].neighbors[layer].len() <= m_max {
             return Ok(());
@@ -550,7 +550,7 @@ impl HnswIndex {
     /// seeded splitmix64 generator. The upper bound is inclusive and the
     /// lower bound excluded so `ln(u)` in [`random_level`] never sees 0.
     fn next_unit(&mut self) -> f64 {
-        // splitmix64 — a tiny, well-distributed integer generator.
+        // splitmix64 - a tiny, well-distributed integer generator.
         self.rng_state = self.rng_state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.rng_state;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);

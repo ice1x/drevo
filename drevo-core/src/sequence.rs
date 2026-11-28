@@ -12,7 +12,7 @@
 //! assert_eq!(seqs.current("bug"), Some(1001));
 //! ```
 //!
-//! A value, once handed out, is never handed out again — not after a rolled
+//! A value, once handed out, is never handed out again - not after a rolled
 //! back transaction (the value is simply skipped) and not after a restart.
 //! A durable store keeps the sequences next to its log (`<log>.sequences.json`)
 //! and reserves values in blocks: each time a block is used up, the end of

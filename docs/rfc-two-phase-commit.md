@@ -175,7 +175,7 @@ Logs that never used 2PC are byte-for-byte unchanged.
 | Rust `NativeService` | `prepare_tx(tx, gid)` | `commit_prepared(gid)`, `rollback_prepared(gid)` | `list_prepared()` |
 | drevo-py | `Transaction.prepare(gid)` (closes the handle to it) | `Drevo.commit_prepared(gid)`, `Drevo.rollback_prepared(gid)` | `Drevo.list_prepared()` |
 | Cypher (Bolt / HTTP) | `CALL drevo.tx.prepare($gid)` inside an explicit Bolt transaction | `CALL drevo.tx.commitPrepared($gid)`, `CALL drevo.tx.rollbackPrepared($gid)` | `CALL drevo.tx.listPrepared()` |
-| HTTP admin | — | `POST /transactions/prepared/{gid}/commit`, `/rollback` | `GET /transactions/prepared` |
+| HTTP admin | - | `POST /transactions/prepared/{gid}/commit`, `/rollback` | `GET /transactions/prepared` |
 
 Bolt has no native 2PC messages. Exposing it through procedures keeps every Neo4j driver usable as
 a coordinator client.

@@ -1,4 +1,4 @@
-//! Two-phase commit in the native engine — #556, slice 1 (core).
+//! Two-phase commit in the native engine - #556, slice 1 (core).
 //!
 //! Design: `docs/rfc-two-phase-commit.md`. `tx_prepare(tx, gid)` validates a
 //! registered transaction and durably records its write set as *prepared*.

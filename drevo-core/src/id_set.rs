@@ -1,7 +1,7 @@
 //! A set of entity ids, ascending, that stores a single id inline.
 //!
 //! Index postings map a value to the ids carrying it. When values are mostly
-//! distinct — coordinates, external ids, titles — almost every posting holds
+//! distinct - coordinates, external ids, titles - almost every posting holds
 //! one id, and a `BTreeSet` would allocate a whole tree node for it. An
 //! [`IdSet`] keeps one id in place and only grows into a `BTreeSet` at the
 //! second.

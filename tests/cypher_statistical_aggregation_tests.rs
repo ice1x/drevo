@@ -1,19 +1,19 @@
-//! End-to-end Cypher statistical-aggregation tests — Phase 10 follow-up task
+//! End-to-end Cypher statistical-aggregation tests - Phase 10 follow-up task
 //! `00154`.
 //!
 //! `00066` shipped the core aggregation set (`count` / `sum` / `avg` / `min` /
 //! `max` / `collect`). This task adds the four standard Neo4j *statistical*
 //! aggregations, which fold a group to a scalar exactly like `avg`:
 //!
-//! * `stDev(expr)` — **sample** standard deviation (divides the sum of squared
+//! * `stDev(expr)` - **sample** standard deviation (divides the sum of squared
 //!   deviations by `n - 1`),
-//! * `stDevP(expr)` — **population** standard deviation (divides by `n`),
-//! * `percentileCont(expr, p)` — the **continuous** percentile of the group at
+//! * `stDevP(expr)` - **population** standard deviation (divides by `n`),
+//! * `percentileCont(expr, p)` - the **continuous** percentile of the group at
 //!   fraction `p ∈ [0, 1]`, linearly interpolating between the two closest
 //!   ranks (so the median `p = 0.5` of `[1, 2, 3, 4]` is `2.5`),
-//! * `percentileDisc(expr, p)` — the **discrete** percentile: the nearest
-//!   actual value at fraction `p` (no interpolation, so the value's stored type
-//!   — `Integer` vs `Float` — is preserved).
+//! * `percentileDisc(expr, p)` - the **discrete** percentile: the nearest
+//!   actual value at fraction `p` (no interpolation, so the value's stored type -
+//!   `Integer` vs `Float` - is preserved).
 //!
 //! Semantics exercised here mirror Neo4j:
 //!
@@ -23,7 +23,7 @@
 //! * `stDev` / `stDevP` over an empty (all-null) group are `0.0`, and `stDev`
 //!   of a single value is `0.0` (the `n - 1` divisor is special-cased),
 //! * `percentileCont` / `percentileDisc` over an empty group are `null`,
-//! * the percentile fraction must be a number in `[0.0, 1.0]` — anything else
+//! * the percentile fraction must be a number in `[0.0, 1.0]` - anything else
 //!   is a recoverable `InvalidFunctionCall`,
 //! * a non-aggregated projection item is the `GROUP BY` key, so the statistic
 //!   is computed per group, and the statistics coexist with the existing
@@ -131,9 +131,9 @@ fn stdev_over_empty_group_is_zero() {
 fn stdev_null_skips_absent_values() {
     let db = db();
     run("CREATE (:M {v: 2})", &db);
-    run("CREATE (:M {other: 1})", &db); // null v — skipped
+    run("CREATE (:M {other: 1})", &db); // null v - skipped
     run("CREATE (:M {v: 4})", &db);
-    run("CREATE (:M {other: 2})", &db); // null v — skipped
+    run("CREATE (:M {other: 2})", &db); // null v - skipped
                                         // Effective sample is [2, 4]: mean 3, ss = 1 + 1 = 2, sample var = 2/1 = 2.
     approx(
         as_f64(&one("MATCH (n:M) RETURN stDev(n.v)", &db)),

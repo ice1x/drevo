@@ -1,6 +1,6 @@
 //! `CALL drevo.stableMatching(proposerLabel, acceptorLabel, relType,
 //! rankProperty) YIELD proposer, acceptor, proposerRank, acceptorRank`
-//! (issue #541) — Gale–Shapley stable matching over preferences stored as
+//! (issue #541) - Gale-Shapley stable matching over preferences stored as
 //! edges, through [`NativeService::execute`].
 //!
 //! The scenario is mentoring: mentees and mentors each rank the other side with

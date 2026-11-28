@@ -1,4 +1,4 @@
-// drevo browser — pure helpers for the live overview: the GET /events URL
+// drevo browser - pure helpers for the live overview: the GET /events URL
 // for the database being viewed, what a change means for what is on screen,
 // a coalescer that turns a burst of changes into one refresh, a panel that
 // follows the stream while it is open, and the remembered on/off switch. DOM-free so they can be unit-tested under
@@ -92,7 +92,7 @@
   // A panel that follows the change stream while it is open: `open(db)`
   // starts the stream for `db` (closing an earlier one) and `close()` ends
   // it. A change pokes a coalescer whose `run` reloads the panel, so a
-  // burst — an import, a long transaction — reloads once, `delayMs` after
+  // burst - an import, a long transaction - reloads once, `delayMs` after
   // the first change. `openStream(url)` defaults to `new EventSource(url)`.
   //
   // The Storage panel uses it (#777): its file size, bloat share and

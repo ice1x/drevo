@@ -1,4 +1,4 @@
-//! Bolt 5.0–5.4 next to 4.4 / 4.3.
+//! Bolt 5.0-5.4 next to 4.4 / 4.3.
 //!
 //! - The handshake takes version ranges and picks the highest version drevo
 //!   speaks (5.4 down to 4.3).
@@ -379,7 +379,7 @@ mod over_tcp {
 
     #[tokio::test]
     async fn a_5_x_driver_negotiates_5_4_and_logs_in_with_logon() {
-        // What the neo4j 5.x drivers offer: 5.8–5.0, 4.4–4.2, 4.1, 3.0.
+        // What the neo4j 5.x drivers offer: 5.8-5.0, 4.4-4.2, 4.1, 3.0.
         let (mut client, version) =
             negotiate([[0, 8, 8, 5], [0, 2, 4, 4], [0, 0, 1, 4], [0, 0, 0, 3]]).await;
         assert_eq!(version, [0, 0, 4, 5]);
@@ -429,7 +429,7 @@ mod over_tcp {
         let (_client, version) = negotiate([[0, 2, 4, 4], [0, 0, 1, 4], [0; 4], [0; 4]]).await;
         assert_eq!(version, [0, 0, 4, 4]);
         let (_client, version) = negotiate([[0, 3, 9, 5], [0, 0, 4, 4], [0; 4], [0; 4]]).await;
-        assert_eq!(version, [0, 0, 4, 4], "5.9–5.6 covers nothing drevo speaks");
+        assert_eq!(version, [0, 0, 4, 4], "5.9-5.6 covers nothing drevo speaks");
     }
 }
 

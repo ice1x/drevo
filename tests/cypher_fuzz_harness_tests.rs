@@ -1,9 +1,9 @@
-//! Phase 15 task `00099` — stable-CI replay of the Cypher fuzz invariants.
+//! Phase 15 task `00099` - stable-CI replay of the Cypher fuzz invariants.
 //!
 //! The coverage-guided harness lives under `fuzz/` and requires
 //! `cargo +nightly fuzz run …` (nightly toolchain + `cargo-fuzz` install +
 //! libFuzzer sanitizer flags). That toolchain is not available on every CI
-//! leg, so the seed-corpus files — and the grammar generator itself — are
+//! leg, so the seed-corpus files - and the grammar generator itself - are
 //! also replayed here under the stable `cargo test` matrix.
 //!
 //! The assertion bodies are kept in lock-step with `fuzz/fuzz_targets/*.rs`;
@@ -39,7 +39,7 @@ fn fuzz_root() -> PathBuf {
 }
 
 /// Read every UTF-8 file under `seed_corpus/<target>/` and yield its
-/// `(filename, contents)`. Non-UTF-8 files are skipped — libFuzzer's
+/// `(filename, contents)`. Non-UTF-8 files are skipped - libFuzzer's
 /// `Arbitrary` impl for `&str` already filters those, so the stable replay
 /// does the same for the `&str`-typed lexer/parser targets.
 fn read_utf8_corpus(target: &str) -> Vec<(String, String)> {
@@ -63,14 +63,14 @@ fn read_utf8_corpus(target: &str) -> Vec<(String, String)> {
     out.sort_by(|a, b| a.0.cmp(&b.0));
     assert!(
         !out.is_empty(),
-        "seed corpus {target} is empty — the fuzz harness needs at least one seed"
+        "seed corpus {target} is empty - the fuzz harness needs at least one seed"
     );
     out
 }
 
 /// Read every file under `seed_corpus/<target>/` as raw bytes. Used by the
 /// grammar target, whose libFuzzer input is `&[u8]` (a choice stream), not a
-/// `&str` — so non-UTF-8 seeds are valid and must NOT be filtered.
+/// `&str` - so non-UTF-8 seeds are valid and must NOT be filtered.
 fn read_raw_corpus(target: &str) -> Vec<(String, Vec<u8>)> {
     let dir = fuzz_root().join("seed_corpus").join(target);
     let entries = fs::read_dir(&dir)
@@ -91,7 +91,7 @@ fn read_raw_corpus(target: &str) -> Vec<(String, Vec<u8>)> {
     out.sort_by(|a, b| a.0.cmp(&b.0));
     assert!(
         !out.is_empty(),
-        "seed corpus {target} is empty — the fuzz harness needs at least one seed"
+        "seed corpus {target} is empty - the fuzz harness needs at least one seed"
     );
     out
 }
@@ -196,7 +196,7 @@ fn fuzz_cypher_parser_seed_corpus_holds_invariants() {
     for (name, input) in read_utf8_corpus("fuzz_cypher_parser") {
         assert_parser_invariants(&name, &input);
         // The parser consumes the lexer, so every parser seed is also a
-        // valid lexer seed — replay it through the lexer invariants too.
+        // valid lexer seed - replay it through the lexer invariants too.
         assert_lexer_invariants(&name, &input);
     }
 }
@@ -211,7 +211,7 @@ fn fuzz_cypher_grammar_seed_corpus_holds_invariants() {
 /// Regression for a libFuzzer find on `fuzz_cypher_parser`: deeply nested
 /// input (`RETURN (((…)))`, a long `[[[…]]]` list, a `NOT NOT NOT …` chain)
 /// drove the recursive-descent expression parser into an unbounded recursion
-/// that overflowed the stack and aborted the process (SIGABRT) — a violation
+/// that overflowed the stack and aborted the process (SIGABRT) - a violation
 /// of the parser-totality contract. The parser now bounds expression nesting
 /// at `MAX_EXPRESSION_DEPTH` and returns a recoverable
 /// `ParseError::NestingTooDeep` instead of recursing without limit.
@@ -238,7 +238,7 @@ fn deeply_nested_input_is_total_not_a_stack_overflow() {
         assert_parser_invariants(&format!("minus-{n}"), &unary_minus);
     }
 
-    // Sanity: nesting within the limit still parses successfully — the guard
+    // Sanity: nesting within the limit still parses successfully - the guard
     // only rejects pathological depth, never ordinary expressions.
     assert!(parse("RETURN ((((1 + 2) * 3)))").is_ok());
     assert!(parse("RETURN [1, [2, [3, [4]]]]").is_ok());
@@ -250,7 +250,7 @@ fn deeply_nested_input_is_total_not_a_stack_overflow() {
 /// The seed corpus only pins a handful of representative byte streams; this
 /// sweep drives a wide, reproducible range of choice streams through the
 /// generator so a parser/grammar drift surfaces in CI without waiting for the
-/// nightly fuzzer to rediscover it. Every generated query must parse — that
+/// nightly fuzzer to rediscover it. Every generated query must parse - that
 /// is the whole contract of a grammar-aware generator.
 #[test]
 fn generator_output_always_parses_over_choice_sweep() {
@@ -275,7 +275,7 @@ fn generator_output_always_parses_over_choice_sweep() {
         }
     }
 
-    // 2) A deterministic pseudo-random walk (xorshift32, fixed seed — no
+    // 2) A deterministic pseudo-random walk (xorshift32, fixed seed - no
     //    `rand` dependency, fully reproducible) over longer choice streams.
     let mut state: u32 = 0x9e37_79b9;
     let mut next = || {

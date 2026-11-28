@@ -1,9 +1,9 @@
-//! The native full-text index (RFC `docs/rfc-native-core.md`, #307, Phase 6.3)
-//! — a trigram BM25 index that tails a [`NativeGraph`]'s change-feed.
+//! The native full-text index (RFC `docs/rfc-native-core.md`, #307, Phase 6.3) -
+//! a trigram BM25 index that tails a [`NativeGraph`]'s change-feed.
 //!
 //! These lock: it finds and ranks matching nodes, reflects updates/deletes
-//! after `sync`, rebuilds when the feed was trimmed past its cursor, and — the
-//! headline — returns the **same ranking as the KV store's `search_fts`** on a
+//! after `sync`, rebuilds when the feed was trimmed past its cursor, and - the
+//! headline - returns the **same ranking as the KV store's `search_fts`** on a
 //! shared corpus, so it is a faithful native replacement for the FTS subsystem.
 
 use drevo::engine::GraphEngine;

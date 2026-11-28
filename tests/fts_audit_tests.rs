@@ -1,4 +1,4 @@
-//! Audit tests for `src/fts/*` and `NativeService::search_fts` — Phase 8.5
+//! Audit tests for `src/fts/*` and `NativeService::search_fts` - Phase 8.5
 //! task `00108`.
 //!
 //! These tests pin behaviours that the audit verified. The FTS-index
@@ -6,19 +6,19 @@
 //! exposes no trigram posting lists, so they are stated through observable
 //! `search_fts` behaviour rather than by inspecting index internals:
 //!
-//! * **Tokenizer is deterministic on Unicode** — Cyrillic, Hebrew (RTL),
+//! * **Tokenizer is deterministic on Unicode** - Cyrillic, Hebrew (RTL),
 //!   combining diacritics, mixed scripts and emoji follow the documented
 //!   normalise → trigram pipeline (`drevo-database` §"FTS index"). These
 //!   exercise the shared `drevo::fts` functions directly and are
 //!   engine-independent.
-//! * **FTS reindex invariant** — under random create / update / delete
+//! * **FTS reindex invariant** - under random create / update / delete
 //!   mutation streams, every live node is found by searching its own current
 //!   title (create/update reindexed) and no search returns a deleted node
 //!   (`drevo-database` invariants #2 + #3).
-//! * **Recency parity under mutation** — after every mutation, `list_recent`'s
+//! * **Recency parity under mutation** - after every mutation, `list_recent`'s
 //!   id set equals the live node set: one entry per live node, zero for
 //!   deleted ones (cross-link with `00106` invariant #4).
-//! * **`search_fts` ordering is deterministic** — the same query against
+//! * **`search_fts` ordering is deterministic** - the same query against
 //!   the same corpus produces the same result vector across runs
 //!   (`drevo-tdd` §"Property-based tests for invariants").
 //!
@@ -69,7 +69,7 @@ fn random_in_range(state: &mut u32, lo: usize, hi: usize) -> usize {
 }
 
 // ===================================================================
-// Tokenizer — Unicode class coverage
+// Tokenizer - Unicode class coverage
 // ===================================================================
 
 #[test]
@@ -110,7 +110,7 @@ fn tokenizer_combining_diacritics_decomposed_form() {
     // (b) consciously adopts Unicode normalization with a test update.
     let precomposed = trigrams("résumé"); // U+00E9
     let decomposed = trigrams("re\u{0301}sume\u{0301}"); // e + U+0301
-                                                         // The two forms produce *different* trigram sets — this is the
+                                                         // The two forms produce *different* trigram sets - this is the
                                                          // observed-and-pinned behaviour. The audit flags it for follow-up
                                                          // but does not change semantics in this PR.
     assert_ne!(
@@ -140,14 +140,14 @@ fn tokenizer_zero_width_chars_become_word_breaks() {
 #[test]
 fn tokenizer_cjk_bigrams_only_between_consecutive_cjk() {
     // "a世界b" → "a", " ", "世", "界", " ", "b" after normalise (no
-    // strip — all alphanumeric/CJK), but bigrams only fire on
+    // strip - all alphanumeric/CJK), but bigrams only fire on
     // *consecutive* CJK characters.
     let tg = trigrams("a世界b");
     assert!(
         tg.contains(&"世界".to_string()),
         "consecutive CJK pair must produce a bigram"
     );
-    // Latin-then-CJK and CJK-then-Latin must NOT produce a bigram —
+    // Latin-then-CJK and CJK-then-Latin must NOT produce a bigram -
     // only standard 3-char trigrams across that boundary.
     assert!(!tg.contains(&"a世".to_string()));
     assert!(!tg.contains(&"界b".to_string()));
@@ -203,14 +203,14 @@ fn tokenizer_extract_trigrams_is_deterministic_on_random_unicode() {
 // more than the broader one) and by the search-determinism tests below.
 
 // ===================================================================
-// FTS reindex invariant — random mutation stream
+// FTS reindex invariant - random mutation stream
 // ===================================================================
 
 /// Assert the FTS index is consistent with the live node set: every live node
 /// is found by searching its own current title (create/update was reindexed),
 /// and no search returns a node that is not live (delete was deindexed).
 fn assert_fts_index_matches_live_nodes(db: &NativeService, live_node_ids: &HashSet<u64>) {
-    // Observable form of the FTS-index invariant — the native engine exposes no
+    // Observable form of the FTS-index invariant - the native engine exposes no
     // trigram posting lists (unlike the KV `fts_node_ids_for_trigram`), so the
     // contract is checked through `search_fts`:
     //   * every live node is found by searching its own *current* title, which
@@ -240,8 +240,8 @@ fn assert_fts_index_matches_live_nodes(db: &NativeService, live_node_ids: &HashS
     }
 }
 
-/// Random title/body text from a small Latin + CJK + Cyrillic alphabet
-/// — keeps trigram space small enough that posting-list assertions
+/// Random title/body text from a small Latin + CJK + Cyrillic alphabet -
+/// keeps trigram space small enough that posting-list assertions
 /// stay fast.
 fn random_text(state: &mut u32) -> String {
     let alphabet: Vec<&str> = vec![
@@ -309,7 +309,7 @@ fn fts_index_matches_node_text_under_random_mutations() {
 }
 
 // ===================================================================
-// updated_idx parity invariant — random mutation stream
+// updated_idx parity invariant - random mutation stream
 // ===================================================================
 
 #[test]
@@ -378,7 +378,7 @@ fn updated_idx_parity_under_random_mutations() {
 }
 
 // ===================================================================
-// search_fts — score stability + ordering determinism
+// search_fts - score stability + ordering determinism
 // ===================================================================
 
 #[test]
@@ -414,7 +414,7 @@ fn search_fts_results_are_deterministic_across_runs() {
 fn search_fts_ordering_stable_on_tied_scores() {
     // When two nodes have identical TF-IDF scores (same title length,
     // same matching trigrams) the result must be ordered by ascending
-    // node id — the documented secondary sort key.
+    // node id - the documented secondary sort key.
     let db = db();
     let a = db.create_node(node("note", "Alpha beta", "")).unwrap();
     let b = db.create_node(node("note", "Gamma beta", "")).unwrap();
@@ -432,10 +432,10 @@ fn search_fts_smoothed_idf_is_positive_when_df_equals_n() {
     // The smoothed IDF `ln(1 + N/df)` is strictly positive when
     // `df == N` (every node contains the trigram). The naive
     // `ln(N/df)` would collapse to 0 and produce a zero-score
-    // (excluded) result — pin the smoothed behaviour so a future
+    // (excluded) result - pin the smoothed behaviour so a future
     // change to plain TF-IDF is an observable test diff.
     let db = db();
-    // All three nodes contain "rus" — df == N == 3.
+    // All three nodes contain "rus" - df == N == 3.
     for i in 0..3 {
         db.create_node(node("note", &format!("rust note {}", i), ""))
             .unwrap();

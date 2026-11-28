@@ -1,4 +1,4 @@
-"""Type stubs for `drevo.rag` — Phase 16 task `00117`.
+"""Type stubs for `drevo.rag` - Phase 16 task `00117`.
 
 Hand-authored. The runtime `rag/__init__.py` re-exports symbols from
 the sibling `.py` modules; these stubs mirror that surface so

@@ -2,7 +2,7 @@
 //!
 //! The site is an [mdBook](https://rust-lang.github.io/mdBook/) built from the
 //! existing `docs/` guides and deployed by `.github/workflows/docs.yml` to
-//! GitHub Pages (Source = GitHub Actions — no `gh-pages` branch). These tests
+//! GitHub Pages (Source = GitHub Actions - no `gh-pages` branch). These tests
 //! pin the wiring the same way the other workflow suites do
 //! (`docker_publish_ci_tests`, `k8s_manifests_tests`): pure text asserts, no
 //! network, no mdbook binary required.
@@ -40,7 +40,7 @@ fn book_toml_builds_the_docs_dir_into_book() {
     );
     assert!(
         b.contains("site-url = \"/drevo/\""),
-        "project Pages are served under /drevo/ — required for correct asset URLs"
+        "project Pages are served under /drevo/ - required for correct asset URLs"
     );
 }
 
@@ -55,7 +55,7 @@ fn book_build_dir_is_gitignored() {
 }
 
 // ---------------------------------------------------------------------------
-// SUMMARY.md — the book's table of contents
+// SUMMARY.md - the book's table of contents
 // ---------------------------------------------------------------------------
 
 #[test]

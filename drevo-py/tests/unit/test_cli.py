@@ -1,6 +1,6 @@
 """Unit tests for the `drevo` CLI argument parser and error handling.
 
-Parser-shape + exit-code contract only (no real database work — that's the
+Parser-shape + exit-code contract only (no real database work - that's the
 integration round-trip test). Mirrors the argparse `build_parser()` / `main()`
 pattern: `main` returns a nonzero code on failure rather than raising.
 """

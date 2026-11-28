@@ -1,4 +1,4 @@
-//! Phase 16 task `00120` — text-level scaffolding tests for the
+//! Phase 16 task `00120` - text-level scaffolding tests for the
 //! `drevo-py` end-to-end test suite.
 //!
 //! Same pattern as `python_unit_test_suite_tests.rs` (00118) and
@@ -11,7 +11,7 @@
 //!
 //! What this file locks (per RFC §2 layout + the 00120 task brief):
 //!
-//! 1. `drevo-py/tests/e2e/__init__.py` exists — the package marker.
+//! 1. `drevo-py/tests/e2e/__init__.py` exists - the package marker.
 //! 2. `drevo-py/tests/e2e/conftest.py` ships the shared e2e fixtures
 //!    (`tmp_db_path`, `disk_db`, `deterministic_embedder`).
 //! 3. One scenario module per Rust e2e scenario plus the RAG scenario:
@@ -21,7 +21,7 @@
 //! 4. Every scenario module drives the on-disk durable (native) backend via
 //!    `drevo.Drevo.open(...)` (mirrors the 00119 boundary).
 //! 5. Each domain scenario mirrors the Rust counterpart's
-//!    domain-language node kinds — searching the module text for the
+//!    domain-language node kinds - searching the module text for the
 //!    canonical kind strings catches accidental drift between layers.
 //! 6. The RAG scenario walks every `drevo.rag` primitive named in RFC
 //!    §8 (`Document` / `ingest_documents` / `Retriever` / `Context`),
@@ -63,7 +63,7 @@ fn e2e_dir_exists() {
     let dir = e2e_dir();
     assert!(
         dir.is_dir(),
-        "drevo-py/tests/e2e/ must exist — RFC §2 package layout places \
+        "drevo-py/tests/e2e/ must exist - RFC §2 package layout places \
          the 00120 end-to-end suite under tests/e2e/, alongside \
          tests/unit/ (00118) and tests/integration/ (00119)"
     );
@@ -87,7 +87,7 @@ fn e2e_package_marker_cites_task_id_and_rfc() {
         &init,
         &["00120", "RFC", "drevo-tdd", "end-to-end"],
         "drevo-py/tests/e2e/__init__.py must cite task 00120, the \
-         RFC, the drevo-tdd skill, and call out the end-to-end tier — \
+         RFC, the drevo-tdd skill, and call out the end-to-end tier - \
          the docstring is the entry-point for anyone navigating the \
          test tree",
     );
@@ -106,7 +106,7 @@ fn e2e_conftest_declares_shared_fixtures() {
             "def deterministic_embedder",
         ],
         "drevo-py/tests/e2e/conftest.py must declare the three shared \
-         e2e fixtures — every scenario module depends on at least one \
+         e2e fixtures - every scenario module depends on at least one \
          of them, and a missing fixture surfaces only at pytest \
          collection time",
     );
@@ -127,11 +127,11 @@ fn e2e_conftest_uses_tempfile_for_isolation() {
 fn e2e_conftest_embedder_is_deterministic_and_offline() {
     let conftest = read(&e2e_dir().join("conftest.py"));
     // The embedder MUST be reproducible (hashlib is the only stdlib
-    // hash that fits the contract — no numpy, no network).
+    // hash that fits the contract - no numpy, no network).
     assert!(
         conftest.contains("hashlib"),
         "drevo-py/tests/e2e/conftest.py embedder must be built on a \
-         deterministic stdlib hash — the RAG scenario asserts \
+         deterministic stdlib hash - the RAG scenario asserts \
          byte-stable Context.to_text output across runs"
     );
 }
@@ -153,7 +153,7 @@ fn e2e_scenario_modules_all_present() {
         let path = e2e_dir().join(module);
         assert!(
             path.exists(),
-            "drevo-py/tests/e2e/{module} must exist — task 00120 \
+            "drevo-py/tests/e2e/{module} must exist - task 00120 \
              requires one scenario module per Rust scenario plus the \
              dedicated graph-RAG scenario"
         );
@@ -170,7 +170,7 @@ fn every_scenario_module_drives_the_disk_backend() {
         assert!(
             uses_disk_db,
             "drevo-py/tests/e2e/{module} must drive the on-disk durable \
-             (native) backend — the e2e tier inherits the boundary 00119 \
+             (native) backend - the e2e tier inherits the boundary 00119 \
              defends, scenarios cannot regress to in-memory shortcuts"
         );
     }
@@ -186,7 +186,7 @@ fn every_scenario_module_asserts_a_reopen_round_trip() {
         assert!(
             body.contains("round_trips_through_reopen") || body.contains("round_trip"),
             "drevo-py/tests/e2e/{module} must include a reopen \
-             round-trip test — phase 16 promises an agent can resume \
+             round-trip test - phase 16 promises an agent can resume \
              work after a process restart and observe the same graph"
         );
     }
@@ -207,7 +207,7 @@ fn cbt_journal_uses_canonical_kinds() {
             "\"rational_response\"",
         ],
         "test_cbt_journal.py must use the same node-kind vocabulary as \
-         tests/scenario_cbt_journal.rs — drift here means a fixture \
+         tests/scenario_cbt_journal.rs - drift here means a fixture \
          change in one layer silently bypasses the other",
     );
 }
@@ -296,7 +296,7 @@ fn graph_rag_scenario_uses_full_rag_surface() {
             "SimpleDocument",
         ],
         "test_graph_rag.py must exercise the full drevo.rag surface \
-         named in RFC §8 — the scenario is the definition-of-done for \
+         named in RFC §8 - the scenario is the definition-of-done for \
          the rag layer, every primitive has to be exercised end-to-end",
     );
 }
@@ -308,7 +308,7 @@ fn graph_rag_scenario_covers_all_three_to_text_formats() {
         &body,
         &["\"markdown\"", "\"json\"", "\"turtle\""],
         "test_graph_rag.py must assert against every Context.to_text \
-         format declared in RFC §8.4 — a format that the e2e suite \
+         format declared in RFC §8.4 - a format that the e2e suite \
          does not exercise is a format that drifts silently between \
          releases",
     );
@@ -322,7 +322,7 @@ fn graph_rag_scenario_asserts_determinism() {
             || body.contains("stable_order")
             || body.contains("byte-equal")
             || body.contains("reproducible"),
-        "test_graph_rag.py must assert determinism / stable ordering — \
+        "test_graph_rag.py must assert determinism / stable ordering - \
          RFC §8.4 promises byte-stable Context.to_text output and the \
          RAG scenario is where we lock that promise"
     );
@@ -346,7 +346,7 @@ fn changelog_records_00120_entry() {
     let changelog = read(&repo_root().join("drevo-py").join("CHANGELOG.md"));
     assert!(
         changelog.contains("00120"),
-        "drevo-py/CHANGELOG.md must record the 00120 entry — every \
+        "drevo-py/CHANGELOG.md must record the 00120 entry - every \
          shipped task in Phase 16 is logged here so the wheel changelog \
          stays the canonical \"what changed\" timeline"
     );

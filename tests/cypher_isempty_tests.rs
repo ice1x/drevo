@@ -1,8 +1,8 @@
-//! End-to-end Cypher `isEmpty()` predicate-function tests — Phase 10
+//! End-to-end Cypher `isEmpty()` predicate-function tests - Phase 10
 //! follow-up task `00159`.
 //!
 //! Neo4j 5 exposes `isEmpty(x)` as a single predicate over the three
-//! *container* types — a String, a List, or a Map — returning a Boolean that
+//! *container* types - a String, a List, or a Map - returning a Boolean that
 //! is `true` exactly when the container holds no elements (no characters / no
 //! items / no entries). It fills a real gap left by `size`: `size(x) = 0`
 //! works for Strings and Lists but `size` rejects a Map, so before this task
@@ -14,7 +14,7 @@
 //! * Any non-empty String / List / Map → `false`.
 //! * A `NULL` argument yields `NULL` (NULL-propagating on the single argument,
 //!   like every other scalar built-in).
-//! * Any *non-container* argument — an Integer, Float, Boolean, node, … — is a
+//! * Any *non-container* argument - an Integer, Float, Boolean, node, … - is a
 //!   recoverable `ExecError::InvalidFunctionCall`, never a panic or wrong
 //!   answer.
 //! * Wrong arity is likewise an `ExecError::InvalidFunctionCall`.
@@ -62,7 +62,7 @@ fn is_empty_string_empty_is_true() {
 fn is_empty_string_non_empty_is_false() {
     let db = db();
     assert_eq!(one("RETURN isEmpty('hello') AS v", &db), Value::Bool(false));
-    // A single space is a character — not empty.
+    // A single space is a character - not empty.
     assert_eq!(one("RETURN isEmpty(' ') AS v", &db), Value::Bool(false));
 }
 

@@ -44,13 +44,13 @@ fn node_ids(nodes: &[drevo::model::Node]) -> HashSet<u64> {
 }
 
 // ===================================================================
-// 1. Empty graph — nonexistent start node
+// 1. Empty graph - nonexistent start node
 // ===================================================================
 
 #[test]
 fn empty_graph_bfs_returns_error_or_empty() {
     let db = NativeService::in_memory();
-    // BFS on nonexistent node — should return empty (node not found
+    // BFS on nonexistent node - should return empty (node not found
     // is handled gracefully: start node lookup returns None → empty result).
     let result = db.bfs(999, 5, Direction::Outgoing, None).unwrap();
     assert!(result.is_empty());
@@ -84,7 +84,7 @@ fn empty_graph_neighbors_returns_empty() {
 }
 
 // ===================================================================
-// 2. Single isolated node — no edges
+// 2. Single isolated node - no edges
 // ===================================================================
 
 #[test]
@@ -116,7 +116,7 @@ fn single_node_all_algorithms_consistent() {
 }
 
 // ===================================================================
-// 3. Depth 0 — all algorithms
+// 3. Depth 0 - all algorithms
 // ===================================================================
 
 #[test]
@@ -155,11 +155,11 @@ fn cycle_three_nodes_all_algorithms() {
     db.create_edge(make_edge(b.id, c.id, "next")).unwrap();
     db.create_edge(make_edge(c.id, a.id, "next")).unwrap();
 
-    // BFS from A, outgoing, depth 10 — should find B, C (no duplicates, no infinite loop)
+    // BFS from A, outgoing, depth 10 - should find B, C (no duplicates, no infinite loop)
     let bfs = db.bfs(a.id, 10, Direction::Outgoing, None).unwrap();
     assert_eq!(node_ids(&bfs), HashSet::from([b.id, c.id]));
 
-    // DFS from A, outgoing, depth 10 — same set
+    // DFS from A, outgoing, depth 10 - same set
     let dfs = db.dfs(a.id, 10, Direction::Outgoing, None).unwrap();
     assert_eq!(node_ids(&dfs), HashSet::from([b.id, c.id]));
 
@@ -267,7 +267,7 @@ fn diamond_graph_all_algorithms() {
     db.create_edge(make_weighted_edge(c.id, d.id, "link", 1.0))
         .unwrap();
 
-    // BFS from A: finds B, C, D — no duplicates
+    // BFS from A: finds B, C, D - no duplicates
     let bfs = db.bfs(a.id, 10, Direction::Outgoing, None).unwrap();
     assert_eq!(node_ids(&bfs), HashSet::from([b.id, c.id, d.id]));
 
@@ -509,7 +509,7 @@ fn complex_cycle_with_tail() {
 }
 
 // ===================================================================
-// 14. Node deleted mid-graph — traversal skips it
+// 14. Node deleted mid-graph - traversal skips it
 // ===================================================================
 
 #[test]
@@ -567,7 +567,7 @@ fn self_loop_plus_cycle() {
 }
 
 // ===================================================================
-// 16. Max depth u8 on small graph — no panic
+// 16. Max depth u8 on small graph - no panic
 // ===================================================================
 
 #[test]
@@ -681,7 +681,7 @@ fn parallel_edges_between_nodes() {
 }
 
 // ===================================================================
-// 20. Use-case scenario: CBT journal — thought chain with cycle
+// 20. Use-case scenario: CBT journal - thought chain with cycle
 // ===================================================================
 
 #[test]
@@ -733,7 +733,7 @@ fn scenario_cbt_journal_thought_cycle() {
 }
 
 // ===================================================================
-// 21. Use-case scenario: story editor — tree with disconnected notes
+// 21. Use-case scenario: story editor - tree with disconnected notes
 // ===================================================================
 
 #[test]
@@ -770,7 +770,7 @@ fn scenario_story_editor_disconnected_notes() {
 }
 
 // ===================================================================
-// 22. Use-case scenario: task manager — blocking chain depth limit
+// 22. Use-case scenario: task manager - blocking chain depth limit
 // ===================================================================
 
 #[test]
@@ -804,7 +804,7 @@ fn scenario_task_manager_blocking_chain() {
 }
 
 // ===================================================================
-// 23. Use-case scenario: ERP — order graph with self-referencing warehouse
+// 23. Use-case scenario: ERP - order graph with self-referencing warehouse
 // ===================================================================
 
 #[test]
@@ -833,7 +833,7 @@ fn scenario_erp_warehouse_self_loop() {
 }
 
 // ===================================================================
-// 24. Use-case scenario: bug tracker — impact analysis with diamond
+// 24. Use-case scenario: bug tracker - impact analysis with diamond
 // ===================================================================
 
 #[test]

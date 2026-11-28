@@ -1,4 +1,4 @@
-//! Cypher from Python — `Drevo.execute(query, params=None)` (issue #553).
+//! Cypher from Python - `Drevo.execute(query, params=None)` (issue #553).
 //!
 //! The executor's [`Value`] tree is converted to plain Python values on the
 //! way out (`None`, `bool`, `int`, `float`, `str`, `list`, `dict`) plus three

@@ -1,4 +1,4 @@
-//! `GET /export/overview` — what the Web UI's graph overview draws (#846):
+//! `GET /export/overview` - what the Web UI's graph overview draws (#846):
 //! every node and relationship with its kind, title and small property
 //! values. Large values (embeddings, long texts) are left out and named, so
 //! the browser does not download the whole graph dump to draw a sample.

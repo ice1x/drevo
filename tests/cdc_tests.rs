@@ -34,7 +34,7 @@ fn ingest(events: &[IngestEvent]) -> MemoryGraphSink {
 }
 
 // ---------------------------------------------------------------------------
-// CBT journal — a wellbeing app's Postgres tail streams journal entries and
+// CBT journal - a wellbeing app's Postgres tail streams journal entries and
 // the cognitive distortions they were tagged with, plus the foreign key
 // linking them. The CDC bridge materializes the journal graph live.
 // ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ fn cbt_journal_cdc_materializes_entries_distortions_and_links() {
 }
 
 // ---------------------------------------------------------------------------
-// Story / book editor — a scene row is revised (UPDATE → last-writer-wins
+// Story / book editor - a scene row is revised (UPDATE → last-writer-wins
 // upsert) and a scrapped scene is removed (DELETE → node teardown).
 // ---------------------------------------------------------------------------
 #[test]
@@ -130,7 +130,7 @@ fn story_editor_cdc_revises_and_scraps_scenes() {
 }
 
 // ---------------------------------------------------------------------------
-// IT task manager — a high-volume burst of task rows in a single wal2json
+// IT task manager - a high-volume burst of task rows in a single wal2json
 // transaction drains in one pass; foreign keys to users become assignment
 // edges.
 // ---------------------------------------------------------------------------
@@ -175,10 +175,10 @@ fn task_manager_cdc_drains_high_volume_batch() {
 }
 
 // ---------------------------------------------------------------------------
-// ERP — an order row's CDC change arrives *before* its customer's (a common
+// ERP - an order row's CDC change arrives *before* its customer's (a common
 // out-of-order tail across tables). With endpoint-strict referential
 // integrity the dangling edge is dead-lettered, then replayed cleanly once the
-// customer exists — at-least-once + idempotency in action.
+// customer exists - at-least-once + idempotency in action.
 // ---------------------------------------------------------------------------
 #[test]
 fn erp_cdc_out_of_order_edge_dead_lettered_then_replayed() {
@@ -243,7 +243,7 @@ fn erp_cdc_out_of_order_edge_dead_lettered_then_replayed() {
 }
 
 // ---------------------------------------------------------------------------
-// Bug tracker — a corrupt replication payload (truncated JSON) is a clean,
+// Bug tracker - a corrupt replication payload (truncated JSON) is a clean,
 // inspectable error from the decoder, never a panic that takes the tail down.
 // ---------------------------------------------------------------------------
 #[test]

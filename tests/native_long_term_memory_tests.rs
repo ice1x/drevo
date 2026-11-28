@@ -1,18 +1,18 @@
 //! Native long-term agent memory over the native engine (issue #533, the
 //! POLE+O / temporal-validity layer of the context graph).
 //!
-//! - `CALL drevo.memory.rememberEntity(session, name, type, description)` —
+//! - `CALL drevo.memory.rememberEntity(session, name, type, description)` -
 //!   upsert a POLE+O entity (`PERSON` / `OBJECT` / `LOCATION` / `EVENT` /
 //!   `ORGANIZATION`) as `:Entity:<Type> { id, name, type, description,
 //!   created_at }`, keyed on `(name, type)`, and link it `:MENTIONS` from the
 //!   session's newest message.
-//! - `CALL drevo.memory.assertFact(subject, relation, object, exclusive)` — a
+//! - `CALL drevo.memory.assertFact(subject, relation, object, exclusive)` - a
 //!   fact between two entities as `-[:RELATED_TO { type, valid_from,
 //!   valid_until }]->`; `exclusive` closes the subject's other currently-valid
 //!   facts of that relation (a supersession: "works at Globex" ends "works at
 //!   Acme").
-//! - `CALL drevo.memory.retractFact(subject, relation, object)` — end a fact.
-//! - `CALL drevo.memory.factsAt(name, asOf)` — the entity's facts valid at
+//! - `CALL drevo.memory.retractFact(subject, relation, object)` - end a fact.
+//! - `CALL drevo.memory.factsAt(name, asOf)` - the entity's facts valid at
 //!   `asOf` (an ISO-8601 UTC timestamp, `null` = now).
 //!
 //! The schema is the one `neo4j-agent-memory` writes (`:Entity` + type label,
@@ -386,7 +386,7 @@ fn tmp_wal() -> std::path::PathBuf {
 
 /// A realistic agent flow over all three memory layers, spanning a server
 /// restart: short-term turns, long-term entities mentioned by them, a fact
-/// that is later superseded, and a reasoning trace — then, after the reopen,
+/// that is later superseded, and a reasoning trace - then, after the reopen,
 /// the session's context (who/what it mentioned) and the fact history are
 /// still answerable, and memory keeps growing.
 #[test]

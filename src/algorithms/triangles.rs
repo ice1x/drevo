@@ -1,9 +1,9 @@
-//! Triangle counting and local clustering coefficient — RFC #307 Phase 8.
+//! Triangle counting and local clustering coefficient - RFC #307 Phase 8.
 //!
 //! A *triangle* is three mutually adjacent nodes. Per node it measures how
 //! tightly its neighbours are interconnected: the **local clustering
 //! coefficient** of a node with degree `d` and `t` triangles through it is
-//! `2t / (d(d-1))` — the fraction of the node's neighbour pairs that are
+//! `2t / (d(d-1))` - the fraction of the node's neighbour pairs that are
 //! themselves adjacent (0 when `d < 2`). This is the standard structural-density
 //! metric, distinct from the connectivity ([`wcc`](crate::algorithms::wcc) /
 //! [`scc`](crate::algorithms::scc)) and centrality

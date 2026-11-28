@@ -3,7 +3,7 @@
 //! adjacency lists, embeddings and the kind / title indexes are shared with
 //! the committed store until written.
 //!
-//! The scenario is a road graph — junctions and the roads between them —
+//! The scenario is a road graph - junctions and the roads between them -
 //! edited one junction at a time, measured with a counting allocator.
 
 use std::alloc::{GlobalAlloc, Layout, System};

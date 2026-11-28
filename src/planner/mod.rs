@@ -1,46 +1,46 @@
-//! Cost-based query planner — Phase 14 task `00085`.
+//! Cost-based query planner - Phase 14 task `00085`.
 //!
 //! Phase 14 keeps Cypher fast on large graphs by replacing O(N) full scans
 //! with planned, index-aware execution. This module is its foundation: the
 //! three pieces a cost-based planner needs before it can choose a cheaper plan.
 //!
-//! * [`stats`](crate::planner::stats) — [`GraphStatistics`], the catalogue
+//! * [`stats`](crate::planner::stats) - [`GraphStatistics`], the catalogue
 //!   figures (node/relationship counts, per-label/-type breakdowns,
-//!   per-`(label, property)` distinct-value counts, and — task `00087` — a
+//!   per-`(label, property)` distinct-value counts, and - task `00087` - a
 //!   coarse degree distribution: maximum degree overall and per label, plus a
 //!   supernode threshold/count for spotting hub nodes) and the
 //!   [`StatisticsCollector`] that tallies them from a scan.
-//! * [`cardinality`](crate::planner::cardinality) — the
+//! * [`cardinality`](crate::planner::cardinality) - the
 //!   [`CardinalityEstimator`], which turns those figures into row-count
 //!   estimates for scans, expands, and `WHERE` filters.
-//! * [`plan`](crate::planner::plan) — the annotated [`PlanNode`] operator tree,
+//! * [`plan`](crate::planner::plan) - the annotated [`PlanNode`] operator tree,
 //!   the [`plan_query`]/[`plan_single_query`] builders that produce a naive
 //!   left-deep plan from parsed Cypher, the cost-based
 //!   [`optimize_query`]/[`optimize_single_query`] builders (and the
 //!   [`PlanOptimizer`] handle) that reorder patterns, select index seeks, and
 //!   order joins (task `00086`), and [`PlanNode::explain`], the `EXPLAIN`-style
 //!   rendering Phase 14's definition of done is built on.
-//! * [`cache`](crate::planner::cache) — the bounded, thread-safe [`PlanCache`]
+//! * [`cache`](crate::planner::cache) - the bounded, thread-safe [`PlanCache`]
 //!   that memoises planned queries.
-//! * [`budget`](crate::planner::budget) — task `00089`'s [`MemoryBudget`] (the
+//! * [`budget`](crate::planner::budget) - task `00089`'s [`MemoryBudget`] (the
 //!   OOM guard), [`estimate_peak_memory`] (memory-limited admission against a
 //!   plan's working set), and [`Backpressure`] (a high/low-watermark throttle),
 //!   so a query on a large graph fails with a recoverable error rather than
 //!   exhausting process memory.
 //!
-//! **Scope (`00085`–`00089`).** Like the MVCC engine in its early
+//! **Scope (`00085`-`00089`).** Like the MVCC engine in its early
 //! tasks, the planner is a self-contained module: it reads a
 //! [`GraphStatistics`] snapshot and parsed [`crate::cypher::ast`] trees, but is
 //! **not yet wired into the executor**. `00085` delivered the statistics,
 //! cardinality estimates, naive plan, and cache; `00086` adds the cost-based
 //! optimiser ([`optimize_query`]/[`optimize_single_query`]); `00087` adds
-//! supernode handling — the optimiser avoids anchoring a traversal at a hub
+//! supernode handling - the optimiser avoids anchoring a traversal at a hub
 //! node (whose first hop would fan out across its whole degree) and costs any
 //! drive-out-of-a-hub with the worst-case fan-out; `00089` adds the memory
 //! budget, peak-memory admission, and backpressure. Estimates remain coarse
 //! (documented `DEFAULT_*` constants stand in for missing statistics).
-//! Consuming the optimised plan to actually drive execution — and feeding the
-//! collector from a live `Drevo` scan — is later-task work.
+//! Consuming the optimised plan to actually drive execution - and feeding the
+//! collector from a live `Drevo` scan - is later-task work.
 //!
 //! Dependency-free, always compiled, and WASM-safe (`std::sync` only, no
 //! spawned threads).

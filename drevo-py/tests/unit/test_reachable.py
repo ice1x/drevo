@@ -1,4 +1,4 @@
-"""Unit tests for `CALL drevo.path.reachable` from Python — every node within
+"""Unit tests for `CALL drevo.path.reachable` from Python - every node within
 a cost budget of one start node.
 
 The fixture is a short street, Home → Corner → Square, with a slow side street

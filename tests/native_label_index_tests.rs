@@ -1,10 +1,10 @@
 //! The native secondary-label index (RFC `docs/rfc-native-core.md`, #307,
-//! Phase 6.6) — a change-feed consumer that indexes the `_labels` Cypher labels
+//! Phase 6.6) - a change-feed consumer that indexes the `_labels` Cypher labels
 //! the primary-kind index does not cover.
 //!
 //! These lock: it indexes secondary labels in ascending id order, reflects
 //! label add/remove and node deletion after `sync`, rebuilds when the feed was
-//! trimmed past its cursor, and — the headline — makes a native
+//! trimmed past its cursor, and - the headline - makes a native
 //! `MATCH (n:Label)` return the **same rows as the full-scan path and as the KV
 //! store**, so it is a faithful, scan-free native label lookup.
 
@@ -57,7 +57,7 @@ fn indexes_secondary_labels_in_ascending_id_order() {
     assert!(!idx.is_empty());
     assert_eq!(idx.node_ids("employee"), vec![a.id, b.id]);
     assert_eq!(idx.node_ids("manager"), vec![b.id]);
-    // The primary kind is NOT a secondary label — that stays with the engine's
+    // The primary kind is NOT a secondary label - that stays with the engine's
     // own kind index.
     assert!(idx.node_ids("person").is_empty());
     assert!(idx.node_ids("ghost").is_empty());

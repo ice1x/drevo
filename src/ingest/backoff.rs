@@ -1,7 +1,7 @@
 //! How long a failed ingest item waits before it is tried again.
 //!
-//! The wait doubles with every attempt — `base × 2^attempts`, at most
-//! [`MAX_DELAY`] — and a jitter spreads the retries of many items that
+//! The wait doubles with every attempt - `base × 2^attempts`, at most
+//! [`MAX_DELAY`] - and a jitter spreads the retries of many items that
 //! failed together (a rate limit hit by every worker at once) over the
 //! second half of that wait. [`next`] is a pure function of the attempt
 //! count, the base and a jitter draw in `[0, 1)`; [`Jitter`] makes the draws,
@@ -14,7 +14,7 @@ pub(crate) const MAX_DELAY: Duration = Duration::from_secs(300);
 
 /// The wait after attempt number `attempts` (1 for the first) failed:
 /// `base × 2^attempts`, capped at [`MAX_DELAY`], of which the second half is
-/// scaled by `jitter` (clamped to `[0, 1]`) — so the wait lies between half
+/// scaled by `jitter` (clamped to `[0, 1]`) - so the wait lies between half
 /// the capped delay and the whole of it.
 pub(crate) fn next(attempts: u32, base: Duration, jitter: f64) -> Duration {
     let cap = MAX_DELAY.as_nanos();

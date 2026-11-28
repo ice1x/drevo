@@ -23,20 +23,20 @@
 //! `embedding` of the first node carrying one, so the numbers are drevo's
 //! work, not the embedding service's:
 //!
-//! * `hybrid_seeds_k8` — `drevo.search.hybrid` with `k: 8`, `candidates: 20`
+//! * `hybrid_seeds_k8` - `drevo.search.hybrid` with `k: 8`, `candidates: 20`
 //!   (stage 1, the seeds);
-//! * `expand_2_hops` — `drevo.graph.expand` from those seeds with the
+//! * `expand_2_hops` - `drevo.graph.expand` from those seeds with the
 //!   pipeline's defaults: 2 hops, `perNodeLimit: 25`, `maxNodes: 200`, the
 //!   bookkeeping labels left out (stage 2);
-//! * `ppr_over_expanded` — Personalized PageRank over the expanded nodes and
+//! * `ppr_over_expanded` - Personalized PageRank over the expanded nodes and
 //!   the relationships between them, teleporting to the seeds (stage 4);
-//! * `serialize_2000_tokens` — writing the ranked subgraph as a 2000-token
+//! * `serialize_2000_tokens` - writing the ranked subgraph as a 2000-token
 //!   markdown context (stage 5);
-//! * `rag_context_end_to_end` — `drevo.rag.context` with its defaults.
+//! * `rag_context_end_to_end` - `drevo.rag.context` with its defaults.
 //!
 //! With the `embeddings-proxy` feature and `DREVO_EMBEDDINGS_UPSTREAM` set,
 //! `rag_context_real_embedder` times the same call embedding the question
-//! through the configured service — reported apart, since it is mostly the
+//! through the configured service - reported apart, since it is mostly the
 //! service's latency.
 
 use std::collections::HashMap;
@@ -54,7 +54,7 @@ use drevo::native_service::NativeService;
 use drevo::rag::serialize::{render, RenderOptions};
 use drevo::rag::{personalized_scores, RankedNode, Subgraph};
 
-/// Parse and run a read query, panicking on failure — a bench with a broken
+/// Parse and run a read query, panicking on failure - a bench with a broken
 /// workload has nothing to measure.
 fn run(svc: &NativeService, source: &str) -> ExecResult {
     let q = parse(source).expect("workload query parses");

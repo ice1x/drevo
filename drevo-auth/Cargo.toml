@@ -2,8 +2,8 @@
 #
 # Authentication and role-based authorization for drevo, as a crate of its own:
 # users with Argon2id password hashes, session tokens, roles and an access
-# policy. It knows nothing about graphs, Cypher or networking — the drevo
-# server wires it into Bolt, HTTP and the executor — so other projects can use
+# policy. It knows nothing about graphs, Cypher or networking - the drevo
+# server wires it into Bolt, HTTP and the executor - so other projects can use
 # it too. Published to crates.io on its own cadence, like drevo-core.
 [package]
 name = "drevo-auth"

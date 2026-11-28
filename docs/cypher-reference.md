@@ -13,7 +13,7 @@ parser ([`src/cypher/parser.rs`](https://github.com/ice1x/drevo/tree/main/src/cy
 > fails to parse nor returns an executor error. The reference therefore cannot drift
 > from the implementation: if drevo stops supporting a construct shown here, CI goes red.
 
-This is a *living subset* — clauses that are not yet implemented return a deterministic
+This is a *living subset* - clauses that are not yet implemented return a deterministic
 [`ExecError::Unsupported`](https://github.com/ice1x/drevo/tree/main/src/cypher/executor.rs) error naming the construct, never a
 panic or a wrong answer. See [Not yet supported](#not-yet-supported) for the current edge.
 
@@ -37,7 +37,7 @@ for row in &result.rows {
 ```
 
 Over the wire the same queries arrive through the [Bolt protocol](sdk-reference.md#bolt-protocol)
-(`RUN` / `PULL`) or — for read paths — the [HTTP API](sdk-reference.md#http-api).
+(`RUN` / `PULL`) or - for read paths - the [HTTP API](sdk-reference.md#http-api).
 
 ---
 
@@ -72,7 +72,7 @@ RETURN n.title AS name
 
 ### Anonymous nodes
 
-Any node in a pattern may omit its variable — including the **head** (first) node and
+Any node in a pattern may omit its variable - including the **head** (first) node and
 intermediate nodes in a multi-hop path (task `00143`). An anonymous node still matches and
 filters by its label and inline properties; it just binds nothing for later use. This is the
 idiomatic way to say "from *any* such node, reach…":
@@ -115,7 +115,7 @@ RETURN start.title AS from_chapter, later.title AS to_chapter
 
 ### Named paths
 
-Prefixing a pattern with `variable =` binds the whole pattern to a **path** value — an
+Prefixing a pattern with `variable =` binds the whole pattern to a **path** value - an
 alternating sequence of nodes and relationships in traversal order (task `00141`). The path
 captures **every** endpoint it traverses, including anonymous intermediate nodes that carry
 no variable of their own. Named paths work for both fixed- and variable-length patterns, and
@@ -123,9 +123,9 @@ for `CREATE` and `MERGE`.
 
 Three functions consume a path:
 
-- `length(p)` — the number of relationships (hops).
-- `nodes(p)` — the nodes as a list, in path order (`length(p) + 1` of them).
-- `relationships(p)` — the relationships as a list, in path order.
+- `length(p)` - the number of relationships (hops).
+- `nodes(p)` - the nodes as a list, in path order (`length(p) + 1` of them).
+- `relationships(p)` - the relationships as a list, in path order.
 
 ```cypher
 MATCH p = (a:Task)-[:DEPENDS_ON*1..3]->(b:Task)
@@ -299,13 +299,13 @@ gives those costs.
 | `walk` | none (no walking between stops) | `{relTypes: ['WALK'], cost: 's'}`: footpath relationship types and their seconds property |
 | `minTransfer` | `0` | seconds a change of vehicles takes at least, at one stop or over footpaths |
 | `maxTransfers` | `4` | the most vehicle changes in a journey |
-| `maxDuration` | none | journeys arriving later than `departAt` plus this — with `arriveBy`, leaving earlier than `arriveBy` minus this — are not returned |
-| `maxWalk` | none | the most seconds of footpaths in a row — between two rides, or after the start cost; a longer chain is not followed |
+| `maxDuration` | none | journeys arriving later than `departAt` plus this - with `arriveBy`, leaving earlier than `arriveBy` minus this - are not returned |
+| `maxWalk` | none | the most seconds of footpaths in a row - between two rides, or after the start cost; a longer chain is not followed |
 
 Staying on the same trip from hop to hop is one ride. Boarding needs the
 vehicle to leave no earlier than you are at the stop. After a ride, the next
 vehicle can be boarded `minTransfer` seconds after arriving, at that stop or
-at any stop reached over footpaths from it — a walk between rides takes its
+at any stop reached over footpaths from it - a walk between rides takes its
 seconds, or `minTransfer` when that is longer, so two poles of one stop joined
 by a 0 s footpath still need the transfer time. Several footpaths may follow
 each other, up to `maxWalk` seconds in a row when it is given. A trip runs on
@@ -318,15 +318,15 @@ back; rows are ordered by `arriveAt`, and there are at most `maxTransfers + 1`.
 A journey that needs no ride at all (a start that is also an end) counts as no
 transfers. Nothing arriving within `maxDuration` gives no row.
 
-- `arriveAt` — when the destination is reached;
-- `departAt` — when to leave the origin: the first ride's departure minus the
+- `arriveAt` - when the destination is reached;
+- `departAt` - when to leave the origin: the first ride's departure minus the
   walk to its stop;
-- `transfers` — vehicle changes;
-- `legs` — the journey in order, each a map `{mode, from, to, depart, arrive,
+- `transfers` - vehicle changes;
+- `legs` - the journey in order, each a map `{mode, from, to, depart, arrive,
   trip, hops}`: `mode` is `'access'` (origin to the first stop, `from` is
   `null`), `'ride'`, `'walk'` or `'egress'` (last stop to the destination, `to`
   is `null`); `trip` is the trip id of a ride; `hops` lists the relationships
-  travelled — the hops of a ride or the footpath of a walk.
+  travelled - the hops of a ride or the footpath of a walk.
 
 ```cypher
 CREATE (a:Stop {name: 'Central'}), (b:Stop {name: 'Market'}),
@@ -430,7 +430,7 @@ Opera, 745 m away, and costs `120.0`.
 
 ---
 
-## Filtering — WHERE
+## Filtering - WHERE
 
 `WHERE` attaches a predicate to `MATCH`, `OPTIONAL MATCH`, or `WITH`.
 
@@ -456,7 +456,7 @@ RETURN n.title AS title
 ```
 
 **Regex match:** `=~` tests a string against a regular expression. Like Neo4j (Java
-`Matcher::matches`), the pattern must match the **entire** string — anchor-free patterns are
+`Matcher::matches`), the pattern must match the **entire** string - anchor-free patterns are
 implicitly anchored at both ends, so `'hello world' =~ 'hello'` is `false` (use `'hello.*'`).
 `NULL` on either side yields `NULL`; a non-string operand is a `TypeMismatch`; an invalid
 pattern is an `InvalidRegex` error.
@@ -531,7 +531,7 @@ It is not allowed in `CREATE` or `MERGE`, or on a variable-length relationship.
 
 ---
 
-## Projecting — RETURN and WITH
+## Projecting - RETURN and WITH
 
 ### RETURN
 
@@ -591,7 +591,7 @@ UNWIND [1, 2, 3] AS x
 RETURN x
 ```
 
-An empty list — and `null` — expand to **zero** rows (so a heterogeneous scan does not
+An empty list - and `null` - expand to **zero** rows (so a heterogeneous scan does not
 abort). Combined with `keywords()`, `UNWIND` powers "group by extracted keyword" faceting:
 
 ```cypher
@@ -612,7 +612,7 @@ RETURN 'closed' AS state
 ```
 
 Every arm must project the **same column names in the same order**, and a single query may
-not mix `UNION` and `UNION ALL` — either constraint surfaces as `ExecError::UnionMismatch`.
+not mix `UNION` and `UNION ALL` - either constraint surfaces as `ExecError::UnionMismatch`.
 A common use is gathering rows of the same shape from different labels:
 
 ```cypher
@@ -717,7 +717,7 @@ four are ordinary aggregations, so any non-aggregated projection item is the
 
 ---
 
-## Conditional expressions — CASE
+## Conditional expressions - CASE
 
 `CASE` returns one of several values depending on a condition. It is an *expression*, so it
 may appear anywhere a value is expected: in `RETURN` / `WITH` projections, in `WHERE`, or
@@ -834,7 +834,7 @@ RETURN s.name AS stage
 
 `FOREACH (var IN list | …)` runs one or more update clauses once per element of `list`,
 binding each element to `var`. It is a bulk-update clause: it never changes the outer
-query's cardinality, and `var` is scoped to the body — it is not visible afterwards. The
+query's cardinality, and `var` is scoped to the body - it is not visible afterwards. The
 body is restricted to update clauses (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, and
 nested `FOREACH`); read clauses such as `MATCH` are not permitted inside.
 
@@ -875,45 +875,45 @@ built in (see [Triggers](#triggers)); there is no support for user-defined, othe
 | `dbms.components()` | `name, versions, edition` | the server: `drevo`, its version in a one-element list, `community` |
 | `drevo.info()` | `version, git_sha, build_date, protocol` | the running build's version + metadata, so a Bolt client can assert a minimum-compatible drevo (issue #303) |
 | `drevo.engine.status()` | `engine, mirror_fresh, native_hits, kv_fallbacks, kv_routed, rebuild_errors` | which engine serves this database's Cypher (`kv` or `native`) and the native read mirror's routing counters (RFC #307) |
-| `drevo.pagerank([config])` | `node, score` | PageRank centrality over the whole graph, computed over an immutable adjacency snapshot; rows come back most-central-first, ties by node id. The optional config map takes the keys of `drevo.pagerank.personalized` except `sourceWeights` (`maxIterations` defaults to `100` here) — see [Personalized PageRank](#personalized-pagerank) |
-| `drevo.pagerank.personalized(sourceNodes[, config])` | `node, score` | PageRank whose random walk jumps back to `sourceNodes` instead of to a random node: which nodes matter *for these seeds* — see [Personalized PageRank](#personalized-pagerank) |
+| `drevo.pagerank([config])` | `node, score` | PageRank centrality over the whole graph, computed over an immutable adjacency snapshot; rows come back most-central-first, ties by node id. The optional config map takes the keys of `drevo.pagerank.personalized` except `sourceWeights` (`maxIterations` defaults to `100` here) - see [Personalized PageRank](#personalized-pagerank) |
+| `drevo.pagerank.personalized(sourceNodes[, config])` | `node, score` | PageRank whose random walk jumps back to `sourceNodes` instead of to a random node: which nodes matter *for these seeds* - see [Personalized PageRank](#personalized-pagerank) |
 | `drevo.louvain()` | `node, community` | Louvain community detection over the whole graph; each node is returned with its contiguously-numbered community id (RFC #307 Phase 8) |
 | `drevo.wcc()` | `node, component` | Weakly connected components over the whole graph; each node is returned with its component id (edges treated as undirected), numbered by the minimum node id per component (RFC #307 Phase 8) |
-| `drevo.scc()` | `node, component` | Strongly connected components over the whole graph (iterative Tarjan); two nodes share a component only if mutually reachable **following edge direction** — i.e. on a common directed cycle — numbered by the minimum node id per component (RFC #307 Phase 8) |
+| `drevo.scc()` | `node, component` | Strongly connected components over the whole graph (iterative Tarjan); two nodes share a component only if mutually reachable **following edge direction** - i.e. on a common directed cycle - numbered by the minimum node id per component (RFC #307 Phase 8) |
 | `drevo.triangles()` | `node, triangles, coefficient` | Triangle count and local clustering coefficient per node over the undirected projection; `coefficient` is `2·triangles / (degree·(degree−1))` in `[0,1]`, `0` for degree `< 2` (RFC #307 Phase 8) |
 | `drevo.betweenness()` | `node, score` | Betweenness centrality (Brandes' algorithm) over the directed, unweighted graph; each node's `score` is the number of shortest paths through it, rows most-central first (RFC #307 Phase 8) |
 | `drevo.closeness()` | `node, score` | Harmonic closeness centrality over the directed, unweighted graph; `score` is `Σ 1/d` over all nodes reachable along edge direction (stays finite when disconnected), rows most-central first (RFC #307 Phase 8) |
-| `drevo.ricciCurvature()` | `from, to, curvature` | Ollivier–Ricci curvature of every undirected edge over the unweighted projection (edge direction and weight ignored): `curvature ≤ 1` is negative on bridge-like edges between communities (good cut candidates) and positive inside dense clusters; each edge returned once with `from` the smaller-id endpoint, ascending by `(from, to)` (issue #526) |
-| `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale–Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
-| `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra — see [Weighted paths](#weighted-paths) |
-| `drevo.search.hybrid(query, label, embeddingProperty, k[, config])`, `drevo.search.hybridRelationships(query, type, …)` | `node` or `rel`, `score`, `ftsRank`, `vectorRank`, `mode` | BM25 and embedding similarity fused with Reciprocal Rank Fusion, best first — see [Hybrid search](#hybrid-search-780) |
-| `drevo.graph.expand(seeds[, config])` | `node, distance, via, truncated` | The seeds and every node within `hops` of them, each once at its shortest distance with the relationship that reached it, in a fixed order — see [Graph expansion](#graph-expansion) |
-| `drevo.rag.retrieve(query[, config])` | `node, seedScore, distance, pprScore, rank, via, truncated` | The nodes that answer a question, best first: hybrid-search seeds, then their neighbourhood ranked by Personalized PageRank, distance or walk order — see [Graph-RAG retrieval](#graph-rag-retrieval) |
-| `drevo.rag.context(query[, config])` | `text, tokens, format, nodeIds, relIds, truncated, mode, traceId` | The same nodes and the relationships between them written as LLM-ready text (markdown, triples or JSON) within a token budget — see [Graph-RAG retrieval](#graph-rag-retrieval) |
-| `drevo.entity.candidates(label[, config])`, `drevo.entity.merge(keepId, dropIds[, config])`, `drevo.entity.aliases(name)` | `a, b, nameScore, vectorScore, score, reasons`; `kept, merged, relationshipsMoved, propertiesMerged`; `entity, aliases` | Pairs of nodes that probably name the same thing, with the reasons; folding dropped nodes into a kept one that remembers their names; the nodes known under a name — see [Entity resolution](#entity-resolution) |
-| `drevo.rag.traces(session, limit)` | `trace` | The newest context traces of a session (`null`: of every session) — see [Context traces](#context-traces) |
+| `drevo.ricciCurvature()` | `from, to, curvature` | Ollivier-Ricci curvature of every undirected edge over the unweighted projection (edge direction and weight ignored): `curvature ≤ 1` is negative on bridge-like edges between communities (good cut candidates) and positive inside dense clusters; each edge returned once with `from` the smaller-id endpoint, ascending by `(from, to)` (issue #526) |
+| `drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty)` | `proposer, acceptor, proposerRank, acceptorRank` | Gale-Shapley stable matching between two sides that rank each other with `relType` edges (lower `rankProperty` = preferred); proposer-optimal, only mutually-ranked pairs match, one row per matched pair (issue #541) |
+| `drevo.path.weighted(start, end, options)` | `path, cost` | The lowest-cost path from `start` to `end` over a numeric relationship property, chosen relationship types and direction, by A* or bidirectional Dijkstra - see [Weighted paths](#weighted-paths) |
+| `drevo.search.hybrid(query, label, embeddingProperty, k[, config])`, `drevo.search.hybridRelationships(query, type, …)` | `node` or `rel`, `score`, `ftsRank`, `vectorRank`, `mode` | BM25 and embedding similarity fused with Reciprocal Rank Fusion, best first - see [Hybrid search](#hybrid-search-780) |
+| `drevo.graph.expand(seeds[, config])` | `node, distance, via, truncated` | The seeds and every node within `hops` of them, each once at its shortest distance with the relationship that reached it, in a fixed order - see [Graph expansion](#graph-expansion) |
+| `drevo.rag.retrieve(query[, config])` | `node, seedScore, distance, pprScore, rank, via, truncated` | The nodes that answer a question, best first: hybrid-search seeds, then their neighbourhood ranked by Personalized PageRank, distance or walk order - see [Graph-RAG retrieval](#graph-rag-retrieval) |
+| `drevo.rag.context(query[, config])` | `text, tokens, format, nodeIds, relIds, truncated, mode, traceId` | The same nodes and the relationships between them written as LLM-ready text (markdown, triples or JSON) within a token budget - see [Graph-RAG retrieval](#graph-rag-retrieval) |
+| `drevo.entity.candidates(label[, config])`, `drevo.entity.merge(keepId, dropIds[, config])`, `drevo.entity.aliases(name)` | `a, b, nameScore, vectorScore, score, reasons`; `kept, merged, relationshipsMoved, propertiesMerged`; `entity, aliases` | Pairs of nodes that probably name the same thing, with the reasons; folding dropped nodes into a kept one that remembers their names; the nodes known under a name - see [Entity resolution](#entity-resolution) |
+| `drevo.rag.traces(session, limit)` | `trace` | The newest context traces of a session (`null`: of every session) - see [Context traces](#context-traces) |
 | `drevo.rag.explain(traceId)` | `node, status, rank, distance, seedScore, pprScore, tokens, reason` | What one context was made of: the nodes written and the nodes left out, by rank |
 | `drevo.rag.replay(traceId)` | `text, tokens, changed` | A traced context re-run on the graph as it is now, and whether its text changed; records nothing |
 | `drevo.rag.pruneTraces(olderThan)` | `deleted` | Delete context traces created before a UTC date or timestamp; needs `EXECUTE ADMIN PROCEDURES` |
-| `drevo.rag.evaluate(questions[, config])` | `question, strategy, hit, recall, precision, mrr, tokens, durationMs, nodeIds, recallRetrieved` | Each retrieval strategy (vector, BM25, hybrid, hybrid + expansion, the full pipeline) scored on a gold set within one token budget — see [Evaluate strategies](#evaluate-strategies) |
+| `drevo.rag.evaluate(questions[, config])` | `question, strategy, hit, recall, precision, mrr, tokens, durationMs, nodeIds, recallRetrieved` | Each retrieval strategy (vector, BM25, hybrid, hybrid + expansion, the full pipeline) scored on a gold set within one token budget - see [Evaluate strategies](#evaluate-strategies) |
 | `drevo.rag.evaluateSummary(questions[, config])` | `strategy, questions, hitRate, meanRecall, meanPrecision, mrr, p50Ms, p95Ms, meanTokens` | The same scores averaged per strategy, with latency percentiles |
-| `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id — see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
-| `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes — see [Secondary indexes](#secondary-indexes) |
-| `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers — see [Triggers](#triggers) |
-| `drevo.sequence.create(name[, {start, step}])`, `drevo.sequence.drop(name)`, `drevo.sequence.list()` | `name, start, step, current` | Create, drop and list sequences; draw values with `drevo.sequence.next(name)` — see [Sequences](#sequences) |
+| `drevo.text.fuzzy(indexName, query, maxEdits)` | `node, distance` | Nodes covered by the text index `indexName` whose value is within `maxEdits` Levenshtein edits of `query`, nearest first, ties by node id - see [Fuzzy matching](#fuzzy-matching-593) (issue #593) |
+| `drevo.indexes.secondary()`, `drevo.indexes.setSecondary(enabled)` | `enabled` | Report, or turn off / on, the database's property, value-cache and full-text indexes - see [Secondary indexes](#secondary-indexes) |
+| `apoc.trigger.install(db, name, statement, selector[, config])` and the other `apoc.trigger.*` | `name, query, selector, params, installed, paused` | Install, list, stop, start and drop triggers - see [Triggers](#triggers) |
+| `drevo.sequence.create(name[, {start, step}])`, `drevo.sequence.drop(name)`, `drevo.sequence.list()` | `name, start, step, current` | Create, drop and list sequences; draw values with `drevo.sequence.next(name)` - see [Sequences](#sequences) |
 
 ### Stable matching (#541)
 
-`drevo.stableMatching` pairs two sides of the graph — mentees and mentors,
-reviewers and papers, candidates and openings — so that no two would both
+`drevo.stableMatching` pairs two sides of the graph - mentees and mentors,
+reviewers and papers, candidates and openings - so that no two would both
 rather be with each other than with their assigned partners (a **stable**
-matching, found by Gale–Shapley deferred acceptance). Preferences are ordinary
+matching, found by Gale-Shapley deferred acceptance). Preferences are ordinary
 edges: each node ranks members of the other side with an outgoing `relType`
 edge carrying a numeric `rankProperty`, lower meaning more preferred. The
 proposing side gets the best partners it can have in any stable matching.
 
 A pair can match only when each side ranks the other; an edge without a numeric
-rank comes after every ranked one (ties by node id). Sides may differ in size —
+rank comes after every ranked one (ties by node id). Sides may differ in size -
 unmatched nodes are simply absent. `proposerRank` / `acceptorRank` are the
 ranks each side gave the other, as stored.
 
@@ -968,7 +968,7 @@ WHERE label <> 'Internal'
 RETURN label
 ```
 
-Because `YIELD` produces ordinary rows, downstream clauses — including aggregation — work as
+Because `YIELD` produces ordinary rows, downstream clauses - including aggregation - work as
 usual:
 
 ```cypher
@@ -992,7 +992,7 @@ writes once per row. Any other call whose arguments read nothing from the row is
 once and its rows are joined to every input row.
 
 A `CALL` to an unknown procedure, with the wrong number of arguments, or a `YIELD` of a column
-the procedure does not produce, fails with `ExecError::InvalidProcedureCall` — a deterministic,
+the procedure does not produce, fails with `ExecError::InvalidProcedureCall` - a deterministic,
 named error rather than a panic or a wrong answer.
 
 ---
@@ -1013,41 +1013,41 @@ LIMIT $limit
 ## Scalar functions
 
 The executor ships a built-in library of standalone scalar functions (task `00138`).
-They are usable anywhere an expression is — `RETURN`, `WHERE`, `WITH`, `CASE`, `ORDER BY`,
+They are usable anywhere an expression is - `RETURN`, `WHERE`, `WITH`, `CASE`, `ORDER BY`,
 inside `UNWIND`, and as a grouping key alongside an aggregation.
 
 | Family | Functions |
 |--------|-----------|
 | String | `toLower`, `toUpper`, `trim`, `ltrim`, `rtrim`, `substring(s, start[, len])`, `replace(s, search, repl)`, `split(s, delim)`, `left(s, n)`, `right(s, n)`, `reverse`, `toString`, `char_length(s)` / `character_length(s)` (the number of characters), `btrim(s[, chars])` (trims white space, or the characters of `chars`, from both ends), `normalize(s[, form])` (the Unicode normal form `'NFC'` by default, or `'NFD'`, `'NFKC'`, `'NFKD'`) |
-| Edit distance | `apoc.text.levenshteinDistance(a, b)` — the fewest single-character insertions, deletions and substitutions turning `a` into `b` (an `Integer`); `apoc.text.levenshteinSimilarity(a, b)` — `1 − distance / max(length)`, `1.0` for two empty strings. Characters are Unicode code points. See [Fuzzy matching](#fuzzy-matching-593) |
-| Name normalisation | `drevo.entity.normalise(name)` — `name` lower-cased, without accents or punctuation, words separated by single spaces (`'А. С. Пушкин'` → `'а с пушкин'`), the form entity resolution compares. See [Entity resolution](#entity-resolution) |
-| Numeric | `abs`, `ceil`, `floor`, `round(x[, precision[, mode]])`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` — see [round()](#rounding-with-round) for the precision / mode overloads |
-| List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` — element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
-| Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` — fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
-| Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` — see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
+| Edit distance | `apoc.text.levenshteinDistance(a, b)` - the fewest single-character insertions, deletions and substitutions turning `a` into `b` (an `Integer`); `apoc.text.levenshteinSimilarity(a, b)` - `1 − distance / max(length)`, `1.0` for two empty strings. Characters are Unicode code points. See [Fuzzy matching](#fuzzy-matching-593) |
+| Name normalisation | `drevo.entity.normalise(name)` - `name` lower-cased, without accents or punctuation, words separated by single spaces (`'А. С. Пушкин'` → `'а с пушкин'`), the form entity resolution compares. See [Entity resolution](#entity-resolution) |
+| Numeric | `abs`, `ceil`, `floor`, `round(x[, precision[, mode]])`, `sign`, `sqrt`, `toInteger`, `toFloat`, `toBoolean` - see [round()](#rounding-with-round) for the precision / mode overloads |
+| List conversion | `toIntegerList(list)`, `toFloatList(list)`, `toBooleanList(list)`, `toStringList(list)` - element-wise conversion; an unconvertible (or `NULL`) element becomes `NULL`, preserving list length |
+| Lenient conversion | `toIntegerOrNull(x)`, `toFloatOrNull(x)`, `toBooleanOrNull(x)`, `toStringOrNull(x)` - fully-lenient scalar conversion; any value that cannot be converted yields `NULL` instead of an error (unlike the strict `toString`, which errors on a non-stringifiable value) |
+| Trigonometric / logarithmic | `e()`, `pi()`, `exp(x)`, `log(x)`, `log10(x)`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2(y, x)`, `degrees(x)`, `radians(x)`, `haversin(x)` - see [Trigonometric & logarithmic functions](#trigonometric--logarithmic-functions) |
 | List / scalar | `size`, `length`, `head`, `last`, `tail`, `range(start, end[, step])`, `coalesce(a, b, …)`, `nullIf(a, b)` (`null` when the two are equal, `a` otherwise), `valueType(x)` (the type of `x` as text: `'INTEGER NOT NULL'`, `'LIST<STRING NOT NULL> NOT NULL'`, `'NULL'`), `keys`, `labels`, `type`, `properties` |
-| Identity | `id(x)` — a node's or relationship's id, an `Integer`; `elementId(x)` — the same id as a `String` (`"42"`), the `element_id` Bolt 5 drivers report on nodes and relationships. `MATCH (n) WHERE elementId(n) = $e` (or `IN $ids`) looks the node up by id, like `id(n) = $id`; the two do not mix types, so `elementId(n) = 42` matches nothing |
-| Container predicate | `isEmpty(x)` — `true` when the container `x` holds no elements; accepts a String, a List, or a Map. Fills the gap left by `size`, which rejects a Map (so `size(m) = 0` cannot express it). A non-container argument errors |
-| Numeric predicate | `isNaN(n)` — `true` when `n` is the IEEE-754 NaN value, `false` for any other number (an `Integer` is never NaN, and `±Infinity` are numbers, not NaN). The only way to test for NaN, since `NaN = NaN` is *false*. See [isNaN()](#testing-for-nan-with-isnan) |
-| Non-deterministic | `rand()` — uniform `Float` in `[0.0, 1.0)`; `randomUUID()` — a fresh version-4 UUID string. Both take **no arguments** and re-draw on every evaluation (per row). See [Non-deterministic functions](#non-deterministic-functions) |
+| Identity | `id(x)` - a node's or relationship's id, an `Integer`; `elementId(x)` - the same id as a `String` (`"42"`), the `element_id` Bolt 5 drivers report on nodes and relationships. `MATCH (n) WHERE elementId(n) = $e` (or `IN $ids`) looks the node up by id, like `id(n) = $id`; the two do not mix types, so `elementId(n) = 42` matches nothing |
+| Container predicate | `isEmpty(x)` - `true` when the container `x` holds no elements; accepts a String, a List, or a Map. Fills the gap left by `size`, which rejects a Map (so `size(m) = 0` cannot express it). A non-container argument errors |
+| Numeric predicate | `isNaN(n)` - `true` when `n` is the IEEE-754 NaN value, `false` for any other number (an `Integer` is never NaN, and `±Infinity` are numbers, not NaN). The only way to test for NaN, since `NaN = NaN` is *false*. See [isNaN()](#testing-for-nan-with-isnan) |
+| Non-deterministic | `rand()` - uniform `Float` in `[0.0, 1.0)`; `randomUUID()` - a fresh version-4 UUID string. Both take **no arguments** and re-draw on every evaluation (per row). See [Non-deterministic functions](#non-deterministic-functions) |
 | Dates and durations | `date`, `datetime`, `duration`, `duration.between(a, b)`, `duration.inMonths`, `duration.inDays`, `duration.inSeconds`, `timestamp()` - see [Dates and durations](#dates-and-durations) |
-| Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` — see [Named paths](#named-paths) |
-| Relationship | `startNode(r)`, `endNode(r)` — the source / target node of a relationship `r`. The companion to [`fts.searchRelationships`](#procedures): a `YIELD rel` endpoint is then directly reachable, no re-`MATCH`. A `NULL` argument yields `NULL`; a non-relationship argument errors |
+| Path | `length(p)` (hop count), `nodes(p)`, `relationships(p)` - see [Named paths](#named-paths) |
+| Relationship | `startNode(r)`, `endNode(r)` - the source / target node of a relationship `r`. The companion to [`fts.searchRelationships`](#procedures): a `YIELD rel` endpoint is then directly reachable, no re-`MATCH`. A `NULL` argument yields `NULL`; a non-relationship argument errors |
 
 **NULL handling.** Every function except `coalesce` is *NULL-propagating*: a `NULL`
-argument yields `NULL`, never an error — so a function applied across a heterogeneous
+argument yields `NULL`, never an error - so a function applied across a heterogeneous
 scan quietly skips rows whose property is absent rather than aborting the query.
-`coalesce(a, b, …)` is the exception — it returns its first non-`NULL` argument (or
+`coalesce(a, b, …)` is the exception - it returns its first non-`NULL` argument (or
 `NULL` if every argument is `NULL`). `toInteger` / `toFloat` / `toBoolean` are lenient:
 an unparseable string converts to `NULL` rather than erroring. The list-conversion
 functions (`toIntegerList` / `toFloatList` / `toBooleanList` / `toStringList`) apply the
 same lenient rules to every element, so an unconvertible element becomes a `NULL` slot
-rather than aborting the whole list — the result always matches the input length. (Unlike
+rather than aborting the whole list - the result always matches the input length. (Unlike
 the scalar `toString`, which errors on a non-stringifiable value, `toStringList` is lenient
 and yields `NULL` for such an element.) The `*OrNull` conversions
 (`toIntegerOrNull` / `toFloatOrNull` / `toBooleanOrNull` / `toStringOrNull`) are
-*fully lenient*: any value they cannot convert — an unparseable string, a List,
-a Map, a node — yields `NULL` rather than an error. `toStringOrNull` is the one
+*fully lenient*: any value they cannot convert - an unparseable string, a List,
+a Map, a node - yields `NULL` rather than an error. `toStringOrNull` is the one
 whose behaviour differs from its strict sibling: scalar `toString` errors on a
 non-stringifiable value, whereas `toStringOrNull` returns `NULL`. The idiomatic
 use is `coalesce(toIntegerOrNull(x), default)` for a safe parse-with-fallback.
@@ -1094,7 +1094,7 @@ convert).
 Like the rest of the library they are **NULL-propagating** (a `NULL` argument
 yields `NULL`) and reject a non-numeric argument with
 `ExecError::InvalidFunctionCall`. **Domain edges follow IEEE-754, not errors:**
-`log(-1)` and `asin(2)` return `NaN`, `log(0)` returns `-Infinity` — exactly as
+`log(-1)` and `asin(2)` return `NaN`, `log(0)` returns `-Infinity` - exactly as
 Neo4j does, so a heterogeneous scan never aborts on an out-of-domain value.
 
 ```cypher
@@ -1114,12 +1114,12 @@ overloads. The result is always a `Float`.
 |------|---------|
 | `round(value)` | Nearest integer, ties away from zero (`HALF_UP`). |
 | `round(value, precision)` | Round to `precision` decimal places, still `HALF_UP`. A **negative** `precision` rounds to the left of the decimal point (`round(1234.5, -2) = 1200.0`). |
-| `round(value, precision, mode)` | Round to `precision` decimal places under `mode` — one of `UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`, `HALF_EVEN` (case-insensitive), matching Java's `RoundingMode`. |
+| `round(value, precision, mode)` | Round to `precision` decimal places under `mode` - one of `UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`, `HALF_EVEN` (case-insensitive), matching Java's `RoundingMode`. |
 
 The rounding modes are: `UP` (away from zero), `DOWN` (toward zero / truncate),
 `CEILING` (toward +∞), `FLOOR` (toward −∞), and the three tie-breakers `HALF_UP`
 (ties away from zero), `HALF_DOWN` (ties toward zero), and `HALF_EVEN` (ties to
-the even digit — banker's rounding). Rounding is performed on the number's
+the even digit - banker's rounding). Rounding is performed on the number's
 **decimal** digits, so `round(1.255, 2)` is `1.26` (the intuitive decimal
 answer) rather than the `1.25` a naive binary `value * 100` scaling would give.
 
@@ -1146,7 +1146,7 @@ fresh value per row.
 | `rand()` | Uniform `Float` in `[0.0, 1.0)` | Backed by a fast per-thread non-cryptographic generator, mirroring Neo4j's `ThreadLocalRandom`. The result never reaches `1.0`. |
 | `randomUUID()` | A version-4 UUID as a 36-char `8-4-4-4-12` lowercase-hex `String` | Backed by the OS CSPRNG, mirroring Neo4j's `SecureRandom`. Practically unique across draws. |
 
-Both take **no arguments** — passing any is a recoverable
+Both take **no arguments** - passing any is a recoverable
 `ExecError::InvalidFunctionCall`. They compose like any other expression:
 
 ```cypher
@@ -1283,7 +1283,7 @@ RETURN keywords('the anxious thought spiraled into catastrophic predictions abou
 ```
 
 `similar(vector, query, threshold)` returns whether two embeddings are within `threshold`
-cosine similarity — the building block for hybrid graph + vector filters:
+cosine similarity - the building block for hybrid graph + vector filters:
 
 ```cypher
 RETURN similar([0.10, 0.20, 0.30], [0.11, 0.19, 0.31], 0.80) AS is_similar
@@ -1305,7 +1305,7 @@ LIMIT $k
 
 `CALL drevo.vector.query(label, property, query, k) YIELD node, score` returns
 the top-`k` nodes of `label` ranked by cosine similarity between their
-`property` embedding and the `query` vector — the same contract Neo4j's
+`property` embedding and the `query` vector - the same contract Neo4j's
 `db.index.vector.queryNodes` exposes. Nodes without the property (or with a
 non-numeric / mismatched-dimension one) are skipped. It is a brute-force scan
 (sub-millisecond at per-book scale); `k` is applied before any post-`YIELD`
@@ -1317,7 +1317,7 @@ CALL drevo.vector.query('Chunk', 'embedding', [0.1, 0.2, 0.3], 5) YIELD node, sc
 RETURN node, score ORDER BY score DESC
 ```
 
-### Declarative vector search — the `SEARCH` clause
+### Declarative vector search - the `SEARCH` clause
 
 The same cosine scan is also available as a declarative clause (issue #430),
 mirroring Neo4j's `SEARCH … IN (VECTOR INDEX …)` form:
@@ -1333,17 +1333,17 @@ mirroring Neo4j's `SEARCH … IN (VECTOR INDEX …)` form:
 ```
 
 `SEARCH` constrains `binding_variable` to the top-`top_k` nodes of `Label`
-whose `property` embedding is closest to `query_vector`, and — with
-`SCORE AS score_alias` — binds the cosine similarity (`0.0`–`1.0`, `1.0` most
+whose `property` embedding is closest to `query_vector`, and - with
+`SCORE AS score_alias` - binds the cosine similarity (`0.0`-`1.0`, `1.0` most
 similar) to `score_alias`. The optional inner `WHERE` post-filters the results
 (`k`-then-filter, exactly like `drevo.vector.query`). Because the search
 variable is overwritten by the results, `MATCH (m:Movie) SEARCH m IN (… LIMIT k)`
 returns `k` rows, not `k × |Movie|`.
 
 The `SEARCH` clause addresses the index as a dotted `Label.property`. A named
-`CREATE VECTOR INDEX` registry — so a Neo4j-style *name* resolves to a declared
-`(label, property)` — is documented just below (issue #532). `SEARCH`, `VECTOR`,
-`INDEX`, `FOR`, and `SCORE` are soft keywords — a property or variable named,
+`CREATE VECTOR INDEX` registry - so a Neo4j-style *name* resolves to a declared
+`(label, property)` - is documented just below (issue #532). `SEARCH`, `VECTOR`,
+`INDEX`, `FOR`, and `SCORE` are soft keywords - a property or variable named,
 say, `score` keeps working.
 
 ```cypher
@@ -1361,7 +1361,7 @@ RETURN m.title, score
 drevo also accepts the Neo4j spelling, so the Neo4j GenAI stack
 (`neo4j-graphrag`, `neo4j-agent-memory`, LangChain `Neo4jVector`, …) runs
 against drevo unmodified. `CREATE VECTOR INDEX <name> FOR (n:Label) ON
-(n.property)` registers `<name>` as an alias for that `(label, property)` pair —
+(n.property)` registers `<name>` as an alias for that `(label, property)` pair -
 the binding the dotted `SEARCH` form lacks. The `OPTIONS { … }` clause
 (dimensions / similarity function) is accepted but ignored: the cosine scan
 infers the dimension from the stored vectors and always scores by cosine.
@@ -1373,7 +1373,7 @@ FOR (m:Movie) ON (m.plotEmbedding)
 
 `CALL db.index.vector.queryNodes(indexName, k, queryVector) YIELD node, score`
 then resolves the name to its `(label, property)` and runs the same cosine scan
-as `drevo.vector.query` — identical rows, Neo4j-compatible spelling:
+as `drevo.vector.query` - identical rows, Neo4j-compatible spelling:
 
 ```cypher
 CALL db.index.vector.queryNodes('moviePlots', 5, [0.1, 0.2, 0.3])
@@ -1442,7 +1442,7 @@ yielded columns without a `RETURN`.
 
 `CALL fts.search(query, k[, config]) YIELD node, score` returns the top-`k` nodes
 matching `query` in the BM25 full-text index (task `00131`), ranked by
-relevance — the full-text counterpart of `drevo.vector.query`. The `score` is
+relevance - the full-text counterpart of `drevo.vector.query`. The `score` is
 the Okapi BM25 relevance. Post-filter with a `WHERE` on any node property and
 `ORDER BY score DESC` as usual.
 
@@ -1462,8 +1462,8 @@ Full text covers every string property of every node except the server's own
 bookkeeping: `:ContextTrace` (a [context trace](#context-traces) repeats the
 question it answered), `:IngestJob` and `:IngestItem` (a queued item holds the
 text it is about to turn into knowledge). They are never hits and do not count
-towards the scores of other nodes. Conversation memory — `:Message`,
-`:ReasoningTrace` — is searchable.
+towards the scores of other nodes. Conversation memory - `:Message`,
+`:ReasoningTrace` - is searchable.
 
 ```cypher
 CALL fts.search('anxious thoughts about work', 25) YIELD node, score
@@ -1473,7 +1473,7 @@ RETURN node, score ORDER BY score DESC
 ### Indexes on nested properties (#578)
 
 Every top-level node property is indexed automatically. Values *inside* a map
-property are not, so `WHERE n.meta.author = 'ann'` scans every node — unless
+property are not, so `WHERE n.meta.author = 'ann'` scans every node - unless
 you declare an index on that path:
 
 ```cypher
@@ -1722,13 +1722,13 @@ deleted node as removed. Parameters given at install time,
 
 The **phase** in the selector says when the trigger runs:
 
-- `before` (the default) — inside the transaction, just before it commits.
+- `before` (the default) - inside the transaction, just before it commits.
   The trigger's writes commit with the transaction, and a failing trigger
   rolls the whole transaction back: the client gets
   `Neo.ClientError.Transaction.TransactionHookFailed`.
-- `after` — right after the commit, in a transaction of its own. A failure
+- `after` - right after the commit, in a transaction of its own. A failure
   is logged; the committed transaction stands.
-- `afterAsync` — like `after`, on a background thread, so the commit does
+- `afterAsync` - like `after`, on a background thread, so the commit does
   not wait for it.
 
 A trigger's own writes do not fire triggers. Statements that change nothing
@@ -1797,8 +1797,8 @@ Besides adjacency, ids and labels, a database keeps three indexes of its own
 for every node and relationship: a property-value index (fast `{key: value}`
 and range lookups), a value cache, and full-text indexes over every string
 (`fts.search`, `db.index.fulltext.*`). They can take more memory than the
-graph itself. A database that does not need them — a road network that is
-only routed over, say — can turn them off:
+graph itself. A database that does not need them - a road network that is
+only routed over, say - can turn them off:
 
 ```cypher
 CALL drevo.indexes.setSecondary(false) YIELD enabled RETURN enabled
@@ -1821,7 +1821,7 @@ the numbers down.
 
 ### Fuzzy matching (#593)
 
-Find values that are close to a string rather than equal to it — typos,
+Find values that are close to a string rather than equal to it - typos,
 variant spellings, near-duplicate titles. The edit distance is the fewest
 single-character insertions, deletions and substitutions between two strings:
 
@@ -1858,7 +1858,7 @@ are exact either way, including after a write earlier in the same statement.
 `CALL drevo.info() YIELD version, git_sha, build_date, protocol` returns one row
 of build metadata so a Bolt client can learn which drevo it is connected to and
 fail fast against an incompatible server. It is read-only, takes no arguments,
-needs no auth, and has no side effects — safe to call on connect. `version` is
+needs no auth, and has no side effects - safe to call on connect. `version` is
 the running build's semver (bare, e.g. `0.0.16`, no leading `v`); `git_sha` and
 `build_date` are `null` when the build did not capture them (a plain
 `docker build` without the release build-args, for instance); `protocol` is a
@@ -1875,13 +1875,13 @@ RETURN version, git_sha, build_date, protocol
 
 `CALL drevo.engine.status()` reports which engine serves this database's
 Cypher and, when the server runs with `DREVO_ENGINE=native`, the read
-mirror's live routing counters — the soak signal for flipping the engine
+mirror's live routing counters - the soak signal for flipping the engine
 default. `engine` is `"kv"` (every query on the storage engine; the five
 counter columns are `null`) or `"native"`; `mirror_fresh` says whether the
 mirror's snapshot matches the store's mutation epoch right now;
 `native_hits` / `kv_fallbacks` / `kv_routed` count reads served natively,
 reads that fell back to KV while the mirror was stale, and queries (writes,
-non-mirrorable procedures — this call included) routed to KV by design;
+non-mirrorable procedures - this call included) routed to KV by design;
 `rebuild_errors` counts failed background rebuilds. Read-only, no
 arguments, no side effects.
 
@@ -1927,12 +1927,12 @@ embeds each turn as it is written.
 A statement that calls any writing memory procedure (these two, the
 `rememberEntity`/`assertFact`/`retractFact`/`addSource`/`addChunks` writers
 below, or a `drevo.rag.context` that records a trace) runs as one
-transaction: it is one WAL record and fsync, and when any part of it fails —
-a constraint violation, a later `CALL` — nothing it wrote is kept.
+transaction: it is one WAL record and fsync, and when any part of it fails -
+a constraint violation, a later `CALL` - nothing it wrote is kept.
 
 `CALL drevo.memory.recall(session, query, k) YIELD node, score` returns the
 top-`k` messages of `session` whose text best matches `query` by BM25,
-best-first — "what did *this* conversation say about X?". It reuses the
+best-first - "what did *this* conversation say about X?". It reuses the
 full-text index, then keeps only messages in `session`.
 
 ```cypher
@@ -1942,7 +1942,7 @@ RETURN node.text, score ORDER BY score DESC
 ```
 
 `CALL drevo.memory.getConversation(session, limit) YIELD node` replays the most
-recent `limit` messages of `session` oldest-first (by `seq`) — the transcript to
+recent `limit` messages of `session` oldest-first (by `seq`) - the transcript to
 reload as context.
 
 ```cypher
@@ -1951,8 +1951,8 @@ RETURN node.seq, node.role, node.text ORDER BY node.seq
 ```
 
 BM25 only finds messages that share a token with the query. To recall by
-**meaning** — a paraphrase like "what did we deploy?" finding "we shipped the
-release" — rank the session's messages by cosine similarity instead.
+**meaning** - a paraphrase like "what did we deploy?" finding "we shipped the
+release" - rank the session's messages by cosine similarity instead.
 `CALL drevo.memory.recallVector(session, vector, k) YIELD node, score` takes a
 query vector you embedded yourself:
 
@@ -1965,7 +1965,7 @@ RETURN node.text, score ORDER BY score DESC
 `CALL drevo.memory.recallSemantic(session, text, k) YIELD node, score` embeds the
 query text on the server (the same embedder as `drevo.semantic.query`), so a
 client needs no embedder of its own. Without one configured it fails with an
-engine-capability error — fall back to `drevo.memory.recall`.
+engine-capability error - fall back to `drevo.memory.recall`.
 
 ```cypher
 CALL drevo.memory.recallSemantic('session-1', 'what did we deploy?', 5)
@@ -2012,7 +2012,7 @@ records that a fact holds from now, as
 `(subject)-[:RELATED_TO { id, type: relation, valid_from, created_at }]->(object)`
 between two remembered entities (by name). Re-asserting a fact that holds is a
 no-op. With `exclusive = true` the subject's other current facts of the same
-relation are closed first (`valid_until = now`) — "works at Globex" ends "works
+relation are closed first (`valid_until = now`) - "works at Globex" ends "works
 at Acme" but keeps it as history. `CALL drevo.memory.retractFact(subject,
 relation, object) YIELD rel` ends a fact the same way.
 
@@ -2027,8 +2027,8 @@ RETURN rel.type, rel.valid_from, rel.valid_until
 valid_from, valid_until, source, quote` answers "what did memory hold about this entity at
 that time?": every fact touching the entity, either direction, with
 `valid_from <= asOf` and `valid_until` unset or later. `asOf` is an RFC 3339
-timestamp — `datetime()` returns one; any offset is allowed, so
-`'2024-03-01T02:00:00+02:00'` is the instant `'2024-03-01T00:00:00Z'` — or a
+timestamp - `datetime()` returns one; any offset is allowed, so
+`'2024-03-01T02:00:00+02:00'` is the instant `'2024-03-01T00:00:00Z'` - or a
 date (`'2024-03-01'`, midnight UTC), or `null` for now; anything else is an
 error naming `asOf`. `source` and `quote` are the fact's first citation (see
 Provenance below), `null` when it has none.
@@ -2045,7 +2045,7 @@ drevo closes superseded facts and filters on the window, so "as of" questions
 get real answers.
 
 `rememberEntity` keys on the exact name by default. Its optional fifth
-argument — the map that also carries provenance (below) — takes `resolve` to
+argument - the map that also carries provenance (below) - takes `resolve` to
 reuse an entity known under another spelling: `'exact'` (the default) as
 above; `'alias'` also reuses the entity of the same type an `:Alias` with
 the same normalised name points at (see
@@ -2133,7 +2133,7 @@ RETURN rel.source_id, rel.chunk_id, rel.quote, rel.offset, rel.length
 
 `CALL drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source, fact`
 lists the passages behind an entity: chunks that back one of its facts (either
-direction; `fact` is the relationship, `quote` / `offset` its citation —
+direction; `fact` is the relationship, `quote` / `offset` its citation -
 every citation of a fact, the first and each `EVIDENCES` one) and chunks that
 only mention it (`fact` is `null`, `quote` the surface at its first place).
 Each chunk appears once per fact and a chunk backing a fact is not repeated as
@@ -2255,9 +2255,9 @@ existence constraints are checked again on the combined result: when two
 transactions each claim the same unique value, the second gets the retryable
 conflict, and its retry gets the constraint error. What snapshot isolation
 allows is *write skew*: two transactions that each read what the other writes
-can both commit. If an application keeps a rule across several nodes — "at
+can both commit. If an application keeps a rule across several nodes - "at
 least one on-call engineer per team", where each transaction reads the team
-and takes one engineer off call — ask for **serializable** isolation, under
+and takes one engineer off call - ask for **serializable** isolation, under
 which a transaction commits only if nothing at all was committed since it
 began:
 
@@ -2392,8 +2392,8 @@ for each other. `drevo.tx.prepare` is checked like `COMMIT`: it fails with
 `Neo.TransientError.Transaction.Outdated` only when a commit made since
 `BEGIN` wrote what the transaction wrote (under
 `DREVO_TX_ISOLATION=serializable`, when anything was committed since `BEGIN`).
-Writes that do not run as a transaction — the REST node and relationship
-routes and bulk loads — are refused while anything is prepared, whatever they
+Writes that do not run as a transaction - the REST node and relationship
+routes and bulk loads - are refused while anything is prepared, whatever they
 touch.
 
 Reads keep working, in auto-commit and in explicit transactions: `BEGIN`,
@@ -2513,7 +2513,7 @@ registers a **server-side auto-embedding** target: nodes of `label` have the
 text in `text_property` embedded into `embedding_property`. `mode` is `'auto'`
 or `'manual'`. `text_property` may be any string property or the node's own
 `title` / `body` field; a placeholder title drevo generated for an untitled
-node is never embedded. It yields the target's control-plane record — `label`,
+node is never embedded. It yields the target's control-plane record - `label`,
 `text_property`, `embedding_property`, `state`, `mode`:
 
 ```cypher
@@ -2522,7 +2522,7 @@ YIELD label, state RETURN label, state
 ```
 
 `CALL drevo.semantic.status()` yields one row per registered target, so a
-client can introspect the capability — detect that server-side auto-embedding is
+client can introspect the capability - detect that server-side auto-embedding is
 available and branch, falling back to an external embedder when the procedure is
 absent. Each row carries the control-plane columns plus live **health** signals
 (`pending_count`, `failed_count`, `last_error`):
@@ -2533,14 +2533,14 @@ YIELD label, embedding_property, state, pending_count, failed_count, last_error
 RETURN label, embedding_property, state, pending_count, failed_count, last_error
 ```
 
-Auto-embed is fail-open — a transient embedder outage never fails a write, so a
+Auto-embed is fail-open - a transient embedder outage never fails a write, so a
 `CREATE` can succeed with no embedding written. These columns make that
 observable so `drevo.semantic.query` doesn't silently under-return:
 
-- `pending_count` — `'auto'` nodes of the label that still lack an embedding
+- `pending_count` - `'auto'` nodes of the label that still lack an embedding
   (a live backlog; drain it with `drevo.semantic.reindex`). Always `0` for
   `'manual'` targets, which drevo does not embed.
-- `failed_count` / `last_error` — a cumulative tally of swallowed embed failures
+- `failed_count` / `last_error` - a cumulative tally of swallowed embed failures
   and the most recent reason (or `null`).
 - `state` reads `'degraded'` whenever `pending_count > 0`, and returns to
   `'enabled'` once the backlog is drained.
@@ -2553,7 +2553,7 @@ landed but embeddings are missing", and repair via `reindex`.
 argument is a **query string**, not a vector. drevo embeds it server-side (via
 the configured embeddings upstream) and returns the top-`k` nodes of `label`
 ranked by cosine similarity between their `property` embedding and that query
-embedding — so a Bolt/Cypher client can run semantic retrieval without hosting
+embedding - so a Bolt/Cypher client can run semantic retrieval without hosting
 an embedder of its own:
 
 ```cypher
@@ -2567,10 +2567,10 @@ started with `DREVO_EMBEDDINGS_UPSTREAM` set (the same configuration that powers
 backend not configured" error, so a client can catch it and fall back to an
 external embedder plus `drevo.vector.query`.
 
-**Filtered semantic retrieval — `drevo.semantic.embed` (#272).** `semantic.query`
+**Filtered semantic retrieval - `drevo.semantic.embed` (#272).** `semantic.query`
 fuses embed + scan but is **unfiltered**: it cannot scope results by tenant,
 entity type, or edge endpoints. When you need a filter, use
-`CALL drevo.semantic.embed(text) YIELD vector` — it embeds one string
+`CALL drevo.semantic.embed(text) YIELD vector` - it embeds one string
 server-side (same model/dimension as the index, per `drevo.semantic.info`) and
 returns the vector, so you run your **own** Cypher, with any `WHERE`, against
 `cosine_similarity` (see above):
@@ -2591,7 +2591,7 @@ configured" error as `semantic.query`, so the same fallback applies.
 
 **Auto-embedding on ingest.** When a target is registered in `'auto'` mode and
 the server has an embedder configured, drevo embeds `text_property` into
-`embedding_property` **automatically as matching nodes are created or updated** —
+`embedding_property` **automatically as matching nodes are created or updated** -
 no client round-trip. So the full loop needs no client-side embedding at all.
 First register the target:
 
@@ -2600,7 +2600,7 @@ CALL drevo.semantic.register('Doc', 'text', 'embedding', 'auto')
 YIELD label, state RETURN label, state
 ```
 
-Then ordinary writes are embedded server-side — this `CREATE` populates
+Then ordinary writes are embedded server-side - this `CREATE` populates
 `embedding` on its own:
 
 ```cypher
@@ -2619,7 +2619,7 @@ target matches, so ordinary writes are unaffected. It embeds `text_property` on
 each create/update (an update re-embeds only when that text changes); a `'manual'`
 target is never auto-embedded, and existing nodes created before registration
 keep their current embeddings until next written. An upstream failure is logged
-and swallowed — it never fails the write.
+and swallowed - it never fails the write.
 
 **Backfilling existing nodes.** Because auto-embed fires only on create/update,
 registering a rule against an already-populated label leaves those rows
@@ -2643,7 +2643,7 @@ registered for `(label, embedding_property)`.
 
 `CALL drevo.semantic.info() YIELD embedder_present, model, dimension, upstream`
 reports the server-side embedder's capability so a client can verify
-consistency before trusting — or mixing in its own — vectors:
+consistency before trusting - or mixing in its own - vectors:
 
 ```cypher
 CALL drevo.semantic.info()
@@ -2651,21 +2651,21 @@ YIELD embedder_present, model, dimension, upstream
 RETURN embedder_present, model, dimension, upstream
 ```
 
-- `embedder_present` — whether an embedder is actually installed and configured
+- `embedder_present` - whether an embedder is actually installed and configured
   (not merely whether the procedures exist); `false` on a build without
   `embeddings-proxy` or with `DREVO_EMBEDDINGS_UPSTREAM` unset.
-- `model` — the configured embedding model id.
-- `dimension` — the vector length (discovered by a one-off probe and cached), so
+- `model` - the configured embedding model id.
+- `dimension` - the vector length (discovered by a one-off probe and cached), so
   a client can validate its own vectors / index config before mixing a native
   and a fallback embedder.
-- `upstream` — the configured endpoint URL. **Never** includes the API key.
+- `upstream` - the configured endpoint URL. **Never** includes the API key.
 
 All fields but `embedder_present` are `null` when no embedder is configured.
 
 ### Relationships (#266)
 
 Every semantic procedure has a **relationship** mirror that matches an edge's
-type (`Edge::kind`) instead of a node label — the same split as `fts.search` vs
+type (`Edge::kind`) instead of a node label - the same split as `fts.search` vs
 `fts.searchRelationships`. A rule registered with `registerRel` auto-embeds
 matching relationships on create/update, and `queryRel` retrieves them:
 
@@ -2686,7 +2686,7 @@ RETURN scanned, embedded, skipped, remaining
 ```
 
 `registerRel` / `queryRel` / `reindexRel` behave exactly like their node
-counterparts (`register` / `query` / `reindex`) — same modes, fail-open
+counterparts (`register` / `query` / `reindex`) - same modes, fail-open
 auto-embed, skip-unchanged, and batched/idempotent backfill. `drevo.semantic.status`
 lists node **and** relationship targets, with a `target_kind` column
 (`node` / `relationship`) distinguishing them.
@@ -2725,7 +2725,7 @@ RETURN node.title, score, ftsRank, vectorRank, mode
 | `candidates` | `max(k, 20)` | how deep each ranking goes before fusion; never fewer than `k` |
 | `rrfK` | `60` | the RRF constant, a number ≥ 0; a larger one narrows the gap between neighbouring ranks |
 | `mode` | `'auto'` | `'auto'`, `'hybrid'`, `'fts'` or `'vector'`, see below |
-| `ftsMode` | `'all'` | what the BM25 ranking takes: `'all'` — a node holding all of the query; `'any'` — a node holding any word of it, as in [`fts.search`](#procedures) |
+| `ftsMode` | `'all'` | what the BM25 ranking takes: `'all'` - a node holding all of the query; `'any'` - a node holding any word of it, as in [`fts.search`](#procedures) |
 | `ftsFilter` | `null` | a label the BM25 ranking is restricted to (BM25 otherwise covers every node) |
 | `weights` | `{fts: 1.0, vector: 1.0}` | multiplies each ranking's reciprocal rank; finite numbers ≥ 0, not all zero (`{fts: 0, vector: 0}` is refused with "weights must not all be zero"). A node only a `0`-weighted ranking found is left out |
 
@@ -2733,7 +2733,7 @@ An unknown key, a config that is not a map, `k < 1`, a negative `rrfK` or a
 wrong-typed value fail with an error naming the key.
 
 Each row carries the fused `score` (rows come best first), the node's 1-based
-rank in each ranking — `null` when that ranking did not return it — and the
+rank in each ranking - `null` when that ranking did not return it - and the
 `mode` that ran, the same on every row:
 
 | `mode` | Embedder installed | No embedder |
@@ -2845,7 +2845,7 @@ RETURN node.title, score
 one call: a breadth-first walk that returns every node within `hops`
 relationships of a seed, each once, at its shortest distance, together with the
 relationship that first reached it. It is the "find seeds, then widen" step of
-graph retrieval — seeds from a search, then the facts and entities around them —
+graph retrieval - seeds from a search, then the facts and entities around them -
 without a round-trip per node.
 
 ```text
@@ -2869,7 +2869,7 @@ at distance 1, and `postgres` at distance 2, reached over `TAGGED` from
 
 `seeds` is a node, a node id, or a list mixing both; `null` and `[]` give no
 rows. The call runs once per input row, so seeds can come from an earlier
-clause — for example the hits of a [hybrid search](#hybrid-search-780):
+clause - for example the hits of a [hybrid search](#hybrid-search-780):
 
 ```cypher
 CALL drevo.search.hybrid('database migration', null, 'embedding', 5, {mode: 'fts'})
@@ -2898,7 +2898,7 @@ Each row holds:
 |---|---|
 | `node` | the node |
 | `distance` | how many relationships from the nearest seed; `0` for a seed |
-| `via` | `{fromId, relId, relType, direction}` for the relationship that first reached the node — `direction` is `'out'` when it points away from `fromId`, `'in'` when it points at it; `null` for a seed |
+| `via` | `{fromId, relId, relType, direction}` for the relationship that first reached the node - `direction` is `'out'` when it points away from `fromId`, `'in'` when it points at it; `null` for a seed |
 | `truncated` | `true` on every row when the walk stopped at `maxNodes` with more nodes left |
 
 Rows come seeds first, in the order given, then by distance and node id. Nodes
@@ -2925,7 +2925,7 @@ negative or wrong-typed value, `hops` or `maxNodes` above the server's limit, an
 ### Graph-RAG retrieval
 
 `drevo.rag.context` turns a question into the part of the graph that answers it,
-written as text ready to paste into an LLM prompt, within a token budget — in one
+written as text ready to paste into an LLM prompt, within a token budget - in one
 call. `drevo.rag.retrieve` returns the same nodes as rows, for a client that does
 its own formatting.
 
@@ -2943,8 +2943,8 @@ YIELD text, tokens, truncated, mode
 RETURN text, tokens, truncated, mode
 ```
 
-Over a CBT journal — a person writes entries, an entry contains automatic
-thoughts, a thought is an instance of a cognitive distortion — the `text` is:
+Over a CBT journal - a person writes entries, an entry contains automatic
+thoughts, a thought is an instance of a cognitive distortion - the `text` is:
 
 ```text
 Monday shift | Entry | Panic before the team meeting, heart racing.
@@ -2959,19 +2959,19 @@ Everyone will see I am incompetent | IS_A | Mind reading
 The call runs five stages inside one statement, each the code of the procedure it
 is named after:
 
-1. **Seeds** — [`drevo.search.hybrid`](#hybrid-search-780)`(query, label,
+1. **Seeds** - [`drevo.search.hybrid`](#hybrid-search-780)`(query, label,
    embeddingProperty, k, {candidates, rrfK, mode})`. Seeds with a label in
    `excludeLabels` are dropped.
-2. **Expand** — [`drevo.graph.expand`](#graph-expansion)`(seeds, {hops,
+2. **Expand** - [`drevo.graph.expand`](#graph-expansion)`(seeds, {hops,
    direction, relTypes, labels, excludeLabels, perNodeLimit, maxNodes, asOf})`.
-3. **Edges** — the relationships whose two ends were both found, of `relTypes`
+3. **Edges** - the relationships whose two ends were both found, of `relTypes`
    and valid at `asOf`.
-4. **Rank** — the seeds first, in search order; then the other nodes by `rank`:
+4. **Rank** - the seeds first, in search order; then the other nodes by `rank`:
    `'ppr'` runs [Personalized PageRank](#personalized-pagerank) over just the
    nodes and relationships found (so nothing outside them moves a score),
    teleporting to the seeds in proportion to their search score; `'distance'`
    orders by distance, then node id; `'none'` keeps the expansion's order.
-5. **Write** (`context` only) — nodes are taken best-ranked first; each brings
+5. **Write** (`context` only) - nodes are taken best-ranked first; each brings
    its block and the relationships to the nodes already taken. A node that would
    push the text over `tokenBudget` is skipped whole, never cut mid-sentence, and
    the next one is tried.
@@ -2984,7 +2984,7 @@ The statement timeout (`DREVO_QUERY_TIMEOUT_MS`) is checked between stages.
 | `embeddingProperty` | `'embedding'` | the property holding those embeddings |
 | `k` | `8` | how many seeds the search returns |
 | `candidates`, `rrfK`, `mode` | `max(k, 20)`, `60`, `'auto'` | as in [`drevo.search.hybrid`](#hybrid-search-780) |
-| `ftsMode` | `'any'` | what the BM25 leg of the seed search takes: `'any'` — a node holding any word of the question, so a question in plain language finds the nodes sharing the most, and the rarest, of its words; `'all'` — only a node holding all of it, as `fts.search` does by default |
+| `ftsMode` | `'any'` | what the BM25 leg of the seed search takes: `'any'` - a node holding any word of the question, so a question in plain language finds the nodes sharing the most, and the rarest, of its words; `'all'` - only a node holding all of it, as `fts.search` does by default |
 | `hops` | `2` | as in [`drevo.graph.expand`](#graph-expansion) |
 | `direction`, `relTypes`, `labels`, `perNodeLimit`, `maxNodes`, `asOf` | `'both'`, `null`, `null`, `25`, `200`, `null` | as in [`drevo.graph.expand`](#graph-expansion); `direction` also orients PageRank |
 | `excludeLabels` | `['Message', 'ReasoningTrace', 'ContextTrace', 'Community', 'IngestJob', 'IngestItem']` | labels kept out of the seeds and the expansion: conversation and bookkeeping, not knowledge, and [community summaries](#communities), which `scope: 'global'` reads instead. `[]` keeps everything |
@@ -2996,8 +2996,8 @@ The statement timeout (`DREVO_QUERY_TIMEOUT_MS`) is checked between stages.
 | `textProperties` | `['name', 'title', 'description', 'body', 'text']` | the properties a node's block is built from, in order; the first one present names the node (a node with none is named `#id`) |
 | `maxBodyChars` | `600` | each `body`, `text`, `description` or `quote` value longer than this many characters is cut to it, at a character boundary, with `…`. `name`, `title` and other properties are never cut, so a node keeps its full name |
 | `includeProvenance` | `true` | write `valid_from`→`valid_until`, `«quote»` and `(source_id)` when an element carries them |
-| `scope` | `'local'` | `'local'`: the five stages above. `'global'`: the `k` [communities](#communities) of `communityLayer` best matching the question (topped up with the largest others when fewer match) are the seeds, followed by their members, best in-community rank first, taken in turns across the communities up to `maxNodes`; a community is written as `community <id>` with its summary. `'auto'`: global when the local search finds no seed, when the question matches `globalHint`, or — when both search legs ran — when the best seed's search score is below `globalThreshold`; local otherwise, and local when there is no community. A heuristic: tune both to your corpus |
-| `globalThreshold` | `0.02` | under `scope: 'auto'` with both search legs (an embedder and a `label`), a best seed score below this goes global — an RRF score: `2/61` ≈ 0.033 for a first place in both legs, `1/61` ≈ 0.016 in one. With BM25 alone the score says nothing about confidence, so the threshold is not used |
+| `scope` | `'local'` | `'local'`: the five stages above. `'global'`: the `k` [communities](#communities) of `communityLayer` best matching the question (topped up with the largest others when fewer match) are the seeds, followed by their members, best in-community rank first, taken in turns across the communities up to `maxNodes`; a community is written as `community <id>` with its summary. `'auto'`: global when the local search finds no seed, when the question matches `globalHint`, or - when both search legs ran - when the best seed's search score is below `globalThreshold`; local otherwise, and local when there is no community. A heuristic: tune both to your corpus |
+| `globalThreshold` | `0.02` | under `scope: 'auto'` with both search legs (an embedder and a `label`), a best seed score below this goes global - an RRF score: `2/61` ≈ 0.033 for a first place in both legs, `1/61` ≈ 0.016 in one. With BM25 alone the score says nothing about confidence, so the threshold is not used |
 | `communityLayer` | `'default'` | the layer of [communities](#communities) `scope: 'global'` reads |
 | `globalHint` | `'^(what\|что\|о чём\|overview\|summary)'` | under `scope: 'auto'`, a regular expression matched against the start of the question, ignoring case: a match goes global |
 | `session` | `null` | the conversation the context is for, a string. `drevo.rag.context` then records a [context trace](#context-traces) linked to the session's newest message; `drevo.rag.retrieve` ignores it |
@@ -3066,7 +3066,7 @@ RETURN rank, node.title, distance, seedScore
 | Column | Meaning |
 |---|---|
 | `text` | the context; `''` when nothing matched or nothing fits |
-| `tokens` | the size of `text` under `tokenizer` — never more than `tokenBudget` |
+| `tokens` | the size of `text` under `tokenizer` - never more than `tokenBudget` |
 | `format` | the format written |
 | `nodeIds`, `relIds` | the ids of the nodes and relationships in `text`, in the order written |
 | `truncated` | `true` when a node did not fit the budget or the expansion hit `maxNodes` |
@@ -3107,8 +3107,8 @@ CALL drevo.extract.chunks(text[, config]) YIELD position, offset, length, text
 CALL drevo.extract.status() YIELD configured, model, upstream, lastError, lastSkipped
 ```
 
-The text is cut into passages of about `chunkChars` characters — at a
-paragraph break, else a sentence end, else a space — each starting a tenth
+The text is cut into passages of about `chunkChars` characters - at a
+paragraph break, else a sentence end, else a space - each starting a tenth
 of `chunkChars` before the previous one ended. Every passage is sent to the
 model with instructions to answer with one JSON object
 `{"entities": [...], "facts": [...]}` in which each mention quotes the
@@ -3141,15 +3141,15 @@ Dana    | WORKS_AT   | Acme   | Dana joined Acme      | 0
 Acme    | LOCATED_IN | Oslo   | Acme is based in Oslo | 25
 ```
 
-`ingest` writes what it finds, in one transaction — a failure writes
+`ingest` writes what it finds, in one transaction - a failure writes
 nothing. Every passage is extracted before anything is written; then:
 
 - the source is upserted (`source` as a map) or must exist (`source` as an id);
 - each passage becomes a `:Chunk` with id `<sourceId>#<order>`, `-[:FROM]->`
   the source and chained `-[:NEXT]->` (as `drevo.memory.addChunks`);
-- each entity is upserted as `drevo.memory.rememberEntity` does — keyed on
+- each entity is upserted as `drevo.memory.rememberEntity` does - keyed on
   name and type, labelled `:Entity` plus its type (`Person`, …, or the extra
-  type in Pascal case: `SPACESHIP` → `:Spaceship`) — and gets
+  type in Pascal case: `SPACESHIP` → `:Spaceship`) - and gets
   `-[:MENTIONED_IN {offset, length, surface}]->` its chunk, the offset counted
   in the chunk;
 - each fact is asserted as `drevo.memory.assertFact(subject, relation,
@@ -3163,8 +3163,8 @@ changes nothing. Afterwards `drevo.memory.evidence` and `drevo.memory.factsAt`
 show the passages behind each entity.
 
 **The model runs before the write, once.** A statement that opens with
-`CALL drevo.extract.ingest(…)` — its text and config literals or parameters
-— asks the model for every passage first, and only then writes, in one
+`CALL drevo.extract.ingest(…)` - its text and config literals or parameters -
+asks the model for every passage first, and only then writes, in one
 transaction. Other writing statements on the database are not held up while
 the model answers, and a write retried after a commit conflict with another
 writer (up to 8 times) reuses the answers instead of asking again. The
@@ -3195,7 +3195,7 @@ RETURN source, chunks, entities, facts, skipped
 | `model` | the server's | the model to ask instead of `DREVO_EXTRACT_MODEL` |
 | `chunkChars` | `1500` | passage size in characters, from 20 to 100000 |
 | `minConfidence` | `0.5` | items the model rates lower are dropped; an item without a confidence counts as 1 |
-| `source` | — | `ingest` only, required: `{id, uri, title, kind}` (upserted) or an existing source's id |
+| `source` | - | `ingest` only, required: `{id, uri, title, kind}` (upserted) or an existing source's id |
 | `session` | `null` | `ingest` only: the conversation whose newest message gets `MENTIONS` to each entity, as in `rememberEntity` |
 | `resolve` | `'exact'` | `ingest` only: how a known entity is found, as the `resolve` option of `drevo.memory.rememberEntity`: `'exact'` = same name and type; `'fuzzy'` also reuses the one entity of the type whose name scores at least 0.9 (else the new entity gets `POSSIBLY_SAME` edges to its near-misses) |
 | `dryRun` | `false` | `ingest` only: count without writing |
@@ -3206,7 +3206,7 @@ error naming it. Without a configured endpoint, `entities`, `facts` and
 config is reported before any model call.
 
 `drevo.extract.chunks` shows the passages a text is cut into, without a
-model — what `ingest` would send and store:
+model - what `ingest` would send and store:
 
 ```cypher
 CALL drevo.extract.chunks('Dana joined Acme in May. Acme is based in Oslo, far from the sea.', {chunkChars: 40})
@@ -3235,7 +3235,7 @@ CALL apoc.trigger.install('drevo', 'extract_documents',
   {phase: 'afterAsync'})
 ```
 
-The first argument is the database the trigger belongs to — `drevo`, the
+The first argument is the database the trigger belongs to - `drevo`, the
 default one, here.
 
 A failed extraction is logged by the trigger and recorded in
@@ -3246,8 +3246,8 @@ per passage.
 
 ### Communities
 
-`drevo.community.summarize` cuts the graph into communities — groups of nodes
-more densely linked to each other than to the rest — and writes each one back
+`drevo.community.summarize` cuts the graph into communities - groups of nodes
+more densely linked to each other than to the rest - and writes each one back
 as a `:Community` node with a short summary of who and what is in it. A
 corpus-level question ("what is this project about?") is then answered from a
 handful of summaries with [`scope: 'global'`](#graph-rag-retrieval) instead of
@@ -3303,7 +3303,7 @@ the JSON `{"labels": …, "relTypes": …}` the layer was computed with.
 | `relTypes` | `null` | partition along these relationship types only; `null` takes every type |
 | `minSize` | `3` | smaller communities get no summary, keywords or mode (their members still get `MEMBER_OF`) |
 | `maxMembers` | `40` | the most members a summary names, best-ranked first |
-| `mode` | `'auto'` | `'extractive'`: written from the members, no model. `'llm'`: written by the chat model of [`drevo.extract.*`](#extraction) — an error while none is configured (`drevo.extract.status()` shows whether one is), and over more than `DREVO_COMMUNITY_MAX_LLM_SYNC` (default 20) summarised communities in one synchronous call. `'auto'`: the model when one is configured and the call stays within that limit, else extractive; `mode` on the row and the node says which ran |
+| `mode` | `'auto'` | `'extractive'`: written from the members, no model. `'llm'`: written by the chat model of [`drevo.extract.*`](#extraction) - an error while none is configured (`drevo.extract.status()` shows whether one is), and over more than `DREVO_COMMUNITY_MAX_LLM_SYNC` (default 20) summarised communities in one synchronous call. `'auto'`: the model when one is configured and the call stays within that limit, else extractive; `mode` on the row and the node says which ran |
 | `model` | `null` | the chat model for `'llm'`; `null` uses the endpoint's own |
 | `tokenBudget` | `300` | the most tokens a summary takes (the `'approx'` estimate of [`drevo.rag.context`](#graph-rag-retrieval)); at least `20` |
 | `replace` | `true` | delete the layer's previous communities first; `false` refuses a layer that already has some |
@@ -3312,9 +3312,9 @@ the JSON `{"labels": …, "relTypes": …}` the layer was computed with.
 
 An extractive summary is `<size> members.`, then the members named best-ranked
 first, grouped by label in the order of their best member (`Person: Alice,
-Bob.`), then `Keywords:` — the ten most salient terms of the members' `name`,
+Bob.`), then `Keywords:` - the ten most salient terms of the members' `name`,
 `title`, `description`, `body` and `text`, ranked as by `keywords()` with every
-partitioned node as a document — then `Relations:` with the three most frequent
+partitioned node as a document - then `Relations:` with the three most frequent
 relationship types inside the community and their counts. As many members as
 fit `tokenBudget` are named. The same graph and config give the same text.
 
@@ -3332,7 +3332,7 @@ ones either way. The model is never asked while anything is written:
 3. the statement runs as its transaction with those answers, under the
    statement timeout: a retry after a commit conflict reads them again
    instead of asking. If the graph changed meanwhile and a community has no
-   answer, steps 1–3 run again (three times at most), asking only for what
+   answer, steps 1-3 run again (three times at most), asking only for what
    is new.
 
 So a synchronous `auto` or `llm` call on a server with a chat upstream
@@ -3350,12 +3350,12 @@ as a synchronous one would, stores an `:IngestJob` with `pipeline:
 every other column is `null` (a synchronous call yields `jobId = null` on
 each row). The database's ingest scheduler runs the item as
 `drevo.community.summarize` with the same config less `async`, in the same
-three steps — the model asked with no scheduler gate held — and without the
-synchronous limit. It is retried like any ingest item — a rate limit, timeout or `5xx`
+three steps - the model asked with no scheduler gate held - and without the
+synchronous limit. It is retried like any ingest item - a rate limit, timeout or `5xx`
 from the model, a write conflict, or a graph changed between the plan and the
 write, is tried again after the backoff; a
 refusal (another `4xx`, `replace: false` over a taken layer) makes it
-`dead` — and `drevo.ingest.status`, `errors`, `cancel` and `retryFailed`
+`dead` - and `drevo.ingest.status`, `errors`, `cancel` and `retryFailed`
 work on it. A `mode: 'llm'` job waits while no chat model is configured.
 `async: true` needs a user who may read everything, as the job summarises
 the whole graph.
@@ -3389,11 +3389,11 @@ YIELD community, score, summary
 RETURN community.id, score, summary
 ```
 
-`drevo.community.of(node)` — a node or a node id; `null` gives no rows —
+`drevo.community.of(node)` - a node or a node id; `null` gives no rows -
 returns the node's community in each layer, `level` being the layer's name.
 `drevo.community.stale()` returns every community with its member count now
 and whether its member set `changed` since it was computed: a member deleted or
-unlinked, or a new node linked to members — it counts towards the community it
+unlinked, or a new node linked to members - it counts towards the community it
 has the most links into. Only nodes with the layer's `labels` and links of its
 `relTypes` (as stored in `config`; bookkeeping left out when it named none)
 count. Summarising again, from a
@@ -3447,19 +3447,19 @@ CALL drevo.ingest.purge(jobId)           YIELD deleted
 ```
 
 **`submit`** stores the job, `queued`, and returns at once. `items` is one
-document — `{text}` or a string — cut into passages with the
+document - `{text}` or a string - cut into passages with the
 [extraction chunker](#extraction), or a list of strings and
 `{text, offset?, meta?}` maps, each cut the same way when it is longer than
 `chunkChars`. `offset` places an item in the source (character offset); an
 item without one follows the item before it. `meta` (a map) is kept on its
-items as JSON. `config` is the config of `drevo.extract.ingest` — `source`
-required, as an existing source id or a map `{id, uri, title, kind}` — without
+items as JSON. `config` is the config of `drevo.extract.ingest` - `source`
+required, as an existing source id or a map `{id, uri, title, kind}` - without
 `dryRun`, plus:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `priority` | `0` | Higher runs first: the scheduler takes the next item of the highest-priority job, oldest job first among equals |
-| `maxAttempts` | `DREVO_INGEST_MAX_ATTEMPTS` (5) | Attempts per item, 1–100 |
+| `maxAttempts` | `DREVO_INGEST_MAX_ATTEMPTS` (5) | Attempts per item, 1-100 |
 | `concurrency` | the server's `DREVO_INGEST_WORKERS` | Items of this job with the model at once. A larger value is accepted and capped at the server's `DREVO_INGEST_WORKERS` while the job runs |
 
 A job is `queued` until its first item starts, then `running`, and ends
@@ -3513,8 +3513,8 @@ RETURN job.id, job.failed, job.total
 
 ### Entity resolution
 
-Two spellings of one thing — «Пушкин» and «А. С. Пушкин», `ACME Corp.` and
-`Acme Corporation` — become two nodes, and the facts about the thing split
+Two spellings of one thing - «Пушкин» and «А. С. Пушкин», `ACME Corp.` and
+`Acme Corporation` - become two nodes, and the facts about the thing split
 between them. Entity resolution finds such pairs, lets a person or an agent
 review them, and folds each pair into one node that remembers the other
 spelling:
@@ -3563,7 +3563,7 @@ returns one row: «Пушкин» and «А. С. Пушкин» with `nameScore` 
 `vectorScore` `null`, `score` 1.0 and the reasons
 `['name:1.00', 'shared_token:пушкин']`.
 
-`nameScore` is the Jaro–Winkler similarity of the normalised names, or a
+`nameScore` is the Jaro-Winkler similarity of the normalised names, or a
 higher one that allows for initials: a name without initials is compared
 with the other name's words without them («пушкин» and «а с пушкин» score
 1.0), and a name with initials is compared with the other name cut to
@@ -3583,7 +3583,7 @@ characters, so a reviewer sees why a pair was offered.
 | `embeddingProperty` | `null` | the property holding a node's embedding; `null` compares names only |
 | `threshold` | `0.9` | the `score` a pair needs, inclusive |
 | `nameWeight` / `vectorWeight` | `0.5` / `0.5` | how much each score counts; not both `0` |
-| `blocking` | `'prefix3'` | which pairs are compared at all: `'prefix3'` — names whose first three characters agree once initials are left out; `'token'` — names sharing a word of three or more characters; `'none'` — every pair |
+| `blocking` | `'prefix3'` | which pairs are compared at all: `'prefix3'` - names whose first three characters agree once initials are left out; `'token'` - names sharing a word of three or more characters; `'none'` - every pair |
 | `maxPairs` | `100000` | the most pairs compared; more fails with an error suggesting blocking |
 | `normalise` | `true` | `false` compares the names as they are written |
 
@@ -3604,7 +3604,7 @@ the kept one, in one transaction:
 - the kept node's properties are combined with the dropped nodes' by
   `strategy`: `'keepFirst'` (the kept node's value wins, missing ones are
   filled from the dropped nodes in order), `'newest'` (the value of the
-  most recently changed node — `updated_at`, else `created_at` — wins; the
+  most recently changed node - `updated_at`, else `created_at` - wins; the
   kept node wins a tie) or `'collect'` (differing scalar values become a
   list, the kept node's first). The name, the type, `id`, `created_at`,
   `updated_at`, `aliases` and `merged_ids` are never combined;
@@ -3634,7 +3634,7 @@ node merged and one relationship (the `WROTE` fact) moved;
 mixing both (repeats count once; an empty list changes nothing). The call
 runs once per input row, so both may come from an earlier clause. It fails,
 writing nothing, when an id is not a node, the kept node is among the
-dropped ones, or a dropped node's type differs from the kept node's — unless
+dropped ones, or a dropped node's type differs from the kept node's - unless
 the config says `force: true` (the kept node keeps its type). It needs the
 privilege to delete the dropped nodes and to create relationships and
 `:Alias` nodes, and goes through the regular write path: triggers fire,
@@ -3654,9 +3654,9 @@ There is no undo: `merged_ids` records what was folded in.
 
 `drevo.entity.aliases(name)` returns the nodes known under `name`, compared
 normalised: the nodes an `:Alias` of that name points at and the nodes
-(other than `:Alias` nodes) whose `name` it is, each with its aliases — its
+(other than `:Alias` nodes) whose `name` it is, each with its aliases - its
 `aliases` list, then the names of `:Alias` nodes pointing at it that the list
-lacks — by node id.
+lacks - by node id.
 
 ```cypher
 CALL drevo.memory.rememberEntity(null, 'Пушкин', 'PERSON', 'poet') YIELD node AS keep
@@ -3671,14 +3671,14 @@ error.
 
 The workflow is `candidates`, then a review by a person or an agent, then
 `merge`. `rememberEntity` can also resolve a new mention against known
-entities as it writes — see `resolve` under
+entities as it writes - see `resolve` under
 [Long-term memory](#long-term-memory-entities-and-facts-over-time).
 #### Context traces
 
 A context trace records what one `drevo.rag.context` call handed to the model, so
 a wrong answer can be traced to a missing fact, a bad rank or a budget cut. It is
 written when the config names a `session` (or sets `trace: true`), in the same
-statement, through the regular `CREATE` path — so it needs the `CREATE`
+statement, through the regular `CREATE` path - so it needs the `CREATE`
 privilege, fires triggers, shows on `/events` and lands in the log like any other
 write:
 
@@ -3706,7 +3706,7 @@ RETURN text, traceId
 | `format`, `tokenizer`, `tokens`, `tokenBudget`, `truncated`, `mode`, `hops`, `rank` | as in the call and its row; `mode` is the search mode that ran |
 | `seedCount`, `nodeCount`, `relCount` | the seeds found, and the nodes and relationships written into `text` |
 | `durationMs` | how long retrieval and writing the text took, without recording the trace |
-| `config` | the effective config as JSON — every key with its value or default, except `session` and `trace` |
+| `config` | the effective config as JSON - every key with its value or default, except `session` and `trace` |
 
 `INCLUDED` goes to each node written into `text`, ranked from 1 in the order
 written, with what ranked it (`seedScore` and `pprScore` are absent when they do
@@ -3727,15 +3727,15 @@ CALL drevo.rag.replay(traceId) YIELD text, tokens, changed
 CALL drevo.rag.pruneTraces(olderThan) YIELD deleted
 ```
 
-- `drevo.rag.traces` — the newest `limit` traces of `session`, newest first;
+- `drevo.rag.traces` - the newest `limit` traces of `session`, newest first;
   `null` lists every session's.
-- `drevo.rag.explain` — one row per node of the trace, by `rank`: `status` is
+- `drevo.rag.explain` - one row per node of the trace, by `rank`: `status` is
   `'included'` or `'skipped'`; `distance`, `seedScore`, `pprScore` and `tokens`
   are set for included nodes, `reason` for skipped ones.
-- `drevo.rag.replay` — runs the trace's question with its stored config against
+- `drevo.rag.replay` - runs the trace's question with its stored config against
   the graph as it is now and returns the new text, its tokens, and whether it
   differs from the recorded text. It records no trace.
-- `drevo.rag.pruneTraces` — deletes the traces created before `olderThan` (a UTC
+- `drevo.rag.pruneTraces` - deletes the traces created before `olderThan` (a UTC
   date `'2025-01-01'` or timestamp `'2025-01-01T00:00:00Z'`) with their
   relationships, and returns how many; the nodes they pointed at stay. It needs
   `EXECUTE ADMIN PROCEDURES`. `DREVO_RAG_TRACE_RETENTION_DAYS` runs it at
@@ -3765,7 +3765,7 @@ the argument.
 #### Evaluate strategies
 
 `drevo.rag.evaluate` scores how well each way of retrieving a context does on a
-gold set — questions and the nodes their context should hold — so you can see
+gold set - questions and the nodes their context should hold - so you can see
 whether expanding through the graph helps on your data. `drevo.rag.evaluateSummary`
 averages the scores per strategy. Both only read: the pipeline runs without a
 session, so no trace is recorded.
@@ -3782,10 +3782,10 @@ YIELD strategy, questions, hitRate, meanRecall, meanPrecision, mrr, p50Ms, p95Ms
 
 `questions` is a list of maps, one per question:
 
-- `{query, expected}` — `expected` lists the nodes the context should hold, each
+- `{query, expected}` - `expected` lists the nodes the context should hold, each
   a node id or a `{name, label}` map naming the node whose `name` or `title`
   property is exactly `name` (and that carries `label`, when given);
-- `{query, traceId}` — scored against the nodes that [context
+- `{query, traceId}` - scored against the nodes that [context
   trace](#context-traces) `INCLUDED`; without `query` the trace's own question
   is asked.
 
@@ -3799,18 +3799,18 @@ YIELD strategy, hitRate, meanRecall, meanPrecision, mrr, p95Ms, meanTokens
 RETURN strategy, hitRate, meanRecall, meanPrecision, mrr, p95Ms, meanTokens
 ```
 
-`config` takes every key of the [`drevo.rag.context` config](#graph-rag-retrieval)
-— `k`, `hops`, `tokenBudget`, `label` and `embeddingProperty` are the usual
-ones — shared by all strategies, plus `strategies`, a list of:
+`config` takes every key of the [`drevo.rag.context` config](#graph-rag-retrieval) -
+`k`, `hops`, `tokenBudget`, `label` and `embeddingProperty` are the usual
+ones - shared by all strategies, plus `strategies`, a list of:
 
 | Strategy | Context |
 |---|---|
-| `'vector'` | the `k` nodes of `label` closest to the question by `embeddingProperty`, as `drevo.semantic.query` ranks them — the baseline. Needs a `label` and a server-side embedder |
+| `'vector'` | the `k` nodes of `label` closest to the question by `embeddingProperty`, as `drevo.semantic.query` ranks them - the baseline. Needs a `label` and a server-side embedder |
 | `'fts'` | the `k` best BM25 matches |
 | `'hybrid'` | the `k` hits of `drevo.search.hybrid` (in the config's `mode`) |
 | `'hybrid+expand'` | those hits, then their neighbourhood within `hops`, nearest first (`rank: 'distance'`) |
 | `'rag'` | the full `drevo.rag.context` pipeline, ranked by Personalized PageRank (`rank: 'ppr'`) |
-| `'rag-global'` | the same pipeline in the global scope (`scope: 'global'`, the config's `communityLayer`): the communities best matching the question, then their members. Needs community summaries in that layer — run [`drevo.community.summarize`](#communities) first |
+| `'rag-global'` | the same pipeline in the global scope (`scope: 'global'`, the config's `communityLayer`): the communities best matching the question, then their members. Needs community summaries in that layer - run [`drevo.community.summarize`](#communities) first |
 
 The default is every strategy this server can run with the config: `'fts'`,
 `'hybrid'`, `'hybrid+expand'` and `'rag'`, with `'vector'` first when there is
@@ -3819,7 +3819,7 @@ an embedder and a `label`, and `'rag-global'` last when `communityLayer`
 scope, whatever `scope` the config gives, so the two compare local against
 global retrieval on one gold set. Every strategy writes its nodes as
 `drevo.rag.context` would, within the same `tokenBudget`, and is scored on what
-fits — what the model would see:
+fits - what the model would see:
 
 | Column | Meaning |
 |---|---|
@@ -3829,7 +3829,7 @@ fits — what the model would see:
 | `recall` | the share of the expected nodes the context held |
 | `precision` | the share of the context's nodes that were expected (`0.0` for an empty context) |
 | `mrr` | `1 / rank` of the first expected node in the context, `0.0` when none is there |
-| `tokens` | the size of the context — never more than `tokenBudget` |
+| `tokens` | the size of the context - never more than `tokenBudget` |
 | `durationMs` | how long retrieving and writing it took, measured as a trace's `durationMs` |
 | `nodeIds` | the ids of the nodes in the context, in the order written |
 | `recallRetrieved` | the share of the expected nodes retrieved at all, before the budget: `recallRetrieved − recall` is what the budget cut |
@@ -3840,11 +3840,11 @@ Rows come per question, in order, then per strategy, in the config's order.
 and `p95Ms` the percentiles of `durationMs` (interpolated between the two
 nearest values), and `meanTokens`. No questions give no rows.
 
-An expected node that does not resolve — an id that is not a node, a `{name,
-label}` nothing matches — fails the call with every such entry listed
+An expected node that does not resolve - an id that is not a node, a `{name,
+label}` nothing matches - fails the call with every such entry listed
 (`2 expected nodes not found: questions[0].expected[1] {name: 'Fix', label:
-'Commit'}, …`); a `{name}` that matches several nodes — by `name` on one and
-`title` on another, say — fails listing their ids. An
+'Commit'}, …`); a `{name}` that matches several nodes - by `name` on one and
+`title` on another, say - fails listing their ids. An
 unknown `traceId`, an unknown strategy, `'rag-global'` when `communityLayer`
 holds no community (the error says to run `drevo.community.summarize` first),
 `'vector'` without a `label` or an embedder, a `session` or `trace: true` (an evaluation records
@@ -3881,19 +3881,19 @@ RETURN 'drevo' || ' ' || 'graph' AS name, [1, 2] || [3] AS list
 
 Lists and maps support element access with `[]`.
 
-- **List index** `xs[i]` — zero-based. A **negative** index counts from the end
+- **List index** `xs[i]` - zero-based. A **negative** index counts from the end
   (`xs[-1]` is the last element). An **out-of-range** index yields `null` rather
   than an error, so a speculative lookup over a short list is simply absent. The
   index must be an integer.
-- **Map / node / relationship index** `m['key']` — equivalent to property access
+- **Map / node / relationship index** `m['key']` - equivalent to property access
   (`m.key`); an absent key yields `null`. The key must be a string.
-- **List slice** `xs[from..to]` — `from`-inclusive, `to`-exclusive, zero-based,
+- **List slice** `xs[from..to]` - `from`-inclusive, `to`-exclusive, zero-based,
   with negative bounds counting from the end and every bound clamped into range.
   Either bound may be omitted: `xs[..n]`, `xs[n..]`, `xs[..]`.
 
 `null` propagates: a `null` base, a `null` index, or a `null` slice bound makes
-the whole expression `null`. Misuse — a non-integer list index, a non-string map
-key, or indexing/slicing a scalar — is an `ExecError::TypeMismatch`.
+the whole expression `null`. Misuse - a non-integer list index, a non-string map
+key, or indexing/slicing a scalar - is an `ExecError::TypeMismatch`.
 
 ```cypher
 RETURN [10, 20, 30][1] AS second, [10, 20, 30][-1] AS last, range(1, 5)[1..3] AS middle
@@ -3912,7 +3912,7 @@ in place.
 Each element of `list` is bound to `var` in a child scope, the optional `WHERE`
 `predicate` keeps the elements for which it holds, and the optional `| projection`
 is collected for each survivor (when there is no `| projection`, the element
-itself is kept). At least one of `WHERE` / `|` must be present — without either,
+itself is kept). At least one of `WHERE` / `|` must be present - without either,
 `[…]` is an ordinary [list literal](#literals).
 
 ```cypher
@@ -3921,20 +3921,20 @@ RETURN [x IN [1, 2, 3, 4, 5] WHERE x % 2 = 0 | x * x] AS even_squares
 
 Semantics:
 
-- **Scope** — `var` shadows any outer binding of the same name *only inside* the
+- **Scope** - `var` shadows any outer binding of the same name *only inside* the
   comprehension; the projection may freely reference outer bindings alongside
   `var` (`[x IN xs | x + base]`).
-- **`null` list** — a `null` source (most often a node missing the property)
+- **`null` list** - a `null` source (most often a node missing the property)
   makes the whole comprehension `null`, so a heterogeneous scan does not abort
   (mirrors `UNWIND` / `IN`).
-- **Three-valued filter** — a `predicate` that is `false` *or* `null` drops the
+- **Three-valued filter** - a `predicate` that is `false` *or* `null` drops the
   element; a non-boolean predicate is an `ExecError::TypeMismatch`.
-- **Type** — a non-list source is an `ExecError::TypeMismatch`; element order is
+- **Type** - a non-list source is an `ExecError::TypeMismatch`; element order is
   preserved.
 - **Aggregations** are not allowed inside a comprehension (the loop variable is
   per-element, not per-group); use `collect` / `UNWIND` for that.
 
-Comprehensions compose everywhere an expression does — over a node's list
+Comprehensions compose everywhere an expression does - over a node's list
 property, feeding `size(...)`, inside `WHERE … IN […]`, nested, or alongside an
 aggregation in the same `RETURN`:
 
@@ -3948,8 +3948,8 @@ RETURN size([x IN range(1, 10) WHERE x % 3 = 0]) AS multiples_of_three
 
 The **list predicate functions** `all`, `any`, `none`, and `single` collapse a
 list into a single boolean by folding a predicate across its elements. They take
-the same `var IN list WHERE predicate` form as a [list comprehension](#list-comprehensions)
-— but the `WHERE` is **mandatory** and there is no `| projection`, because the
+the same `var IN list WHERE predicate` form as a [list comprehension](#list-comprehensions) -
+but the `WHERE` is **mandatory** and there is no `| projection`, because the
 result is a truth value rather than a list. They are the idiomatic way to filter
 rows by a *collection* property:
 
@@ -3966,23 +3966,23 @@ RETURN all(x IN [2, 4, 6] WHERE x % 2 = 0) AS every_even
 
 Semantics:
 
-- **Scope** — each element is bound to `var` in a child scope; the predicate may
+- **Scope** - each element is bound to `var` in a child scope; the predicate may
   reference outer bindings alongside `var` (`all(x IN xs WHERE x > base)`).
-- **`null` list** — a `null` source (most often a node missing the property)
+- **`null` list** - a `null` source (most often a node missing the property)
   makes the whole predicate `null` (mirrors `UNWIND` / `IN` / list comprehension),
   so a heterogeneous scan does not abort.
-- **Three-valued logic** — a `null` predicate result is *unknown*, not `false`,
+- **Three-valued logic** - a `null` predicate result is *unknown*, not `false`,
   and folds accordingly: `all` is `null` when no element is `false` but some is
   unknown; `any` is `null` when no element is `true` but some is unknown; `none`
   is the negation of `any`; `single` is `null` when an unknown could change the
   match count. A definite `false` (for `all`) or `true` (for `any`) short-circuits
   regardless of any unknown.
-- **Type** — a non-list source, or a non-boolean predicate, is an
+- **Type** - a non-list source, or a non-boolean predicate, is an
   `ExecError::TypeMismatch`.
 - **Aggregations** are not allowed inside the predicate (the loop variable is
   per-element, not per-group).
 
-They compose anywhere an expression does — most often a `WHERE` over a node's
+They compose anywhere an expression does - most often a `WHERE` over a node's
 list property:
 
 ```cypher
@@ -3997,7 +3997,7 @@ RETURN single(x IN [1, 2, 3, 4] WHERE x % 2 = 0) AS exactly_one_even
 value. It is the third member of the list-expression family: where a
 [list comprehension](#list-comprehensions) maps a list to a list and a
 [list predicate](#list-predicate-functions) collapses a list to a boolean,
-`reduce` collapses a list to an *arbitrary* value — a sum, a product, a running
+`reduce` collapses a list to an *arbitrary* value - a sum, a product, a running
 maximum, a concatenated string.
 
 The seed `init` is evaluated once in the current scope to prime `accumulator`.
@@ -4011,20 +4011,20 @@ RETURN reduce(total = 0, n IN [1, 2, 3, 4] | total + n) AS sum
 
 Semantics:
 
-- **Left fold** — elements are folded left to right, so a non-commutative `expr`
+- **Left fold** - elements are folded left to right, so a non-commutative `expr`
   (e.g. string concatenation) sees them in list order.
-- **Empty list** — yields the seed unchanged.
-- **Scope** — both `accumulator` and `var` shadow any outer binding of the same
+- **Empty list** - yields the seed unchanged.
+- **Scope** - both `accumulator` and `var` shadow any outer binding of the same
   name *only inside* the fold; `expr` may freely reference outer bindings
   alongside them.
-- **`null` list** — a `null` source makes the whole `reduce` `null` (mirrors
+- **`null` list** - a `null` source makes the whole `reduce` `null` (mirrors
   `UNWIND` / `IN` / the comprehension and predicate forms). A `null` produced by
   `expr` simply becomes the accumulator and folds onward.
-- **Type** — a non-list source is an `ExecError::TypeMismatch`.
+- **Type** - a non-list source is an `ExecError::TypeMismatch`.
 - **Aggregations** are not allowed inside `reduce` (the loop variable is
   per-element, not per-group); use `collect` / `UNWIND` for that.
 
-A common shape is folding a `collect`ed property list — for example summing
+A common shape is folding a `collect`ed property list - for example summing
 line-item subtotals into an order total:
 
 ```cypher
@@ -4036,7 +4036,7 @@ RETURN reduce(toc = 'Chapters:', t IN ['Dawn', 'Noon', 'Dusk'] | toc + ' ' + t) 
 ## Map projection
 
 A map projection `base { selector, … }` builds a new map by projecting selected
-entries off `base` — a node, a relationship, or a map value. It is the shaping
+entries off `base` - a node, a relationship, or a map value. It is the shaping
 idiom for returning a tailored record per row without naming every property by
 hand:
 
@@ -4047,12 +4047,12 @@ RETURN t {.title, .priority, kind: 'work-item'} AS card
 
 Four selector forms compose in any mix:
 
-- **`.key`** — copy property `key` from the base. An absent property projects to
+- **`.key`** - copy property `key` from the base. An absent property projects to
   `null` (never an error).
-- **`.*`** — copy *every* property of the base.
-- **`key: expr`** — a computed entry; `expr` is evaluated in the current row, so
+- **`.*`** - copy *every* property of the base.
+- **`key: expr`** - a computed entry; `expr` is evaluated in the current row, so
   it can reference any in-scope variable (`subtotal: l.qty * l.unit_price`).
-- **`var`** — shorthand for `var: var`, the in-scope variable `var`.
+- **`var`** - shorthand for `var: var`, the in-scope variable `var`.
 
 ```cypher
 MATCH (l:Line)
@@ -4061,17 +4061,17 @@ RETURN l {.sku, .qty, subtotal: l.qty * l.unit_price, currency: 'USD'} AS line
 
 Semantics:
 
-- **Source order** — selectors apply left to right into a sorted map, so a later
+- **Source order** - selectors apply left to right into a sorted map, so a later
   selector *overwrites* an earlier entry with the same key.
-- **`null` base** — a `null` base makes the whole projection `null`, so projecting
+- **`null` base** - a `null` base makes the whole projection `null`, so projecting
   an unmatched [`OPTIONAL MATCH`](#optional-match) variable is `null` rather than
   an error.
-- **Type** — a scalar (non-map, non-entity) base is an `ExecError::TypeMismatch`.
-- **As a group key** — a map projection that contains no aggregation is an
+- **Type** - a scalar (non-map, non-entity) base is an `ExecError::TypeMismatch`.
+- **As a group key** - a map projection that contains no aggregation is an
   ordinary grouping expression, so `RETURN n {.category} AS k, count(*)` groups by
   the projected map.
 
-A map projection composes anywhere an expression is allowed — including inside
+A map projection composes anywhere an expression is allowed - including inside
 `collect`, which gathers one projected record per row:
 
 ```cypher
@@ -4087,7 +4087,7 @@ A pattern comprehension `[ pattern WHERE predicate | projection ]` builds a list
 by matching a graph `pattern` relative to the current row and projecting an
 expression over each match. Where a [list comprehension](#list-comprehensions)
 shapes a list you already have, a pattern comprehension shapes a list straight
-off the graph — gathering a per-row collection without a second `MATCH`:
+off the graph - gathering a per-row collection without a second `MATCH`:
 
 ```cypher
 MATCH (p:Person)
@@ -4095,8 +4095,8 @@ RETURN p.name AS name, [(p)-[:KNOWS]->(f) | f.name] AS friends
 ```
 
 The `pattern` is an ordinary path with at least one relationship. It is
-**anchored** on whatever variables the surrounding query has already bound — `p`
-above — so each row only sees its own matches. Both the optional `WHERE` and the
+**anchored** on whatever variables the surrounding query has already bound - `p`
+above - so each row only sees its own matches. Both the optional `WHERE` and the
 mandatory `| projection` are evaluated in each match's binding scope, so they can
 reference the freshly bound pattern variables (`f`, and a relationship variable
 when present):
@@ -4108,16 +4108,16 @@ RETURN [(a)-[t:TRANSFER]->(b) WHERE t.amount > 100 | b.id] AS large_payees
 
 Semantics:
 
-- **Anchored & per-row** — the pattern extends the current row, exactly like the
+- **Anchored & per-row** - the pattern extends the current row, exactly like the
   same pattern in a `MATCH` would; it never reaches rows from other groups.
-- **No match → empty list** — a pattern that matches nothing yields `[]`, never
+- **No match → empty list** - a pattern that matches nothing yields `[]`, never
   `null`. Match order (and duplicates, e.g. parallel edges) is preserved.
-- **`WHERE`** — filters matches under three-valued logic (`true` keeps,
+- **`WHERE`** - filters matches under three-valued logic (`true` keeps,
   `false`/`null` drops); a non-boolean predicate is an `ExecError::TypeMismatch`.
-- **`null` anchor** — if the head variable is already bound to `null` (an
+- **`null` anchor** - if the head variable is already bound to `null` (an
   unmatched [`OPTIONAL MATCH`](#optional-match) node), the comprehension is `[]`
   rather than an error.
-- **As a group key** — a pattern comprehension contains no aggregation, so it is
+- **As a group key** - a pattern comprehension contains no aggregation, so it is
   an ordinary grouping expression alongside `count(*)` / `sum(...)`.
 
 The `projection` is any expression, so a pattern comprehension composes with
@@ -4133,7 +4133,7 @@ RETURN [(o)-[c:CONTAINS]->(i) | i {.sku, qty: c.qty}] AS lines
 ## Pattern predicate
 
 A **pattern predicate** is a path pattern `(a)-[:R]->(b)` used in a boolean
-position — a `WHERE` filter, a `RETURN` column, or any expression slot. It tests
+position - a `WHERE` filter, a `RETURN` column, or any expression slot. It tests
 whether **at least one** match of the pattern exists relative to the current row.
 Where a [pattern comprehension](#pattern-comprehension) *shapes a list* off the
 graph, a pattern predicate *tests existence* of one:
@@ -4146,7 +4146,7 @@ RETURN p.name
 
 Like a comprehension's pattern, it is **anchored** on the variables already bound
 (`p` above), so each row only tests its own neighbourhood. Variables the pattern
-introduces are scoped to the predicate — they are not exported to the row. The
+introduces are scoped to the predicate - they are not exported to the row. The
 pattern can constrain by relationship type, by the target's label, and span
 multiple hops:
 
@@ -4166,14 +4166,14 @@ RETURN b.id AS id, NOT (b)-[:ASSIGNED_TO]->() AS unassigned
 
 Semantics:
 
-- **Existence test** — `true` as soon as one match exists; the matches are
+- **Existence test** - `true` as soon as one match exists; the matches are
   discarded (only their existence matters).
-- **Anchored & per-row** — the pattern extends the current row, exactly like the
+- **Anchored & per-row** - the pattern extends the current row, exactly like the
   same pattern in a `MATCH` would.
-- **`null` anchor** — if the head variable is already bound to `null` (an
+- **`null` anchor** - if the head variable is already bound to `null` (an
   unmatched [`OPTIONAL MATCH`](#optional-match) node), the predicate is `null`
-  under three-valued logic — so a `WHERE` drops the row — rather than an error.
-- **Grouping is unaffected** — only a path with at least one relationship is a
+  under three-valued logic - so a `WHERE` drops the row - rather than an error.
+- **Grouping is unaffected** - only a path with at least one relationship is a
   predicate; a bare parenthesised expression (`(a.age + 1)`, `(1 + 2) * 3`,
   `(a).name`) is still ordinary grouping.
 
@@ -4189,7 +4189,7 @@ the current row, with three additions the braces make possible:
 - an optional leading `MATCH` keyword (`EXISTS { MATCH (a)-->(b) }` is equivalent
   to `EXISTS { (a)-->(b) }`),
 - an optional inner `WHERE` that filters the matches *before* the existence test,
-- a **bare node** is legal — because the braces delimit the pattern, there is no
+- a **bare node** is legal - because the braces delimit the pattern, there is no
   grouping ambiguity to resolve, so `EXISTS { (n) }` is a subquery (a bare `(n)`
   in expression position would be grouping).
 
@@ -4211,14 +4211,14 @@ RETURN c.name
 
 Semantics:
 
-- **Existence test** — `true` as soon as one match survives the optional inner
+- **Existence test** - `true` as soon as one match survives the optional inner
   `WHERE`; the matches are otherwise discarded.
-- **`null` anchor** — if the head variable is already bound to `null` (an
+- **`null` anchor** - if the head variable is already bound to `null` (an
   unmatched [`OPTIONAL MATCH`](#optional-match) node), the subquery is `null`
   under three-valued logic rather than an error.
 - **Function form** - `exists(pattern)` is the same test written as a function:
   `WHERE exists((c)-[:PLACED]->(:Order))`. The form `exists(n.prop)`, which Neo4j 5
-  removed, is not accepted; use `n.prop IS NOT NULL` (see [WHERE](#filtering--where)).
+  removed, is not accepted; use `n.prop IS NOT NULL` (see [WHERE](#filtering---where)).
 
 ---
 
@@ -4229,10 +4229,10 @@ integer-valued sibling of the [EXISTS subquery](#exists-subquery): where
 `EXISTS { p }` tests whether **at least one** match exists, `COUNT { p }` returns
 **how many** there are. `COUNT { p } > 0` is exactly `EXISTS { p }`.
 
-It shares the EXISTS subquery's surface — the braces disambiguate the pattern
+It shares the EXISTS subquery's surface - the braces disambiguate the pattern
 from a grouped expression, an optional leading `MATCH` keyword is accepted, an
 optional inner `WHERE` filters the matches before they are counted, and a bare
-node `COUNT { (n) }` is legal — but it can be used anywhere an integer is
+node `COUNT { (n) }` is legal - but it can be used anywhere an integer is
 expected: a `WHERE` comparison, a `RETURN` column, `ORDER BY`, or arithmetic.
 
 ```cypher
@@ -4249,15 +4249,15 @@ RETURN t.title
 
 Semantics:
 
-- **Match count** — the number of matches of the pattern that survive the
+- **Match count** - the number of matches of the pattern that survive the
   optional inner `WHERE`, anchored on the variables already bound (each row
   counts only its own matches); the subquery-introduced variables stay scoped to
   the subquery. No match yields `0`, never `null`.
-- **`null` anchor** — if the head variable is already bound to `null` (an
+- **`null` anchor** - if the head variable is already bound to `null` (an
   unmatched [`OPTIONAL MATCH`](#optional-match) node), the subquery is `null`
   under three-valued logic rather than an error (so it is distinct from an
   honest `0`).
-- **Not the `count(*)` aggregation** — a counting subquery is a per-row scalar (a
+- **Not the `count(*)` aggregation** - a counting subquery is a per-row scalar (a
   group key), not a fold over the result rows. `count(*)` / `count(expr)` keep
   their [aggregation](#aggregations) meaning; the two can coexist in one query.
 
@@ -4398,8 +4398,8 @@ error rather than a crash or a silent wrong answer.
 
 | Construct | Status |
 |-----------|--------|
-| User-defined / `apoc.*` / `gds.*` procedures | only the built-in `db.*` introspection procedures exist — see [CALL](#call) |
-| Variable-length paths in `CREATE` | executor returns `Unsupported` (semantically meaningless — how many edges?) |
+| User-defined / `apoc.*` / `gds.*` procedures | only the built-in `db.*` introspection procedures exist - see [CALL](#call) |
+| Variable-length paths in `CREATE` | executor returns `Unsupported` (semantically meaningless - how many edges?) |
 | `CALL { ... } IN TRANSACTIONS` | parsed; the executor returns `Unsupported`. A [CALL subquery](#call-subquery) runs in the statement's transaction |
 
 When you need one of these today, express the intent through the [Rust](sdk-reference.md#rust-api)

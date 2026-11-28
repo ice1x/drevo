@@ -40,7 +40,7 @@ fn edge(engine: &impl GraphEngine, from: u64, to: u64) {
 
 /// Cycle {0,1}, cycle {2,3}, a one-way bridge 1 -> 2, and an isolated node 4.
 /// Three strongly connected components: {0,1}, {2,3}, {4}. Note that as a
-/// *weak* graph this is only two components — the directed bridge makes the
+/// *weak* graph this is only two components - the directed bridge makes the
 /// difference SCC captures.
 fn three_sccs<E: GraphEngine>(engine: &E) -> Vec<u64> {
     let ids: Vec<u64> = (0..5).map(|i| node(engine, &format!("n{i}"))).collect();

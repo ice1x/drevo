@@ -1,4 +1,4 @@
-# Nightly criterion benchmark workflow — scheduled, NEVER triggered
+# Nightly criterion benchmark workflow - scheduled, NEVER triggered
 # by PR or push.
 #
 # Why this file exists
@@ -15,7 +15,7 @@
 #   …
 #
 # A full `cargo bench --all-features` at criterion's default sample size
-# took ~150-175 min in practice (not the ~1h once assumed) — see the
+# took ~150-175 min in practice (not the ~1h once assumed) - see the
 # `--sample-size 20` + `timeout-minutes` in the job below, which bound it.
 # Running benches on every PR was the root cause of the four-hour CI
 # debacle on PR #76. PR #77 fixed PR-gating CI by removing benches
@@ -25,11 +25,11 @@
 #
 # Triggers
 # --------
-#   * `schedule: cron '0 4 * * *'` — every day at 04:00 UTC. UTC, not
+#   * `schedule: cron '0 4 * * *'` - every day at 04:00 UTC. UTC, not
 #     local: GitHub Actions cron is always UTC. Pick a time when the
 #     self-hosted runner is otherwise idle. 04:00 UTC = 06:00 CET /
 #     20:00 PST / 07:00 MSK; no overlap with typical PR activity.
-#   * `workflow_dispatch:` — run on demand from the Actions UI. Use
+#   * `workflow_dispatch:` - run on demand from the Actions UI. Use
 #     this before/after touching perf-sensitive code (`src/fts/**`,
 #     `src/storage/**`, `src/traversal.rs`) to spot regressions
 #     before nightly.
@@ -39,7 +39,7 @@
 #
 # Runner
 # ------
-# `self-hosted`. Benchmark numbers MUST come from a stable host —
+# `self-hosted`. Benchmark numbers MUST come from a stable host -
 # GitHub-hosted ubuntu-24.04 VMs are ephemeral with variable
 # neighbour load, so timings would be noise-dominated. The Apple
 # Silicon self-hosted runner already handles cargo-fuzz and Docker
@@ -60,7 +60,7 @@ name: Bench
 on:
   schedule:
     # 04:00 UTC daily. GitHub schedules can be late by 15-30 min
-    # under load — that's acceptable; we're not racing anyone.
+    # under load - that's acceptable; we're not racing anyone.
     - cron: '0 4 * * *'
   workflow_dispatch:
 
@@ -83,32 +83,32 @@ jobs:
     runs-on: ubuntu-24.04
     # Hard cap so a scheduled bench can never squat the single
     # self-hosted runner for hours. Before this, a full run took
-    # ~150-175 min every night (one run hit 359 min — one minute from
+    # ~150-175 min every night (one run hit 359 min - one minute from
     # GitHub's 360-min default kill), monopolising the only runner from
     # 04:00 well into working hours. Combined with the reduced criterion
     # `--sample-size` below (which brings a normal run comfortably under
     # this cap), 90 min is generous headroom for the real work while
     # bounding any pathological hang. Mirrors `slow-tests.yml`.
     timeout-minutes: 90
-    # Do NOT block the workflow on a single regressed bench — let
+    # Do NOT block the workflow on a single regressed bench - let
     # all four bench crates run, surface failures as annotations,
     # and capture the criterion HTML so a human can triage.
     continue-on-error: true
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
         run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # No Swatinem — job-level `CARGO_TARGET_DIR` above persists
+      # No Swatinem - job-level `CARGO_TARGET_DIR` above persists
       # target/ on local disk; the GHA-cache restore would replace
       # fresher local state with an older snapshot.
 
@@ -129,7 +129,7 @@ jobs:
         run: cargo bench --all-features --no-fail-fast -- --sample-size 20
 
       - name: Upload criterion reports
-        # Always upload — even on partial failure we want the
+        # Always upload - even on partial failure we want the
         # criterion HTML for the benches that did complete.
         #
         # The path MUST track `CARGO_TARGET_DIR` (set above to
@@ -138,7 +138,7 @@ jobs:
         # `$CARGO_TARGET_DIR/criterion/`; the old `path: target/criterion/`
         # pointed at a directory that never exists under the redirected
         # target dir, so every run logged "No files were found … target/
-        # criterion/" and uploaded an EMPTY artifact — the benchmark data
+        # criterion/" and uploaded an EMPTY artifact - the benchmark data
         # was generated but never published.
         if: always()
         uses: actions/upload-artifact@v4

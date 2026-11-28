@@ -1,9 +1,9 @@
-//! End-to-end Cypher pattern-comprehension tests — Phase 10 follow-up task `00150`.
+//! End-to-end Cypher pattern-comprehension tests - Phase 10 follow-up task `00150`.
 //!
 //! A pattern comprehension `[ pattern WHERE pred | projection ]` builds a list
 //! by matching `pattern` (a path with at least one relationship) relative to
-//! the current row — anchored on any variables the surrounding query has
-//! already bound — keeping the matches for which `pred` holds (when present),
+//! the current row - anchored on any variables the surrounding query has
+//! already bound - keeping the matches for which `pred` holds (when present),
 //! and collecting `projection` over each survivor. It is the shaping idiom for
 //! gathering a per-row list off the graph without a second `MATCH`:
 //! `RETURN p, [(p)-[:KNOWS]->(f) | f.name] AS friends`.
@@ -66,7 +66,7 @@ fn one_list(rows: &[Vec<Value>]) -> Vec<Value> {
     }
 }
 
-/// The string elements of a list, lexicographically sorted — for assertions
+/// The string elements of a list, lexicographically sorted - for assertions
 /// that do not care about match order.
 fn sorted_strings(items: &[Value]) -> Vec<String> {
     let mut out: Vec<String> = items

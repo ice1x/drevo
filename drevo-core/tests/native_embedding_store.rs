@@ -1,8 +1,8 @@
-//! Durable native embedding store (issue #446, epic #444) — Rust tests against
+//! Durable native embedding store (issue #446, epic #444) - Rust tests against
 //! the `drevo-core` [`NativeGraph`] seam.
 //!
 //! The native counterpart of the KV `vec:` keyspace: set/get/delete/count/batch
-//! with node-existence validation, and — the point of "durable" — embeddings
+//! with node-existence validation, and - the point of "durable" - embeddings
 //! survive a reopen (WAL recovery) and a compaction.
 
 use std::fs;
@@ -112,7 +112,7 @@ fn embeddings_survive_a_reopen() {
         g.set_embedding(a, vec![1.0, 2.0]).unwrap();
         g.set_embedding(b, vec![3.0, 4.0]).unwrap();
         g.delete_embedding(b).unwrap(); // a delete must also be durable
-    } // drop without explicit close — simulate a crash after the acks
+    } // drop without explicit close - simulate a crash after the acks
 
     let g = NativeGraph::open_durable(&path).unwrap();
     assert_eq!(g.embedding_count(), 1);

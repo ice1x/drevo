@@ -5,14 +5,14 @@ name: CI
 # Docs-only handling: the `changes` job below detects whether the push /
 # PR touches anything beyond docs (**/*.md, audit/**, memory/**, LICENSE,
 # .gitignore). Every gated job runs its real work UNLESS the change is
-# docs-only, in which case the job is skipped — and a skipped required
+# docs-only, in which case the job is skipped - and a skipped required
 # check counts as success for branch protection, so a docs-only PR merges
 # without a Rust build.
 #
 # Why not the old `paths-ignore` + paired `ci-skip.yml`: that two-workflow
 # design (both `name: CI`) had each workflow emit the same `CI / <Job>`
 # contexts. On the single self-hosted runner their jobs interleaved, so
-# whichever reported last won the context — the skip workflow's trivial
+# whichever reported last won the context - the skip workflow's trivial
 # green could mask a failed/cancelled real run (regression 2026-06-29:
 # real Test timed out, PR still showed green), and a fail-closed variant
 # instead non-deterministically BLOCKED a passing PR (2026-06-30). One
@@ -30,11 +30,11 @@ on:
 # Cancel an in-flight CI run when a newer commit lands on the same PR /
 # branch. Without this, every rapid-fire push stacks into the self-hosted
 # runner queue and a PR ends up waiting on stale runs for its own
-# previous commits — root cause of the multi-hour CI latency seen on
+# previous commits - root cause of the multi-hour CI latency seen on
 # PRs #75 and #76. The grouping key includes the workflow name so other
 # workflows (Docker Publish, Cross-compile) keep their own queues.
 # The group key is hard-coded `ci-real` (not `${{ github.workflow }}`)
-# for historical reasons — when ci-skip.yml still existed both files were
+# for historical reasons - when ci-skip.yml still existed both files were
 # `name: CI`, so `github.workflow` collapsed their queues. ci-skip.yml is
 # gone now, but a literal key is still the clearest contract. The
 # invariant is tested in `tests/ci_self_hosted_runner_tests.rs`.
@@ -60,15 +60,15 @@ env:
   # silently revert them.
   CARGO_BUILD_JOBS: "8"
   # NOTE: `CARGO_TARGET_DIR` is set by a setup step inside each
-  # compile-heavy job below — `echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE
+  # compile-heavy job below - `echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE
   # /drevo-cargo-target" >> $GITHUB_ENV`. GHA's `runner.*` expression
-  # context is ONLY available at step level — putting `${{ runner.tool_cache }}`
+  # context is ONLY available at step level - putting `${{ runner.tool_cache }}`
   # in either workflow-level `env:` OR job-level `env:` makes GitHub
   # reject the whole workflow with a generic "workflow file issue"
   # error (run shows under the file path instead of `name: CI`, no
   # jobs run, no logs). The first revision of this caching change
   # made the workflow-level mistake; commit 0872954 moved it to
-  # job-level (still wrong — `runner.*` is unavailable there too);
+  # job-level (still wrong - `runner.*` is unavailable there too);
   # this revision moves it into a setup step that reads the always-
   # set `$RUNNER_TOOL_CACHE` shell env var. Locked by
   # `tests/ci_self_hosted_runner_tests.rs::ci_workflows_dont_use_runner_context_outside_steps`.
@@ -79,18 +79,18 @@ jobs:
   # the prior ubuntu-latest experiment (PR #76 → reverted in this
   # workflow) blew through that quota in a single afternoon and
   # left the repo unable to dispatch any GitHub-hosted job (UI saw
-  # "fail after 2s" with no step logs — runners simply never came
+  # "fail after 2s" with no step logs - runners simply never came
   # online). The self-hosted Apple Silicon runner has no such cap.
   #
   # The original speed problem that motivated PR #76 was NOT the
-  # runner — it was criterion benchmarks running inside the `test`
+  # runner - it was criterion benchmarks running inside the `test`
   # job (`bulk_put_100k/RedbBackend` ≈ 530s and friends). PR #77
   # removed those by dropping `--all-targets` from the nextest
   # invocation; on self-hosted with that fix in place the `test`
   # job finishes in ~5-10 minutes, well within an acceptable PR
-  # latency envelope. Three other PR #76 wins — `concurrency:
+  # latency envelope. Three other PR #76 wins - `concurrency:
   # cancel-in-progress`, `cargo nextest`, and the docs-only
-  # `paths-ignore` + paired `ci-skip.yml` — are kept, since none
+  # `paths-ignore` + paired `ci-skip.yml` - are kept, since none
   # of them depended on the runner choice.
 
   # Docs-only detector. Output `code` is 'false' ONLY when every changed
@@ -98,7 +98,7 @@ jobs:
   # .gitignore); otherwise 'true'. Every gated job below runs unless
   # `code == 'false'`, so any detection failure or unresolvable range
   # FAILS SAFE toward running the full suite (never toward a silent skip).
-  # This job is NOT a required branch-protection check — only the build
+  # This job is NOT a required branch-protection check - only the build
   # jobs are. Replaces the deleted ci-skip.yml: one workflow now owns
   # each `CI / <Job>` context, so no dual-workflow status race.
   changes:
@@ -121,7 +121,7 @@ jobs:
           # Fail safe: unresolvable range (e.g. a new-branch push whose
           # `before` is all-zeros) → run the full suite.
           if [ -z "$base" ] || [ -z "$head" ] || printf '%s' "$base" | grep -qE '^0+$'; then
-            echo "cannot resolve range ($base..$head) — running full CI"
+            echo "cannot resolve range ($base..$head) - running full CI"
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           changed="$(git diff --name-only "$base" "$head")"
@@ -149,7 +149,7 @@ jobs:
     # runs' jobs share one `$CARGO_TARGET_DIR`, so a job can block on the
     # cargo build-dir file lock held by a sibling job. Without an explicit
     # cap such a job squats the runner for the full 6 hours before being
-    # killed (incident: PR #145's duplicate run — the `test` job hung at
+    # killed (incident: PR #145's duplicate run - the `test` job hung at
     # "Compiling drevo" for exactly 360m, starving every other PR). Each
     # job now caps well above its observed legitimate runtime (Test/Clippy
     # reach ~90min on this contended runner) but far below 360, so a
@@ -159,12 +159,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -176,7 +176,7 @@ jobs:
       # `drevo.h` (CARGO_MANIFEST_DIR) on every build with the default
       # `cbindgen` feature, so the `cargo check` above just rewrote it.
       # If it differs from the committed copy, the FFI surface (or crate
-      # version) changed without re-committing the header — the exact
+      # version) changed without re-committing the header - the exact
       # drift that left the tree dirty and blocked `scripts/release.sh`
       # (cleaned up by hand in PR #230). Fail the PR that introduced it
       # instead. Locked by tests/cbindgen_header_sync_ci_tests.rs.
@@ -194,7 +194,7 @@ jobs:
     if: ${{ always() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     # See the `check` job for the rationale. MEASURED ROOT CAUSE: the
-    # *test execution* is fast — all 2857 tests run in ~18 min
+    # *test execution* is fast - all 2857 tests run in ~18 min
     # (`nextest` reported `1069s`). The multi-hour `Test` step was almost
     # entirely COMPILATION: every run cold-rebuilt the 104 test binaries
     # because all ci.yml jobs shared one `$CARGO_TARGET_DIR` and compile
@@ -220,12 +220,12 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -238,7 +238,7 @@ jobs:
       # ~1700 tests across 25+ test binaries this matters.
       #
       # Targets NOT included in this run:
-      #   * benches — `[[bench]]` crates with `harness = false` execute
+      #   * benches - `[[bench]]` crates with `harness = false` execute
       #     their criterion `main()` even under `cargo test --benches`
       #     (or nextest's `--all-targets`), and on the heavy benches
       #     (`bulk_put_100k/RedbBackend` ≈ 530s; `traversal_bfs/...` ≈
@@ -247,7 +247,7 @@ jobs:
       #     performance. Bench timings belong in a separate scheduled
       #     workflow (see Phase 10.5 task 00123) or in a developer's
       #     `cargo bench` run, not in PR-gating CI.
-      #   * doctests — nextest does not execute them; they are exercised
+      #   * doctests - nextest does not execute them; they are exercised
       #     by the explicit `cargo test --doc` step below.
       # That leaves: library unit tests (`src/**/*.rs`) + integration
       # tests (`tests/*.rs`), which is exactly what we want gated on
@@ -261,7 +261,7 @@ jobs:
       # which dominated the `Test` job's wall-clock. The self-hosted
       # runner persists `$HOME/.cargo/bin` between runs, so a `command -v`
       # guard around the official `get.nexte.st` tarball makes every run
-      # after the first a sub-second no-op — same pattern the `fuzz` job
+      # after the first a sub-second no-op - same pattern the `fuzz` job
       # already uses for `cargo-fuzz`. The download URL is selected by
       # `$RUNNER_OS` so a future Linux self-hosted runner keeps working.
       - name: Install cargo-nextest (cached on self-hosted runner)
@@ -276,7 +276,7 @@ jobs:
           fi
       # Task `00129` re-enabled the slow integration-test binaries on the PR
       # path: the temporary `ci-fast` nextest profile (and `.config/nextest.toml`)
-      # is gone, so this default-profile run exercises every test binary —
+      # is gone, so this default-profile run exercises every test binary -
       # the proptest fixtures, the `*_bench_tests`, and `wal_crash_recovery_tests`
       # all gate every PR again. `#[ignore]`d tests (live-service and long
       # soak tests) are not run by default, so no profile flag is needed here.
@@ -297,10 +297,10 @@ jobs:
       # exec) makes each test launch ~23s and hangs this job until the 4h
       # timeout. Regression on 2026-06-29: deps/ had 1.09M files / 17GB and
       # Test timed out; the old guard called `cargo sweep --time 3`, which only
-      # removes artifacts untouched for 3 days — on a constantly-rebuilding CI
+      # removes artifacts untouched for 3 days - on a constantly-rebuilding CI
       # almost everything is "fresh", so the sweep pruned ~nothing and the
       # thrash returned. The weekly cargo-sweep.yml has the same blind spot.
-      # Fix: when deps/ crosses the threshold, do a HARD `cargo clean` — it
+      # Fix: when deps/ crosses the threshold, do a HARD `cargo clean` - it
       # resets the dir to zero so the next build is cold (~10-20min, bounded)
       # instead of thrashing for 4h. A periodic cold rebuild is the cheap price
       # for never re-entering the signature-check death spiral.
@@ -335,7 +335,7 @@ jobs:
               ! -name 'build_script_*' ! -name 'build-script-*' -delete
           done
           df -h "$CARGO_TARGET_DIR"
-      # Phase 11 task `00073` — Bolt-over-TLS lives behind the
+      # Phase 11 task `00073` - Bolt-over-TLS lives behind the
       # `bolt-tls` Cargo feature, which is NOT in the default set
       # (rustls + tokio-rustls + rustls-pemfile add ~10 transitive
       # crates that unrelated CI gates have no reason to compile).
@@ -348,7 +348,7 @@ jobs:
       - name: Run bolt-tls feature tests (nextest)
         # Named targets: a filter alone compiles every test binary.
         run: cargo nextest run --no-fail-fast --features bolt-tls,auth --lib --test bolt_tls_tests --test server_tls_tests --test server_config_tests -E 'binary(bolt_tls_tests) | binary(server_tls_tests) | binary(server_config_tests) | (kind(lib) & test(bolt::tls))'
-      # Phase 11 task `00074` — Bolt authentication. The argon2-backed
+      # Phase 11 task `00074` - Bolt authentication. The argon2-backed
       # `UserStore` lives behind the `bolt-auth` Cargo feature (NOT in
       # the default set), so re-run nextest with the feature on over the
       # gated binary + inline unit tests. The dependency-free session
@@ -356,15 +356,15 @@ jobs:
       # full-suite step above; this step adds the argon2 path.
       - name: Run bolt-auth feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features auth -E 'binary(bolt_auth_tests) | binary(user_admin_tests) | binary(bolt_login_tests) | binary(bolt5_tests) | binary(connections_tests) | binary(http_login_tests) | binary(role_admin_tests) | binary(privilege_enforcement_tests) | binary(privilege_read_filter_tests) | binary(privilege_rest_routes_tests) | binary(admin_command_privileges_tests) | binary(audit_log_tests) | binary(transaction_admin_tests) | binary(events_sse_tests) | binary(server_config_tests) | (kind(lib) & test(bolt::auth))'
-      # Issue #581 — the optional HTTP body formats (CBOR / MessagePack) live
+      # Issue #581 - the optional HTTP body formats (CBOR / MessagePack) live
       # behind `format-cbor` / `format-msgpack`, NOT in the default set, so
       # re-run their test binary and the inline unit tests with both on.
       - name: Run HTTP body / WAL format feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features format-cbor,format-msgpack,wal-zstd -E 'binary(http_wire_format_tests) | binary(native_wal_format_tests) | binary(server_config_tests) | (kind(lib) & test(wire_format))'
-      # Issue #582 — the binary WAL encodings live in drevo-core behind
+      # Issue #582 - the binary WAL encodings live in drevo-core behind
       # `wal-cbor` / `wal-msgpack`; run its recovery / compaction / tailer
       # tests and the inline unit tests with both on.
-      # Issue #583 — the gRPC API lives behind `grpc` (tonic/prost).
+      # Issue #583 - the gRPC API lives behind `grpc` (tonic/prost).
       # drevo-auth's OIDC token validator (`oidc`, issue #638).
       - name: Run drevo-auth OIDC tests (nextest)
         run: cargo nextest run --no-fail-fast -p drevo-auth --features oidc --lib --test oidc
@@ -374,7 +374,7 @@ jobs:
         run: cargo nextest run --no-fail-fast --features oidc --test oidc_login_tests --test server_config_tests
       - name: Run gRPC feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features grpc -E 'binary(grpc_api_tests) | binary(server_config_tests)'
-      # Issue #584 — the Arrow Flight endpoint lives behind `arrow-flight`.
+      # Issue #584 - the Arrow Flight endpoint lives behind `arrow-flight`.
       - name: Run Arrow Flight feature tests (nextest)
         run: cargo nextest run --no-fail-fast --features arrow-flight -E 'binary(arrow_flight_tests) | binary(server_config_tests)'
       # Logging in to gRPC and Arrow Flight (issue #634): needs the users
@@ -383,7 +383,7 @@ jobs:
         # Build only these targets: a filter alone still compiles every test
         # binary for this feature set, which ran the runner out of disk.
         run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight --lib --test rpc_login_tests -E 'binary(rpc_login_tests) | (kind(lib) & test(rpc_login))'
-      # Issue #655 — gRPC and Flight over TLS need `bolt-tls` as well.
+      # Issue #655 - gRPC and Flight over TLS need `bolt-tls` as well.
       - name: Run gRPC / Flight TLS tests (nextest)
         run: cargo nextest run --no-fail-fast --features auth,grpc,arrow-flight,bolt-tls --lib --test rpc_tls_tests -E 'binary(rpc_tls_tests) | (kind(lib) & test(rpc_tls))'
       - name: Run drevo-core WAL format feature tests (nextest)
@@ -413,12 +413,12 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -428,7 +428,7 @@ jobs:
         with:
           components: clippy
       - run: cargo clippy --all-targets -- -D warnings
-      # Phase 11 task `00073` — guard the `bolt-tls`-gated code paths
+      # Phase 11 task `00073` - guard the `bolt-tls`-gated code paths
       # against clippy regressions. Default-feature clippy doesn't see
       # `src/bolt/tls.rs` or `tests/bolt_tls_tests.rs`, so a second
       # invocation with the feature enabled is the only way to catch
@@ -445,18 +445,18 @@ jobs:
       - run: cargo clippy -p drevo-auth --all-targets --no-default-features -- -D warnings
       # drevo-auth's OIDC token validator (`oidc`, issue #638).
       - run: cargo clippy -p drevo-auth --all-targets --features oidc -- -D warnings
-      # Issue #638 — the server's identity provider logins and their tests.
+      # Issue #638 - the server's identity provider logins and their tests.
       - run: cargo clippy --all-targets --features oidc -- -D warnings
-      # Issue #581 — the CBOR / MessagePack transcoding paths.
+      # Issue #581 - the CBOR / MessagePack transcoding paths.
       - run: cargo clippy --all-targets --features format-cbor,format-msgpack -- -D warnings
-      # Issue #583 — the gRPC service and its tests.
+      # Issue #583 - the gRPC service and its tests.
       - run: cargo clippy --all-targets --features grpc -- -D warnings
-      # Issue #584 — the Arrow Flight service and its tests.
+      # Issue #584 - the Arrow Flight service and its tests.
       - run: cargo clippy --all-targets --features arrow-flight -- -D warnings
-      # Issue #634 — the gRPC / Flight login paths and their tests.
+      # Issue #634 - the gRPC / Flight login paths and their tests.
       - run: cargo clippy --all-targets --features auth,grpc,arrow-flight -- -D warnings
       - run: cargo clippy --all-targets --features auth,grpc,arrow-flight,bolt-tls -- -D warnings
-      # Issue #582 — drevo-core's binary WAL paths and their tests.
+      # Issue #582 - drevo-core's binary WAL paths and their tests.
       - run: cargo clippy -p drevo-core --all-targets --features wal-cbor,wal-msgpack,wal-zstd,encryption -- -D warnings
       # The server's encryption at rest and its tests and bench.
       - run: cargo clippy --all-targets --features encryption -- -D warnings
@@ -499,15 +499,15 @@ jobs:
       - name: Unit-test the browser geometry helpers
         run: node --test static/web/*.test.js
 
-  # Phase 8 task 00049 — Kubernetes manifests under `k8s/`.
-  # Phase 8 task 00050 — Kustomize overlays under `k8s/overlays/<env>/`.
+  # Phase 8 task 00049 - Kubernetes manifests under `k8s/`.
+  # Phase 8 task 00050 - Kustomize overlays under `k8s/overlays/<env>/`.
   #
   # Three checks, all server-less (no live cluster, no kubeconfig):
   #   1. `kubectl kustomize k8s/` resolves the top-level wrapper, which
   #      forwards to `k8s/base/`.
   #   2. `kubectl kustomize k8s/base/` resolves the base directly.
   #   3. `kubectl kustomize k8s/overlays/<env>/` resolves each per-env
-  #      overlay — catches a renamed base manifest, a broken `../../base/`
+  #      overlay - catches a renamed base manifest, a broken `../../base/`
   #      reference, an unresolved patch target, or a kustomize-syntax
   #      slip in any overlay before it reaches a real cluster.
   #
@@ -534,14 +534,14 @@ jobs:
             kubectl kustomize "$target" > "/tmp/$(basename "$target").yaml"
             # Fail the job if kustomize printed any warning/error to stderr.
             if kubectl kustomize "$target" 2>&1 1>/dev/null | grep -i 'warning\|error'; then
-              echo "kubectl kustomize $target emitted warnings/errors above — fix before merge" >&2
+              echo "kubectl kustomize $target emitted warnings/errors above - fix before merge" >&2
               exit 1
             fi
             wc -l "/tmp/$(basename "$target").yaml"
             echo "::endgroup::"
           done
 
-  # Phase 9 task 00060 — rustdoc for all public APIs.
+  # Phase 9 task 00060 - rustdoc for all public APIs.
   #
   # Runs `cargo doc --no-deps --all-features` under
   # `RUSTDOCFLAGS=-D warnings` so a missing rustdoc on any new `pub`
@@ -565,7 +565,7 @@ jobs:
       # packages and builds from the packaged sources alone.
       - run: cargo package -p drevo-auth
 
-  # Audit task 00113 — MSRV is declared in `Cargo.toml` (`rust-version`)
+  # Audit task 00113 - MSRV is declared in `Cargo.toml` (`rust-version`)
   # and locked in by `tests/crosscut_audit_tests.rs::cargo_toml_declares_rust_version`.
   # This job exercises that exact toolchain so the field cannot decay.
   msrv:
@@ -578,12 +578,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -613,19 +613,19 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
-  # Phase 9 task 00058 — coverage-guided fuzz smoke run for the FTS
+  # Phase 9 task 00058 - coverage-guided fuzz smoke run for the FTS
   # tokenizer. cargo-fuzz needs nightly Rust + libFuzzer; the job is
   # therefore split out from the main matrix (stable Rust is enough for
   # everything else) and time-boxed to ~60 seconds per target so it
   # stays under the free CI budget. The stable-CI replay of the seed
   # corpus is already run by the `test` job above through
-  # `tests/fts_tokenizer_fuzz_harness_tests.rs` — this job extends that
+  # `tests/fts_tokenizer_fuzz_harness_tests.rs` - this job extends that
   # coverage with libFuzzer's branch-feedback mutator on every push.
   #
   # Stays on self-hosted because (a) cargo-fuzz needs libFuzzer +
   # AddressSanitizer + nightly Rust, the prebuilt path is best-tested
   # on a stable, named runner; (b) the 60s smoke run × 3 targets +
-  # cargo-fuzz install can cumulate to ~5 minutes — keeping it off the
+  # cargo-fuzz install can cumulate to ~5 minutes - keeping it off the
   # GitHub-hosted shared pool is friendlier to budget.
   fuzz:
     name: Fuzz
@@ -635,7 +635,7 @@ jobs:
     # Pin the whole job to nightly. The smoke steps below call bare
     # `cargo fuzz run`, which reads the machine-global `rustup default`.
     # On the single self-hosted runner that default is shared mutable
-    # state — a concurrent job doing `dtolnay/rust-toolchain@stable`
+    # state - a concurrent job doing `dtolnay/rust-toolchain@stable`
     # (`rustup default stable`) can flip it out from under this job between
     # two smoke steps, so cargo-fuzz's nightly-only `-Zsanitizer=address`
     # build fails with "the option `Z` is only accepted on the nightly
@@ -645,7 +645,7 @@ jobs:
     # `ci_self_hosted_runner_tests.rs::fuzz_job_must_pin_nightly_toolchain`.
     env:
       RUSTUP_TOOLCHAIN: nightly
-    # Don't block merges if cargo-fuzz finds a crash — surface it as a
+    # Don't block merges if cargo-fuzz finds a crash - surface it as a
     # CI annotation and let humans triage. The stable harness replay in
     # the `test` job remains a hard gate.
     continue-on-error: true
@@ -654,19 +654,19 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
         run: echo "CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/drevo-cargo-target-${{ github.job }}" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      # No Swatinem — job-level `CARGO_TARGET_DIR` above persists
+      # No Swatinem - job-level `CARGO_TARGET_DIR` above persists
       # target/ on local disk. `$HOME/.cargo/registry` and
       # `$HOME/.cargo/bin/cargo-fuzz` also persist naturally on
       # self-hosted, so a previously-installed cargo-fuzz binary is
@@ -677,7 +677,7 @@ jobs:
       # cargo-fuzz hard-codes a default --target that does not match
       # the host on either of our self-hosted platforms:
       #   - On Apple Silicon macOS it defaults to `x86_64-apple-darwin`
-      #     (Intel) — the aarch64 host has no x86_64-apple-darwin rust
+      #     (Intel) - the aarch64 host has no x86_64-apple-darwin rust
       #     std, so the build dies with E0463 "can't find crate for
       #     `core`". Override to `aarch64-apple-darwin`.
       #   - On Linux the cargo-fuzz binary we install is itself the
@@ -690,7 +690,7 @@ jobs:
       #
       # Both overrides are derived once at workflow load and exported
       # via $GITHUB_ENV so the per-target steps stay symmetric.
-      - name: Install cargo-fuzz (Linux prebuilt — skip if cached)
+      - name: Install cargo-fuzz (Linux prebuilt - skip if cached)
         if: runner.os == 'Linux'
         # The taiki-e action is itself idempotent (it short-circuits
         # if the requested version is already installed in
@@ -699,7 +699,7 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
-      - name: Install cargo-fuzz (macOS — from source, skip if cached)
+      - name: Install cargo-fuzz (macOS - from source, skip if cached)
         # taiki-e ships no prebuilt aarch64-apple-darwin binary, so
         # build from source on nightly. ~2 min cold. On the
         # self-hosted runner `$HOME/.cargo/bin/cargo-fuzz` survives
@@ -712,9 +712,9 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           if command -v cargo-fuzz >/dev/null 2>&1; then
-            echo "cargo-fuzz already installed at $(command -v cargo-fuzz) — skipping cargo install"
+            echo "cargo-fuzz already installed at $(command -v cargo-fuzz) - skipping cargo install"
           else
-            echo "cargo-fuzz not found in PATH — building from source"
+            echo "cargo-fuzz not found in PATH - building from source"
             cargo install cargo-fuzz --locked
           fi
 
@@ -732,7 +732,7 @@ jobs:
               # x86_64 Homebrew bash (`/usr/local/bin/bash`) for `run:`
               # steps; under Rosetta that bash reports `uname -m` =
               # `x86_64` on an Apple Silicon host, so the old check took
-              # the `else` branch and selected `x86_64-apple-darwin` — a
+              # the `else` branch and selected `x86_64-apple-darwin` - a
               # target nightly has no std for, failing the fuzz build with
               # E0463 "can't find crate for `core`". `rustc -vV`'s `host:`
               # line reflects the real toolchain arch regardless of the
@@ -765,7 +765,7 @@ jobs:
           cargo fuzz run --target ${{ steps.fuzz_target.outputs.target }} \
             fuzz_extract_trigrams -- -max_total_time=60
         working-directory: fuzz
-      # Phase 15 task 00099 — grammar-aware Cypher fuzzing. Three more
+      # Phase 15 task 00099 - grammar-aware Cypher fuzzing. Three more
       # targets sharing the `cypher_grammar.rs` generator; their invariants
       # are also replayed on every PR by the stable
       # `tests/cypher_fuzz_harness_tests.rs` (so a regression is caught even

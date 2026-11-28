@@ -1,7 +1,7 @@
-# Phase 8 task 00051 — build and publish the drevo container image
+# Phase 8 task 00051 - build and publish the drevo container image
 # to GitHub Container Registry (`ghcr.io/ice1x/drevo`).
 #
-# Triggers (release-only — NOT on every push to main):
+# Triggers (release-only - NOT on every push to main):
 #   * push of a `v*` git tag   → publishes `MAJOR.MINOR.PATCH` + `MAJOR.MINOR`
 #                                + `latest` + `sha-<short>`. This is what
 #                                `make release` fires.
@@ -13,8 +13,8 @@
 # `linux/amd64` cell of the multi-arch build ran under QEMU (~40 min) and
 # serialised behind / blocked every other job on EVERY merge. The image is
 # a release artifact, not a per-merge one, so it publishes on release tags
-# only. (The workflow now runs GitHub-hosted on `ubuntu-24.04` — see the
-# `runs-on:` note below — so `linux/amd64` is NATIVE and only `linux/arm64`
+# only. (The workflow now runs GitHub-hosted on `ubuntu-24.04` - see the
+# `runs-on:` note below - so `linux/amd64` is NATIVE and only `linux/arm64`
 # is emulated under QEMU; a per-merge multi-arch build is still redundant
 # work, so this stays release-only.) `:latest` tracks the newest release tag.
 #
@@ -25,8 +25,8 @@
 # image on every PR. Back on the self-hosted Apple Silicon runner the
 # `linux/amd64` half of the matrix ran under QEMU emulation and the
 # end-to-end build cumulated to ~19 minutes per PR. That cost duplicates
-# what `ci.yml`'s `test` + `check` + `clippy` jobs already do — they
-# compile the same Rust crate against the same dependency tree — and
+# what `ci.yml`'s `test` + `check` + `clippy` jobs already do - they
+# compile the same Rust crate against the same dependency tree - and
 # adds value only when a change touches `Dockerfile` itself, which is
 # rare (the Dockerfile has changed twice in the last 200 commits).
 # Removing the trigger reclaims those minutes for every PR; the
@@ -37,9 +37,9 @@
 # Actions UI on the PR's branch.
 #
 # Token surface (least-privilege):
-#   * contents: read   — checkout needs it; nothing more
-#   * packages: write  — publish to ghcr.io under `ice1x/drevo`
-#   No `actions: write`, no `id-token: write` — re-add only when a future
+#   * contents: read   - checkout needs it; nothing more
+#   * packages: write  - publish to ghcr.io under `ice1x/drevo`
+#   No `actions: write`, no `id-token: write` - re-add only when a future
 #   task introduces cosign / SLSA signing.
 #
 # Architecture matrix: `linux/amd64,linux/arm64`. amd64 is the canonical
@@ -55,7 +55,7 @@
 #   * `type=semver,pattern={{major}}.{{minor}}`   → `0.1`   from tag `v0.1.0`
 #   * `type=raw,value=latest,enable=<v-tag>`      → `latest` on `v*` tags
 #                                                 (the newest release)
-# Hand-rolled tag logic in shell drifts from semver — never extend this.
+# Hand-rolled tag logic in shell drifts from semver - never extend this.
 #
 # Verification: every wire-format invariant above is pinned by
 # `tests/docker_publish_ci_tests.rs`. Editing the workflow without
@@ -71,7 +71,7 @@ name: Docker Publish
 # than a per-merge one: `make release` (which pushes a `vX.Y.Z` tag) is what
 # publishes it. `:latest` tracks the newest release tag (see the metadata step),
 # and ops can rebuild any ref on demand via `workflow_dispatch`. Because there is
-# no `push:main` trigger, there is no `paths-ignore` to keep in sync — a tag
+# no `push:main` trigger, there is no `paths-ignore` to keep in sync - a tag
 # build always runs. The job runs GitHub-hosted (see the `runs-on:` note below)
 # so it never blocks the single self-hosted CI/fuzz runner.
 on:
@@ -85,7 +85,7 @@ env:
   IMAGE_NAME: ghcr.io/ice1x/drevo
   # The registry the deploy (compose / run-drevo) actually pulls from. CI
   # publishes the SAME multi-arch image here so `linux/amd64` lands where it is
-  # used — previously Docker Hub got only a local `docker build` from the Apple
+  # used - previously Docker Hub got only a local `docker build` from the Apple
   # Silicon Mac (arm64-only), hence "no images found for arch amd64".
   DOCKERHUB_IMAGE: docker.io/ice1x/drevo
 
@@ -131,10 +131,10 @@ jobs:
                  | grep -vFx "$cur" | head -n1 || true)
           if [ -n "$prev" ] && \
              [ "$(git rev-list -n1 "$cur")" = "$(git rev-list -n1 "$prev")" ]; then
-            echo "::error::$cur points at the same commit as $prev — no source change since the last release; refusing to publish a duplicate image. Use workflow_dispatch to force a rebuild."
+            echo "::error::$cur points at the same commit as $prev - no source change since the last release; refusing to publish a duplicate image. Use workflow_dispatch to force a rebuild."
             exit 1
           fi
-          echo "no-op guard: $cur is ahead of ${prev:-<no previous tag>} — publishing."
+          echo "no-op guard: $cur is ahead of ${prev:-<no previous tag>} - publishing."
 
       # Authenticate to BOTH registries by pre-baking a base64 `auths` blob into
       # a per-run DOCKER_CONFIG, rather than using `docker/login-action`.
@@ -146,7 +146,7 @@ jobs:
       # mattered on the retired self-hosted Apple Silicon Mac, where Docker
       # Desktop re-injected `credsStore: osxkeychain` even into a `{}` config and
       # `docker login` failed headless with `-25308`; on today's GitHub-hosted
-      # ubuntu-24.04 there is no keychain, but the pre-baked approach stays —
+      # ubuntu-24.04 there is no keychain, but the pre-baked approach stays -
       # it is simpler, needs no extra action, and keeps buildx's config
       # co-located so the post-job `docker buildx rm` finds it.)
       #
@@ -178,7 +178,7 @@ jobs:
           fi
           echo "DOCKER_CONFIG=$DC" >> "$GITHUB_ENV"
 
-      # QEMU first — buildx needs the binfmt_misc handlers registered
+      # QEMU first - buildx needs the binfmt_misc handlers registered
       # before it spawns the arm64 builder container.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -188,7 +188,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # No `docker login` step — GHCR auth is pre-baked into DOCKER_CONFIG
+      # No `docker login` step - GHCR auth is pre-baked into DOCKER_CONFIG
       # above (avoids the macOS keychain credsStore). On pull_request nothing
       # is pushed, so the absent auth is fine; the build step still validates
       # the image.

@@ -1,9 +1,9 @@
 //! The security audit log: who logged in, who was refused, and what changed
 //! in the users, roles and privileges.
 //!
-//! An [`AuditEvent`] has a fixed set of fields — time, event kind, outcome,
-//! user, client address, surface, target, reason and (optionally) query text
-//! — and none that could carry a password or session token. An
+//! An [`AuditEvent`] has a fixed set of fields - time, event kind, outcome,
+//! user, client address, surface, target, reason and (optionally) query text -
+//! and none that could carry a password or session token. An
 //! [`AuditSink`] receives each event:
 //!
 //! - [`JsonLinesFile`] appends one JSON object per line to a file readable by

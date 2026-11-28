@@ -1,6 +1,6 @@
 //! A lean database: `drevo.indexes.setSecondary(false)` drops the property
-//! index, the value cache and the full-text indexes to save memory — for a
-//! road graph that is only routed over — and `setSecondary(true)` brings them
+//! index, the value cache and the full-text indexes to save memory - for a
+//! road graph that is only routed over - and `setSecondary(true)` brings them
 //! back. Queries stay correct either way.
 
 use std::collections::HashMap;

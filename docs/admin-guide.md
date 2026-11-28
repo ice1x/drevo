@@ -19,11 +19,11 @@ cargo build --release --bin drevo-server --features http,redb-backend
 ```
 
 `drevo-server` reads its config from the environment, serves on `${DREVO_HOST}:${DREVO_PORT}`,
-and shuts down gracefully on `SIGTERM` / `Ctrl-C` — flipping `/health` and `/ready` to `503`
+and shuts down gracefully on `SIGTERM` / `Ctrl-C` - flipping `/health` and `/ready` to `503`
 and draining in-flight requests before exiting.
 
 The MCP server for AI agents is a separate process maintained in its own
-repository — [github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp) —
+repository - [github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp) -
 which connects to a running `drevo-server` over HTTP / Bolt (it never opens the
 redb file, so it never contends for redb's single-process lock).
 
@@ -36,7 +36,7 @@ redb file, so it never contends for redb's single-process lock).
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `DREVO_HOST` | `0.0.0.0` | Bind address. Must be non-empty. |
-| `DREVO_PORT` | `8080` | TCP port (1–65535; `0` is rejected). |
+| `DREVO_PORT` | `8080` | TCP port (1-65535; `0` is rejected). |
 | `DREVO_DATA_DIR` | `/data` | Directory holding the single `drevo.redb` file. |
 | `RUST_LOG` | `info` | `tracing` env-filter (e.g. `drevo=debug,info`). |
 | `DREVO_SLOW_QUERY_MS` | `0` (off) | Log every statement that runs longer than this many milliseconds, in auto-commit mode or in an explicit transaction, at WARN. See [Slow-statement log](#slow-statement-log); it can also be changed at runtime. |
@@ -59,10 +59,10 @@ redb file, so it never contends for redb's single-process lock).
 | `DREVO_EXPAND_MAX_HOPS` | `6` | The most `hops` one `drevo.graph.expand` call may ask for. A call asking for more fails with an error naming this limit. At least `1`. |
 | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for, which bounds the rows and the memory one call can use. A call asking for more fails with an error naming this limit; when it is below `200`, calls that name no `maxNodes` get it instead. At least `1`. |
 | `DREVO_INGEST_WORKERS` | `2` | [Ingest-job](#ingest-jobs) items extracted at once, across every database. A job's `concurrency` is capped by it. At least `1`. |
-| `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts`; after the last failed one the item is `dead`. 1–100. |
+| `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts`; after the last failed one the item is `dead`. 1-100. |
 | `DREVO_COMMUNITY_MAX_LLM_SYNC` | `20` | The most communities one synchronous `drevo.community.summarize` with `mode: 'llm'` may ask the chat model to summarise (one call each, made during the call but before its write, so it never holds the writers' turn). A synchronous `auto` or `llm` call on a server with a chat upstream configured therefore makes up to this many model calls before it returns. A call over it fails with an error pointing at `async: true`, which runs it as an [ingest job](#ingest-jobs) with no limit; `mode: 'auto'` writes extractive summaries instead. At least `1`. |
 | `DREVO_INGEST_RETRY_BASE_MS` | `2000` | A failed ingest item waits `base × 2^attempts` milliseconds (at most 5 minutes, less a random part of up to half) before it is tried again. At least `1`. |
-| `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep forever) | Delete [context traces](cypher-reference.md#context-traces) (`:ContextTrace`, recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours after — the same as an administrator running `drevo.rag.pruneTraces`. A whole number; `0` keeps them. |
+| `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep forever) | Delete [context traces](cypher-reference.md#context-traces) (`:ContextTrace`, recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours after - the same as an administrator running `drevo.rag.pruneTraces`. A whole number; `0` keeps them. |
 | `DREVO_TX_CONFLICT_HISTORY` | `10000` | How many recent commits a database remembers to decide whether an explicit transaction overlapped with them. A transaction that began before the oldest remembered commit, and saw others commit since, gets the retryable conflict (counted as `history`). Raise it if `drevo_tx_conflicts_total{reason="history"}` grows; a few hundred bytes per remembered commit. |
 | `DREVO_MAX_CONNECTIONS` | `512` | Bolt connections served at once. One more is refused when the driver says `HELLO`, with `Neo.TransientError.Request.NoThreadsAvailable`, which drivers retry. `0` means no limit. See [Connection limits](#connection-limits). |
 | `DREVO_HTTP_MAX_IN_FLIGHT` | `256` | HTTP requests served at once. One more gets `503` with `Retry-After: 1`; `/health`, `/ready` and `/metrics` are always served. `0` means no limit. |
@@ -104,8 +104,8 @@ WARN once a minute at most; `drevo_connections_rejected_total{protocol}` counts 
 
 ### Client timeouts
 
-How overlapping transactions behave — snapshots, the retryable conflict error, why there are
-no deadlocks — is in the Cypher reference under [Concurrency](cypher-reference.md#concurrency).
+How overlapping transactions behave - snapshots, the retryable conflict error, why there are
+no deadlocks - is in the Cypher reference under [Concurrency](cypher-reference.md#concurrency).
 
 A client can give its own statement or transaction a time limit, in milliseconds:
 
@@ -307,7 +307,7 @@ configured. The proxy backend forwards each request to a configured upstream
 (OpenAI / Ollama / vLLM / any OpenAI-compatible server).
 
 1. **Build** with the feature (pulls a `reqwest` HTTP client on the pure-Rust
-   `rustls`+`ring` stack — no OpenSSL, no C toolchain):
+   `rustls`+`ring` stack - no OpenSSL, no C toolchain):
 
    ```
    cargo build --release --features embeddings-proxy
@@ -325,7 +325,7 @@ configured. The proxy backend forwards each request to a configured upstream
    fails startup fast rather than degrading silently.
 
    **Runtime configuration (env *or* Web UI).** The same three settings can be
-   set at runtime — no restart, no env edit — through the Web UI **Settings**
+   set at runtime - no restart, no env edit - through the Web UI **Settings**
    panel (the ⚙ button) or the `/config/embeddings` endpoint:
 
    ```
@@ -335,7 +335,7 @@ configured. The proxy backend forwards each request to a configured upstream
                                "api_key": "sk-…", "model": "…" }
    ```
 
-   The `GET` status is **secret-free** — it reports only whether a key is set,
+   The `GET` status is **secret-free** - it reports only whether a key is set,
    never the key. On `POST`, a **blank/omitted `api_key` keeps** the stored
    secret (so the model can change without re-entering the token); a bad
    `upstream` is a `400`. The value is persisted to
@@ -344,7 +344,7 @@ configured. The proxy backend forwards each request to a configured upstream
    applies live to both `/v1/embeddings` and the semantic-query embedder.
 
 > **Security (OWASP A10 / SSRF).** The upstream is taken **only** from these
-> variables — **never** from the request body. The request type carries no URL
+> variables - **never** from the request body. The request type carries no URL
 > field, so a caller cannot redirect drevo's outbound call at an internal
 > address (e.g. a cloud metadata endpoint). A host allowlist and a request
 > timeout knob are tracked as Phase 20 / follow-up hardening.
@@ -365,10 +365,10 @@ upstream failure surfaces as `502`.
 The proxy is a **transparent passthrough**: `model` + `input` are validated,
 but any other request field (OpenAI `dimensions` / `encoding_format` / `user`,
 Voyage / Anthropic-recommended `input_type` / `output_dimension`, …) is
-forwarded verbatim, and the upstream response — including base64 embeddings
-(`encoding_format: "base64"`) — is returned unchanged. So any OpenAI-compatible
+forwarded verbatim, and the upstream response - including base64 embeddings
+(`encoding_format: "base64"`) - is returned unchanged. So any OpenAI-compatible
 provider works without drevo needing to know its parameter set. (The outbound
-destination is still config-only — a forwarded field never changes it.)
+destination is still config-only - a forwarded field never changes it.)
 
 ### Text-to-Cypher (`drevo.cypher.fromText`, opt-in)
 
@@ -423,7 +423,7 @@ on Apple Silicon run the native arm64 Ollama so the model uses the GPU.
 `drevo.extract.entities`, `drevo.extract.facts` and `drevo.extract.ingest` read
 entities and facts out of a text with an LLM (see the
 [Cypher Reference](cypher-reference.md#extraction)). They call an
-OpenAI-compatible `chat/completions` endpoint — by default the one
+OpenAI-compatible `chat/completions` endpoint - by default the one
 text-to-Cypher uses, so a single local Ollama serves both. Like
 text-to-Cypher they need the `embeddings-proxy` build feature, which the
 Docker image includes; without an endpoint they fail with an error naming
@@ -477,7 +477,7 @@ CALL apoc.trigger.install('drevo', 'extract_documents',
   {phase: 'afterAsync'})
 ```
 
-The first argument is the database the trigger belongs to — `drevo`, the
+The first argument is the database the trigger belongs to - `drevo`, the
 default one, here.
 
 `CREATE (:Document {id: 'doc-1', title: 'Chapter One', body: $text})` then
@@ -489,7 +489,7 @@ short texts.
 
 ### Ingest jobs
 
-For a long text — a book is hundreds of passages and a model call each — use
+For a long text - a book is hundreds of passages and a model call each - use
 an ingest job (`drevo.ingest.submit`, see the
 [Cypher Reference](cypher-reference.md#ingest-jobs)) instead of one
 `drevo.extract.ingest` call. The job is stored in the graph as an
@@ -502,8 +502,8 @@ true, …})` stores a job with `pipeline: 'community'` and one item, which the
 scheduler runs as the whole summarize call, with the retries, `status`,
 `errors`, `cancel` and `retryFailed` below. As for a synchronous call, the
 graph is planned read-only, the model is asked with no transaction, lock,
-scheduler gate or statement timeout held — each request is bounded only by
-`DREVO_EXTRACT_TIMEOUT_MS`, the model phase as a whole is not — and then one
+scheduler gate or statement timeout held - each request is bounded only by
+`DREVO_EXTRACT_TIMEOUT_MS`, the model phase as a whole is not - and then one
 transaction writes the communities and marks the item done. Stopping a
 database does not wait for a model call in flight; its answer is dropped and
 the item runs again after the next start.
@@ -511,13 +511,13 @@ the item runs again after the next start.
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `DREVO_INGEST_WORKERS` | `2` | Items with the model at once, across every database. A job's `concurrency` is capped by it when the job runs (a larger `concurrency` is accepted at submit and counts as this). Raise it as far as the model's rate limit allows. |
-| `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts per item when the job names no `maxAttempts` (1–100). |
+| `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts per item when the job names no `maxAttempts` (1-100). |
 | `DREVO_INGEST_RETRY_BASE_MS` | `2000` | The wait before attempt `n + 1` is `base × 2^n`, at most 5 minutes, less a random part of up to half, so items that failed together do not retry together. |
 
 **What `dead` means.** An item is `dead` when it will not be tried again: it
 used `maxAttempts` on failures that may pass (a rate limit `429`, a timeout,
 a `5xx`, a lost connection), or it failed in a way another attempt cannot fix
-(another `4xx` — a wrong model name or key —, an answer that is not the
+(another `4xx` - a wrong model name or key -, an answer that is not the
 extraction JSON even when asked twice, or `drevo.extract.ingest` refusing the
 passage, e.g. an unknown source id). A job whose remaining items are all dead
 is `failed`, and an ERROR (target `drevo::ingest`, with the job id, the number
@@ -537,7 +537,7 @@ feed.
    CALL drevo.ingest.errors($jobId, 10) YIELD seq, attempts, last_error
    ```
 
-2. Fix the cause — the endpoint (`POST /config/extract`), the model, the key,
+2. Fix the cause - the endpoint (`POST /config/extract`), the model, the key,
    or the rate limit (`DREVO_INGEST_WORKERS`, a job's `concurrency`).
 3. Run the dead items again with fresh attempts:
 
@@ -546,7 +546,7 @@ feed.
    ```
 
 4. When a job is done (or given up with `drevo.ingest.cancel`), drop its
-   stored passages — the item nodes hold the text, so a 1 MB book keeps 1 MB
+   stored passages - the item nodes hold the text, so a 1 MB book keeps 1 MB
    in the graph until then; the job node and its counters stay:
 
    ```text
@@ -563,18 +563,18 @@ dropped or closed while items are with the model, those calls keep their
 away and the items run again when the store is next opened.
 
 **Jobs wait for an extraction endpoint.** Without one, submitted jobs stay
-`queued` and the scheduler sleeps — it does not poll. Configuring the
+`queued` and the scheduler sleeps - it does not poll. Configuring the
 endpoint (`POST /config/extract`, or `DREVO_EXTRACT_*` at start) wakes every
 database's scheduler and the waiting jobs start at once.
 
 **Items deleted mid-flight.** An `:IngestItem` deleted by hand while the model
 answers it is gone: nothing is written for it, its worker slot is given back,
-and its job finishes once nothing else is left to run — `cancelled` when it
+and its job finishes once nothing else is left to run - `cancelled` when it
 lost items and none is dead, with `done` / `failed` counted from the items
 that remain. Deleting the `:IngestJob` with its items mid-flight ends the same
 way, with nothing left behind. An item whose `:Chunk` is not found after its
-extraction was written — the job's `source_id` was changed and no longer
-matches its config's `source` — is `dead` at once with `last_error` naming
+extraction was written - the job's `source_id` was changed and no longer
+matches its config's `source` - is `dead` at once with `last_error` naming
 both ids (see `drevo.ingest.errors`); fix the job or submit it again.
 
 `drevo_ingest_items_total{state}` and
@@ -609,14 +609,14 @@ docker compose down -v      # stop and wipe data
 
 Two layers cover two different failures (see [`scripts/README.md`](https://github.com/ice1x/drevo/tree/main/scripts/README.md)):
 
-- **Docker restart policy** — the compose service sets `restart: unless-stopped`
+- **Docker restart policy** - the compose service sets `restart: unless-stopped`
   (and [`scripts/drevo-restart.sh`](https://github.com/ice1x/drevo/tree/main/scripts/drevo-restart.sh), the bare-`docker
   run` path, passes `--restart unless-stopped`). This relaunches the container
   after a crash, an OOM-kill, or a Docker/host reboot. It does **not** act on an
-  intentional stop, and it **cannot** resurrect a *removed* container — a stray
+  intentional stop, and it **cannot** resurrect a *removed* container - a stray
   `docker rm -f drevo` (e.g. another project reusing the name) deletes the
   container object, leaving the restart policy nothing to act on.
-- **Watchdog** — [`scripts/drevo-watchdog.sh`](https://github.com/ice1x/drevo/tree/main/scripts/drevo-watchdog.sh),
+- **Watchdog** - [`scripts/drevo-watchdog.sh`](https://github.com/ice1x/drevo/tree/main/scripts/drevo-watchdog.sh),
   scheduled every 30s via the launchd/systemd templates in
   [`scripts/watchdog/`](https://github.com/ice1x/drevo/tree/main/scripts/watchdog), recreates the container whenever it
   is missing or not running. This is the layer that survives an accidental
@@ -762,7 +762,7 @@ kubectl rollout status deployment/drevo
 kubectl port-forward svc/drevo 8080:8080
 ```
 
-Key constraints — **drevo is single-writer** (redb holds an exclusive file lock):
+Key constraints - **drevo is single-writer** (redb holds an exclusive file lock):
 
 - `replicas: 1`, `strategy.type: Recreate` (a RollingUpdate would deadlock on the RWO PVC).
 - The PersistentVolumeClaim is `ReadWriteOnce`; size it for the graph **plus** FTS indices
@@ -772,7 +772,7 @@ Key constraints — **drevo is single-writer** (redb holds an exclusive file loc
 - `terminationGracePeriodSeconds: 30` matches the server's drain window.
 - Pod runs non-root (`runAsUser: 999`, `fsGroup: 999`).
 
-The Service is `ClusterIP` by design — front it with your own Ingress / Gateway for TLS and
+The Service is `ClusterIP` by design - front it with your own Ingress / Gateway for TLS and
 external exposure.
 
 ---
@@ -782,26 +782,26 @@ external exposure.
 ### Prometheus metrics
 
 `GET /metrics` on `drevo-server` returns the Prometheus text exposition format. The standard
-bundle (dependency-free, always compiled — see [`src/observability/`](https://github.com/ice1x/drevo/tree/main/src/observability)):
+bundle (dependency-free, always compiled - see [`src/observability/`](https://github.com/ice1x/drevo/tree/main/src/observability)):
 
 | Metric | Type | Labels |
 |--------|------|--------|
 | `drevo_http_requests_total` | counter | `status` (`2xx`…`5xx`) |
-| `drevo_http_request_duration_seconds` | histogram | — |
-| `drevo_http_requests_in_flight` | gauge | — |
+| `drevo_http_request_duration_seconds` | histogram | - |
+| `drevo_http_requests_in_flight` | gauge | - |
 | `drevo_queries_total` | counter | `status` (`ok`/`error`) |
-| `drevo_query_duration_seconds` | histogram | — |
-| `drevo_process_uptime_seconds` | gauge | — |
-| `drevo_storage_file_bytes` | gauge | — |
-| `drevo_statement_timeouts_total` | counter | — |
+| `drevo_query_duration_seconds` | histogram | - |
+| `drevo_process_uptime_seconds` | gauge | - |
+| `drevo_storage_file_bytes` | gauge | - |
+| `drevo_statement_timeouts_total` | counter | - |
 | `drevo_tx_conflicts_total` | counter | `reason` |
-| `drevo_tx_merged_commits_total` | counter | — |
+| `drevo_tx_merged_commits_total` | counter | - |
 | `drevo_connections_rejected_total` | counter | `protocol` |
 | `drevo_connections_active` | gauge | `protocol` |
-| `drevo_prepared_transactions` | gauge | — |
-| `drevo_prepared_transaction_oldest_age_seconds` | gauge | — |
+| `drevo_prepared_transactions` | gauge | - |
+| `drevo_prepared_transaction_oldest_age_seconds` | gauge | - |
 | `drevo_ingest_items_total` | counter | `state` (`done`/`failed`/`dead`) |
-| `drevo_ingest_jobs_active` | gauge | — |
+| `drevo_ingest_jobs_active` | gauge | - |
 | `drevo_build_info` | gauge | `version` |
 
 `drevo_storage_file_bytes` (#253 slice 1) is the physical on-disk size of the backend file,
@@ -811,9 +811,9 @@ copy-on-write bloat.
 
 `drevo_tx_conflicts_total{reason}` counts explicit-transaction commits that failed with
 `Neo.TransientError.Transaction.Outdated` because another transaction committed first (see
-[Concurrency](cypher-reference.md#concurrency)): `overlap` — a commit the transaction did not see
-touched the same nodes or relationships, or the combined result broke a constraint; `would_pass` —
-none did, and the transaction was rejected only because it ran `serializable`; `history` — the
+[Concurrency](cypher-reference.md#concurrency)): `overlap` - a commit the transaction did not see
+touched the same nodes or relationships, or the combined result broke a constraint; `would_pass` -
+none did, and the transaction was rejected only because it ran `serializable`; `history` - the
 transaction began before the oldest of the `DREVO_TX_CONFLICT_HISTORY` remembered commits.
 `drevo_tx_merged_commits_total` counts the commits that went through although others committed
 since they began. A growing `history` means the history is too short for the transactions'
@@ -914,7 +914,7 @@ curl -s -X POST localhost:8080/config/slow-query \
 
 Every query emits a `tracing` event tagged with OpenTelemetry database semantic-convention
 fields (`db.system="drevo"`, `db.operation`, `db.statement`, `otel.status_code`,
-`duration_seconds`) — `info` on success, `warn` on failure. OTLP **wire** export is
+`duration_seconds`) - `info` on success, `warn` on failure. OTLP **wire** export is
 deliberately out of scope (it would drag gRPC/protobuf into the default dependency graph); add
 an opt-in `tracing-opentelemetry` layer if you want spans exported.
 
@@ -1121,12 +1121,12 @@ What it costs (`cargo bench --features encryption --bench encryption_bench`, App
 ### Storage bloat (#253 slice 1)
 
 redb is copy-on-write: freed pages go to an internal freelist and the file **keeps its
-high-water mark** — it never returns space to the OS on its own. Under heavy churn (constant
-create/update/delete, FTS re-index, body rewrites — the agent-memory / KG workload) the file can
+high-water mark** - it never returns space to the OS on its own. Under heavy churn (constant
+create/update/delete, FTS re-index, body rewrites - the agent-memory / KG workload) the file can
 outgrow its live data, and only `compact()` (or a dump→fresh-import `shrink`) reclaims the slack.
 **But a large file is not automatically bloat:** for text-heavy graphs the FTS trigram index is
 legitimately several times the record data, so measure `bloat_ratio` (file ÷ *stored*, below)
-before reaching for `compact`/`shrink` — a ratio near 1 means the file is already minimal and a
+before reaching for `compact`/`shrink` - a ratio near 1 means the file is already minimal and a
 rebuild will only produce a same-size (or larger) file.
 
 Observe the ratio and act on it:
@@ -1144,18 +1144,18 @@ python -m drevo compact /data/drevo.redb           # in place (needs exclusive a
 python -m drevo shrink  /data/drevo.redb small.redb  # dump → fresh import (robust, writes a new file)
 ```
 
-`bloat_ratio = file_bytes / stored_bytes`, where `stored_bytes` is **all** stored rows — the
+`bloat_ratio = file_bytes / stored_bytes`, where `stored_bytes` is **all** stored rows - the
 `node` + `edge` records (`logical_bytes`) *plus* every secondary index (`index_bytes`: adjacency,
 uuid/title/kind keys, property index, FTS trigrams, vectors). The index footprint is a legitimate
-cost, not bloat — for text-heavy graphs the FTS trigram index alone can exceed the records several
+cost, not bloat - for text-heavy graphs the FTS trigram index alone can exceed the records several
 times over, so dividing by `stored_bytes` (not `logical_bytes`) is what keeps an index-rich file
 from reading as bloated. A ratio near 1 means the file is already minimal (compaction/rebuild
 cannot shrink it); a ratio well above 1 is reclaimable copy-on-write high-water-mark slack. The
-`/storage/bloat` scan streams the whole keyspace — a maintenance call, not per-request.
+`/storage/bloat` scan streams the whole keyspace - a maintenance call, not per-request.
 
 **Automatic compaction (opt-in, #253 slice 2).** Set `DREVO_AUTO_COMPACT=1` and drevo reclaims
 bloat **on open**: the moment a database handle is built it is the sole owner of the file, which
-is the one point that satisfies `compact()`'s exclusive-access requirement — so a churny,
+is the one point that satisfies `compact()`'s exclusive-access requirement - so a churny,
 long-lived store stays bounded across restarts instead of climbing forever. It fires only when
 the file is at least `DREVO_AUTO_COMPACT_MIN_BYTES` (default 10 MiB) **and** the bloat ratio is at
 least `DREVO_AUTO_COMPACT_RATIO` (default 2.0). It is **off by default**, and best-effort: a
@@ -1676,8 +1676,8 @@ the user then also needs the `CREATE` privilege.
 
 ## 8. Replication & streaming (substrate)
 
-These Phase 15 subsystems are **always-compiled library substrate** — the event/log/role model
-and the seams to plug in transports — but are **not yet wired into the running server CLI**.
+These Phase 15 subsystems are **always-compiled library substrate** - the event/log/role model
+and the seams to plug in transports - but are **not yet wired into the running server CLI**.
 A deployment integrates them programmatically. The guide is honest about that so you don't go
 looking for a config flag that isn't there.
 
@@ -1686,7 +1686,7 @@ looking for a config flag that isn't there.
 A Write-Ahead-Log-based MAIN/REPLICA model. A `Primary<B>` wraps a `StorageBackend`, tees every
 write into a `WriteAheadLog` stamped with a monotonic `Lsn`, and returns the assigned LSN. A
 read-only `Replica<B>` replays the log in LSN order, enforcing strict ordering and gap
-detection. It ships no network transport — you stream the log delta over Bolt, HTTP long-poll,
+detection. It ships no network transport - you stream the log delta over Bolt, HTTP long-poll,
 or an in-process channel.
 
 ### Streaming ingestion ([`src/streaming/`](https://github.com/ice1x/drevo/tree/main/src/streaming))
@@ -1702,7 +1702,7 @@ un-ingestable messages. Re-delivery after a crash converges on the identical gra
 Decodes a Postgres logical-replication feed in the **wal2json** format and maps row changes into
 streaming `IngestEvent`s via a declarative `SchemaMap`: a row's primary key becomes a namespaced
 node key, columns map to `title` / `body` / `properties`, and declared foreign keys become
-edges. drevo bundles **no** Postgres driver — supply the replication-slot connection and feed
+edges. drevo bundles **no** Postgres driver - supply the replication-slot connection and feed
 the bytes in.
 
 ---

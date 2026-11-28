@@ -132,7 +132,7 @@ fn shortest_path_diamond_lower_path() {
 
 #[test]
 fn shortest_path_equal_weights_finds_a_path() {
-    // Multiple paths with equal weight — any valid shortest path is acceptable
+    // Multiple paths with equal weight - any valid shortest path is acceptable
     let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
     let b = db.create_node(make_node("note", "B")).unwrap();

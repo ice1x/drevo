@@ -19,8 +19,8 @@ A node is an entity. Every node has:
 |-------|---------|
 | `id` | Auto-increment `u64`, unique within the database. |
 | `uuid` | A UUIDv7, globally unique and time-sortable. |
-| `kind` | A classification string — the Cypher *label* (`Task`, `Person`, `Thought`…). |
-| `title` | A human-readable name. **Globally unique** — drevo rejects a duplicate title with a conflict error. |
+| `kind` | A classification string - the Cypher *label* (`Task`, `Person`, `Thought`…). |
+| `title` | A human-readable name. **Globally unique** - drevo rejects a duplicate title with a conflict error. |
 | `body` | Free-form Markdown. |
 | `body_html` | Cached rendered HTML of `body`. |
 | `created_at` / `updated_at` | Unix-millisecond timestamps. |
@@ -30,7 +30,7 @@ A node is an entity. Every node has:
 > imports idempotent. When you don't have a natural unique name (e.g. anonymous nodes created
 > in Cypher), drevo synthesises a unique placeholder title for you. The placeholder is
 > invisible to Cypher: `CREATE (n:X {x: 1})` yields a node whose `n.title` is `null` and whose
-> `keys(n)` is `["x"]`, exactly as in Neo4j — and `SET b = properties(a)` never copies it.
+> `keys(n)` is `["x"]`, exactly as in Neo4j - and `SET b = properties(a)` never copies it.
 
 ### Edges
 
@@ -56,12 +56,12 @@ carrying *any* of the listed labels.
 
 drevo is the same engine no matter how you reach it:
 
-- **In-process library** — link the `drevo` crate (Rust) or `import drevo` (Python) and call
+- **In-process library** - link the `drevo` crate (Rust) or `import drevo` (Python) and call
   the [API](sdk-reference.md) directly. Zero network, embeddable, WASM-capable.
-- **Cypher** — over the [Bolt protocol](sdk-reference.md#bolt-protocol) (port `7687`, works with
+- **Cypher** - over the [Bolt protocol](sdk-reference.md#bolt-protocol) (port `7687`, works with
   official Neo4j drivers) or in-process via `parse` + `execute`.
-- **HTTP API** — a REST surface on port `8080` for CRUD, traversal, search, and import/export.
-- **Web UI** — a Cytoscape.js graph explorer at `/ui` on the HTTP server. The top bar takes a
+- **HTTP API** - a REST surface on port `8080` for CRUD, traversal, search, and import/export.
+- **Web UI** - a Cytoscape.js graph explorer at `/ui` on the HTTP server. The top bar takes a
   Cypher query or full-text search terms. Enter runs a one-line query, Shift+Enter adds a
   line, and Ctrl/Cmd+Enter runs a query of any length. Alt+↑ / Alt+↓ step through earlier
   queries, and the ▾ button lists the last 50; the history stays in your browser. **Ask** turns
@@ -88,7 +88,7 @@ drevo is the same engine no matter how you reach it:
   **Download report** saves the full JSON report for attaching. Nothing leaves your machine
   until you open the issue. API keys are removed, but queries and log lines are included and
   the issue is public, so check the text first.
-- **MCP** — a separate [drevo-mcp](https://github.com/ice1x/drevo-mcp) server exposes graph tools to AI agents (Claude Code, Cline), talking to `drevo-server` over HTTP / Bolt.
+- **MCP** - a separate [drevo-mcp](https://github.com/ice1x/drevo-mcp) server exposes graph tools to AI agents (Claude Code, Cline), talking to `drevo-server` over HTTP / Bolt.
 
 Pick the smallest one that fits: a notebook app embeds the library; a migration script speaks
 Cypher over Bolt; an AI agent uses MCP.
@@ -132,10 +132,10 @@ db.create_edge(NewEdge { from_id: alice.id, to_id: task.id, kind: "ASSIGNED_TO".
 
 drevo gives you three complementary ways to ask questions:
 
-1. **Pattern queries (Cypher)** — declarative, relationship-shaped questions.
+1. **Pattern queries (Cypher)** - declarative, relationship-shaped questions.
    See the [Cypher Reference](cypher-reference.md).
-2. **Traversal (API)** — `bfs`, `dfs`, `shortest_path`, `subgraph` for imperative walks.
-3. **Search** — `search_fts` (BM25 full-text) and `vector_search` (semantic / embedding).
+2. **Traversal (API)** - `bfs`, `dfs`, `shortest_path`, `subgraph` for imperative walks.
+3. **Search** - `search_fts` (BM25 full-text) and `vector_search` (semantic / embedding).
 
 A typical retrieval-augmented-generation flow combines all three: full-text or vector search
 finds seed nodes, then a bounded subgraph traversal gathers their neighbourhood as context.
@@ -187,7 +187,7 @@ WHERE open_tasks > 5
 RETURN p.title, open_tasks
 ```
 
-PageRank over the dependency graph answers "what unblocks the most work?" — see
+PageRank over the dependency graph answers "what unblocks the most work?" - see
 [`pagerank`](sdk-reference.md#graph-analytics).
 
 ### ERP system
@@ -209,7 +209,7 @@ WHERE b.severity IN ['high', 'critical'] AND b.assignee IS NOT NULL
 RETURN b.title, b.severity
 ```
 
-Louvain community detection clusters related issues — see
+Louvain community detection clusters related issues - see
 [`louvain_communities`](sdk-reference.md#graph-analytics).
 
 ### Two names, one entity
@@ -227,7 +227,7 @@ YIELD a, b, score, reasons
 RETURN a.name, b.name, score, reasons
 ```
 
-Each row says why it was offered — `['name:1.00', 'shared_token:пушкин']`.
+Each row says why it was offered - `['name:1.00', 'shared_token:пушкин']`.
 After a person or an agent has agreed, fold the second node into the first:
 
 ```text
@@ -255,7 +255,7 @@ because a wrong automatic merge loses data. See
 
 ## 6. Graph-RAG inside drevo
 
-An assistant that answers from your graph needs, for each question, the few facts that matter —
+An assistant that answers from your graph needs, for each question, the few facts that matter -
 small enough to fit the prompt, ordered so the most relevant come first. drevo builds that context
 itself, in one call:
 
@@ -291,20 +291,20 @@ itself, in one call:
 4. **The model answers** from that context. drevo never calls the chat model here; it only hands
    over the context.
 
-The same call is `POST /rag/context` for clients without Cypher — see the
+The same call is `POST /rag/context` for clients without Cypher - see the
 [Admin Guide](admin-guide.md#graph-rag-context-post-ragcontext). `drevo.rag.retrieve` returns the
 same nodes as rows with their scores, for when you format the context yourself.
 
 A few knobs change the most:
 
-- **`format`** — `'markdown'` reads well and has the layout of drevo-py's
+- **`format`** - `'markdown'` reads well and has the layout of drevo-py's
   `Context.to_text('markdown')`, `'triples'` (`A | REL | B` lines) is the cheapest in
   tokens, `'json'` is for programs.
-- **`tokenBudget`** — the context never exceeds it; nodes that do not fit are skipped whole and
+- **`tokenBudget`** - the context never exceeds it; nodes that do not fit are skipped whole and
   `truncated` says so.
-- **`hops`** and **`rank`** — how far from the first hits to look (default 2) and how to order what
+- **`hops`** and **`rank`** - how far from the first hits to look (default 2) and how to order what
   is found (`'ppr'`, the default, favours what is closely connected to the best hits).
-- **`asOf`** — facts written by `drevo.memory.assertFact` are shown as they stood at that time
+- **`asOf`** - facts written by `drevo.memory.assertFact` are shown as they stood at that time
   (an RFC 3339 timestamp such as `'2025-06-01T09:00:00+03:00'`, or a date).
 
 Every option is in the [Cypher Reference](cypher-reference.md#graph-rag-retrieval).
@@ -319,8 +319,8 @@ CALL drevo.community.summarize({mode: 'extractive'})
 YIELD community, size, summary
 ```
 
-This cuts the graph into communities — in an IT task manager, the backend team with its tickets
-and the mobile team with theirs — and writes each one as a `:Community` node with a summary: its
+This cuts the graph into communities - in an IT task manager, the backend team with its tickets
+and the mobile team with theirs - and writes each one as a `:Community` node with a summary: its
 best-connected members by label, its keywords and its most common relationships. Run it again
 when the graph has moved on; `drevo.community.stale()` tells you which communities changed.
 
@@ -341,7 +341,7 @@ Dave | MEMBER_OF | community default-1
 ```
 
 With `scope: 'auto'` drevo decides per question: global when the question starts like an overview
-("what…", "overview", "summary", "о чём…"), when the search finds nothing, or — with an embedder —
+("what…", "overview", "summary", "о чём…"), when the search finds nothing, or - with an embedder -
 when neither search is sure about what it found; local otherwise; the `scope` column says which it picked. To find communities by meaning as well as by
 words, register them for embedding once, before summarising:
 `CALL drevo.semantic.register('Community', 'summary', 'embedding', 'auto')`. The details are in the
@@ -359,7 +359,7 @@ YIELD text, traceId
 ```
 
 The record is a `:ContextTrace` node: the question, the text handed over, the settings used, and a
-link to every node that went in and to every node that was found but left out — with why (it did
+link to every node that went in and to every node that was found but left out - with why (it did
 not fit the budget, or the search stopped at its node limit). It is also linked to the newest
 message of the conversation, so it sits next to the turn that asked. To read it back:
 
@@ -372,7 +372,7 @@ RETURN rank, status, coalesce(node.name, node.title) AS name, tokens, reason
 A missing fact shows as a node that is not there at all; a budget cut as a `skipped` row with
 reason `budget`; a bad ranking as the right node far down the list. After you add the missing fact,
 `CALL drevo.rag.replay($traceId)` builds the same context again on today's graph and says whether
-the text changed — without recording a new trace. `drevo.rag.traces('chat-7', 10)` lists a
+the text changed - without recording a new trace. `drevo.rag.traces('chat-7', 10)` lists a
 conversation's latest records, and an administrator can delete old ones with
 `drevo.rag.pruneTraces('2025-01-01')` or let the server do it (`DREVO_RAG_TRACE_RETENTION_DAYS`).
 `trace: true` records a context without naming a conversation. Recording is a write, so it needs
@@ -384,7 +384,7 @@ the right to create nodes. Details are in the
 The context is only as good as the graph. `drevo.extract.ingest` builds that graph from plain text
 with the chat model the server is configured with: it cuts the text into passages, asks the model
 for the people, places, organisations, objects and events in each and the facts it states, and
-writes them as long-term memory — each fact citing the passage and the exact words it came from.
+writes them as long-term memory - each fact citing the passage and the exact words it came from.
 
 ```text
 CALL drevo.extract.ingest($chapter, {
@@ -408,7 +408,7 @@ the [Admin Guide](admin-guide.md#extraction-drevoextract-opt-in).
 ### Is the graph helping? Measure it
 
 Walking out from the search hits costs time and tokens; whether it pays depends on your data. To
-find out, write down a few questions and, for each, the nodes an answer needs — then let drevo
+find out, write down a few questions and, for each, the nodes an answer needs - then let drevo
 score every way of building the context against that list (a node is named by its `name` or its
 `title`):
 
@@ -429,12 +429,12 @@ Each row is one strategy, from plain search to the full pipeline:
 | `fts` | the best word matches |
 | `hybrid` | words and meaning together |
 | `hybrid+expand` | those hits and their neighbourhood, nearest first |
-| `rag` | the same neighbourhood ranked by how closely it connects to the hits — what `drevo.rag.context` does |
-| `rag-global` | the summaries of the matching communities and their members — `drevo.rag.context` with `scope: 'global'` (only once [`drevo.community.summarize`](#global-questions) has run) |
+| `rag` | the same neighbourhood ranked by how closely it connects to the hits - what `drevo.rag.context` does |
+| `rag-global` | the summaries of the matching communities and their members - `drevo.rag.context` with `scope: 'global'` (only once [`drevo.community.summarize`](#global-questions) has run) |
 
 `rag-global` joins the default list by itself once the graph has communities, so the same
 questions tell you whether local or global retrieval suits them. All of them get the same token
-budget, and each is scored on what fits it — what the model would
+budget, and each is scored on what fits it - what the model would
 see. `meanRecall` is the share of the expected nodes that made it in: if `rag` beats `vector` on
 your questions, the graph is earning its keep. `drevo.rag.evaluate` gives the same scores per
 question, with the ids of the nodes each context held; a question the graph strategies miss
@@ -442,7 +442,7 @@ usually needs a missing relationship, not a bigger budget (compare `recall` with
 `recallRetrieved`, which counts what was found before the budget cut).
 
 You can also score against an earlier answer instead of a hand-written list: `{traceId: '…'}`
-compares against the nodes that traced context included — a quick check that a config change did
+compares against the nodes that traced context included - a quick check that a config change did
 not drop what used to be there. Nothing is written while evaluating. From a shell,
 `cargo run --example rag_eval -- --data path.drevo --questions q.jsonl` prints the same summary
 as a table. Details are in the [Cypher Reference](cypher-reference.md#evaluate-strategies).
@@ -479,10 +479,10 @@ request itself is wrong) it is **dead**. A job whose remaining passages are all 
 `drevo.ingest.errors($jobId, 10)` shows why, and once the model is fixed
 `drevo.ingest.retryFailed($jobId)` runs them again. `pause`, `resume` and `cancel` do what they say;
 a passage already with the model finishes either way. If the server stops in the middle, the job
-carries on when it starts again — the passage that was running is simply run once more.
+carries on when it starts again - the passage that was running is simply run once more.
 
-You can also submit chapters as separate items — `['Chapter one …', 'Chapter two …']` or
-`[{text: …, offset: 12000, meta: {chapter: 2}}]` — and give urgent jobs a `priority`. When the book
+You can also submit chapters as separate items - `['Chapter one …', 'Chapter two …']` or
+`[{text: …, offset: 12000, meta: {chapter: 2}}]` - and give urgent jobs a `priority`. When the book
 is done, `drevo.ingest.purge($jobId)` drops the stored passages and keeps the job's record.
 
 ```cypher

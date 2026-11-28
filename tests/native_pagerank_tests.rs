@@ -122,7 +122,7 @@ fn ranks_conserve_mass_and_reflect_structure() {
     }
 }
 
-/// `CALL drevo.pagerank() YIELD node, score` — the top row's title and the
+/// `CALL drevo.pagerank() YIELD node, score` - the top row's title and the
 /// score column, extracted from the Cypher result of `execute`d on `db`.
 fn cypher_pagerank_scores(rows: &[Vec<Value>]) -> (String, Vec<f64>) {
     let top_title = match &rows[0][0] {

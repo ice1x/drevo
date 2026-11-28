@@ -2,11 +2,11 @@
 //!
 //! Phase 8 task 00050: verify the overlays under `k8s/overlays/<env>/`
 //! wrap the base manifests (`k8s/deployment.yaml`, `service.yaml`,
-//! `pvc.yaml`, `kustomization.yaml` — locked in by task 00049's
+//! `pvc.yaml`, `kustomization.yaml` - locked in by task 00049's
 //! `tests/k8s_manifests_tests.rs`) with environment-specific patches
 //! that keep the single-writer redb topology intact.
 //!
-//! The tests parse each overlay manifest as text — no `kubectl`, no
+//! The tests parse each overlay manifest as text - no `kubectl`, no
 //! `kustomize` binary, no cluster required. The CI K8s job complements
 //! this suite by running `kubectl kustomize k8s/overlays/<env>/` for
 //! each overlay, which catches structural breakage (broken `../../`
@@ -81,7 +81,7 @@ fn every_env_overlay_has_a_pvc_patch() {
 }
 
 // ------------------------------------------------------------------
-// Overlay kustomization.yaml — base reference, namespace, image tag
+// Overlay kustomization.yaml - base reference, namespace, image tag
 // ------------------------------------------------------------------
 
 #[test]
@@ -168,7 +168,7 @@ fn every_overlay_pins_the_image_tag_via_images_block() {
             content.contains("newTag:"),
             "k8s/overlays/{env}/kustomization.yaml must override the image tag via `newTag:`"
         );
-        // No bare :latest — the base manifest forbids it (task 00049)
+        // No bare :latest - the base manifest forbids it (task 00049)
         // and overlays must hold the same line.
         let images_section = section_after(&content, "images:");
         assert!(
@@ -182,7 +182,7 @@ fn every_overlay_pins_the_image_tag_via_images_block() {
 fn every_overlay_lists_both_patches() {
     // The patches block must list the deployment + pvc patches so a
     // kustomize build picks them up. We accept either of the modern
-    // `patches:` or the legacy `patchesStrategicMerge:` field names —
+    // `patches:` or the legacy `patchesStrategicMerge:` field names -
     // both work and either is fine in v1beta1.
     for env in ENVS {
         let content = read_overlay_file(env, "kustomization.yaml");
@@ -200,7 +200,7 @@ fn every_overlay_lists_both_patches() {
 }
 
 // ------------------------------------------------------------------
-// Deployment patch — keeps single-writer invariants, adjusts resources
+// Deployment patch - keeps single-writer invariants, adjusts resources
 // ------------------------------------------------------------------
 
 #[test]
@@ -277,7 +277,7 @@ fn every_deployment_patch_adjusts_container_resources() {
 #[test]
 fn prod_requests_more_cpu_and_memory_than_dev() {
     // Sanity check: production should not be sized below development.
-    // Comparing the requests block is enough — limits track requests
+    // Comparing the requests block is enough - limits track requests
     // in practice and any future regression flips the same string.
     let dev = read_overlay_file("dev", "deployment-patch.yaml");
     let prod = read_overlay_file("prod", "deployment-patch.yaml");
@@ -298,7 +298,7 @@ fn prod_requests_more_cpu_and_memory_than_dev() {
 }
 
 // ------------------------------------------------------------------
-// PVC patch — storage size only; ReadWriteOnce stays locked at the base
+// PVC patch - storage size only; ReadWriteOnce stays locked at the base
 // ------------------------------------------------------------------
 
 #[test]

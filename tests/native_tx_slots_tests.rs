@@ -1,8 +1,8 @@
-//! Registered (session-owned) native transactions (RFC #307, ACID I/A —
+//! Registered (session-owned) native transactions (RFC #307, ACID I/A -
 //! the executor-facing form of `NativeGraph::begin`): a Bolt session keeps
 //! only a [`NativeTxId`] between statements, and each statement runs
 //! against an ephemeral [`NativeTxEngine`] that implements `GraphEngine`
-//! over the transaction's private working copy — buffered writes,
+//! over the transaction's private working copy - buffered writes,
 //! read-your-writes, snapshot-isolated from the live graph, applied
 //! atomically (one fsynced WAL batch) at commit or discarded at rollback.
 

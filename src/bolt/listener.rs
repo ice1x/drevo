@@ -1,4 +1,4 @@
-//! Async TCP listener — accepts Bolt connections, performs the
+//! Async TCP listener - accepts Bolt connections, performs the
 //! handshake, then drives the session loop.
 //!
 //! Gated behind the `http` Cargo feature because that's what already
@@ -15,7 +15,7 @@
 //!   any connection; credential enforcement is provided by the
 //!   `with_auth_durable` session constructors in [`crate::bolt::session`],
 //!   which bind a [`crate::bolt::auth::Authenticator`] on every `HELLO`.
-//! * No back-pressure / connection limit — added when MVCC concurrency
+//! * No back-pressure / connection limit - added when MVCC concurrency
 //!   work (`00080`+) gives us a meaningful budget to enforce.
 //!
 //! TLS lands as task `00073` in the sibling `crate::bolt::tls`
@@ -24,7 +24,7 @@
 //! top of the generic
 //! [`crate::bolt::listener::accept_handshake_on`] /
 //! [`crate::bolt::listener::run_session_on_durable`] entry points exposed
-//! here — those work over *any* `AsyncRead + AsyncWrite + Unpin`
+//! here - those work over *any* `AsyncRead + AsyncWrite + Unpin`
 //! stream, not just [`tokio::net::TcpStream`], so the only TLS-aware
 //! code path is the wrapper that calls `tokio_rustls::TlsAcceptor`
 //! before invoking the same handshake + session loop.
@@ -57,7 +57,7 @@ pub struct AcceptedConnection {
 /// [`accept_handshake_on`]. Exists so the TLS module (task `00073`)
 /// can drive the same handshake over a `tokio_rustls::server::TlsStream`
 /// without paying for a separate code path. The `S` type parameter is
-/// whatever async stream the caller passed in — most commonly
+/// whatever async stream the caller passed in - most commonly
 /// [`tokio::net::TcpStream`] (the back-compat alias [`AcceptedConnection`]
 /// remains) or a TLS-wrapped variant.
 #[derive(Debug)]
@@ -78,14 +78,14 @@ pub struct AcceptedConnectionOn<S> {
 /// [`accept_handshake_on`] instead.
 ///
 /// On success returns the still-open socket plus the chosen version
-/// (or `None` if no proposal was supported — in that case the server
+/// (or `None` if no proposal was supported - in that case the server
 /// reply was `0x00 0x00 0x00 0x00` and the caller is expected to
 /// close the socket).
 ///
 /// # Errors
 ///
-/// * [`super::error::BoltError::InvalidMagic`] — bad preamble.
-/// * [`super::error::BoltError::Io`] — socket read or write failure.
+/// * [`super::error::BoltError::InvalidMagic`] - bad preamble.
+/// * [`super::error::BoltError::Io`] - socket read or write failure.
 pub async fn accept_handshake(socket: TcpStream) -> BoltResult<AcceptedConnection> {
     let accepted = accept_handshake_on(socket).await?;
     Ok(AcceptedConnection {
@@ -95,7 +95,7 @@ pub async fn accept_handshake(socket: TcpStream) -> BoltResult<AcceptedConnectio
 }
 
 /// Same as [`accept_handshake`] but generic over any
-/// `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS-wrapped TCP,
+/// `AsyncRead + AsyncWrite + Unpin` stream - TCP, TLS-wrapped TCP,
 /// in-memory duplex, etc. The bytes-on-the-wire layer is identical;
 /// the only thing that changes is what `S` is.
 ///
@@ -253,7 +253,7 @@ pub async fn refuse_on<S: AsyncRead + AsyncWrite + Unpin>(
 /// against `security`'s users when it requires a login; `client` is the
 /// peer's address for the audit log, and `version` the Bolt version the
 /// handshake negotiated. Drives
-/// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream — TCP, TLS,
+/// a [`Session`] over any `AsyncRead + AsyncWrite + Unpin` stream - TCP, TLS,
 /// etc. The stream must already be past the 20-byte handshake (call
 /// [`accept_handshake_on`] first).
 ///

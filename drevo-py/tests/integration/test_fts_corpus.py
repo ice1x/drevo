@@ -5,8 +5,8 @@ the *behaviour an embedding-augmented agent depends on*: real bodies,
 tokeniser interaction with punctuation and casing, ranking stability,
 and updates that mutate the posting list.
 
-The corpus is small but representative — CBT-style journal entries +
-task-tracker entries — borrowed from `README.md` §"Use Cases" so a
+The corpus is small but representative - CBT-style journal entries +
+task-tracker entries - borrowed from `README.md` §"Use Cases" so a
 regression here surfaces in the same vocabulary the rest of the project
 documents.
 """
@@ -41,7 +41,7 @@ def journal_corpus(disk_db: drevo.Drevo) -> drevo.Drevo:
 
 def test_fts_finds_exact_body_token(journal_corpus: drevo.Drevo) -> None:
     """A query that matches a unique body token returns exactly its
-    parent node — no false positives from neighbouring rows.
+    parent node - no false positives from neighbouring rows.
     """
     hits = journal_corpus.search_fts("sourdough", 10)
     assert {h.node.title for h in hits} == {"unrelated"}
@@ -67,7 +67,7 @@ def test_fts_scores_are_descending(journal_corpus: drevo.Drevo) -> None:
 
 
 def test_fts_limit_is_respected(journal_corpus: drevo.Drevo) -> None:
-    """Limit caps the number of hits returned — never exceeded even if
+    """Limit caps the number of hits returned - never exceeded even if
     more rows match.
     """
     hits = journal_corpus.search_fts("the", 2)
@@ -107,7 +107,7 @@ def test_fts_no_match_returns_empty_list(journal_corpus: drevo.Drevo) -> None:
 
 
 def test_fts_matches_title_tokens(journal_corpus: drevo.Drevo) -> None:
-    """The tokeniser indexes titles too — querying by a distinctive
+    """The tokeniser indexes titles too - querying by a distinctive
     title token reaches the row.
     """
     hits = journal_corpus.search_fts("rebuttal", 10)

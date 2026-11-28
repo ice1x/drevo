@@ -1,4 +1,4 @@
-//! `CALL drevo.info()` — version / build introspection over Cypher & Bolt
+//! `CALL drevo.info()` - version / build introspection over Cypher & Bolt
 //! (issue #303).
 //!
 //! A read-only, no-arg, no-auth procedure that lets a Bolt client learn which
@@ -76,12 +76,12 @@ fn drevo_info_takes_no_arguments() {
     let q = parse("CALL drevo.info(1) YIELD version RETURN version").expect("parse");
     assert!(
         d.execute(&q, HashMap::new()).is_err(),
-        "drevo.info has arity 0 — a positional argument must be rejected"
+        "drevo.info has arity 0 - a positional argument must be rejected"
     );
 }
 
-// The procedure must be reachable over the actual Bolt RUN/PULL path — the way
-// graphiti's neo4j-python client calls it — not only via the executor directly.
+// The procedure must be reachable over the actual Bolt RUN/PULL path - the way
+// graphiti's neo4j-python client calls it - not only via the executor directly.
 #[cfg(not(target_arch = "wasm32"))]
 mod over_bolt {
     use std::collections::BTreeMap;

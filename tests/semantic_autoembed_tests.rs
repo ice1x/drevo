@@ -1,16 +1,16 @@
-//! End-to-end tests for #251 slice 4 — **server-side auto-embedding on
+//! End-to-end tests for #251 slice 4 - **server-side auto-embedding on
 //! ingest/update**.
 //!
 //! Gated on `embeddings-proxy` (like the other embedding suites): they compile
 //! to an empty binary on the default feature set, and exercise the real
-//! [`drevo::embeddings::SyncEmbedder`] against a **local** in-process axum stub
-//! — no external network, deterministic, and safe to run anywhere with:
+//! [`drevo::embeddings::SyncEmbedder`] against a **local** in-process axum stub -
+//! no external network, deterministic, and safe to run anywhere with:
 //!
 //! ```text
 //! cargo test --features embeddings-proxy --test semantic_autoembed_tests
 //! ```
 //!
-//! What they lock (issue #251 acceptance bullet — "on ingest/update, drevo
+//! What they lock (issue #251 acceptance bullet - "on ingest/update, drevo
 //! embeds the configured properties server-side and keeps the vector index in
 //! sync"):
 //! - registering an `Auto`-mode target then `CREATE`ing / creating a matching
@@ -110,7 +110,7 @@ fn auto_embed_on_create_then_semantic_query_finds_it() {
     db.create_node(new_node("Doc", "d1", Some("hello world")))
         .expect("create");
 
-    // The embedding was written server-side on ingest — no client round-trip.
+    // The embedding was written server-side on ingest - no client round-trip.
     assert_eq!(embedding_of(&db, "d1"), Some(json!([1.0, 0.0])));
 
     // And the full loop works: query by text, embedded server-side, retrieves
@@ -147,7 +147,7 @@ fn auto_embed_skips_unregistered_label() {
     db.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
         .expect("register");
 
-    // A node of a different label is not a target — no embedding.
+    // A node of a different label is not a target - no embedding.
     db.create_node(new_node("Note", "n1", Some("hello")))
         .expect("create");
     assert_eq!(embedding_of(&db, "n1"), None);
@@ -208,7 +208,7 @@ fn update_reembeds_when_text_changes() {
     let q = parse("MATCH (d:Doc {title: 'u1'}) SET d.text = 'second'").expect("parse");
     db.execute(&q, HashMap::new()).expect("update");
     // (stub returns the same vector, so we assert the embedding is still present
-    // and well-formed — the re-embed path ran without error.)
+    // and well-formed - the re-embed path ran without error.)
     assert_eq!(embedding_of(&db, "u1"), Some(json!([1.0, 0.0])));
     let _ = node;
 }

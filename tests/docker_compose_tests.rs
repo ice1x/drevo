@@ -5,7 +5,7 @@
 //! replaced the named volume), port mapping, and environment defaults.
 //!
 //! These tests parse docker-compose.yml as text so they work without a
-//! YAML parser dependency or a running Docker daemon — mirroring the
+//! YAML parser dependency or a running Docker daemon - mirroring the
 //! pattern used in `tests/dockerfile_tests.rs`.
 
 use std::fs;
@@ -39,7 +39,7 @@ fn docker_compose_declares_services_section() {
 #[test]
 fn docker_compose_defines_drevo_service() {
     let content = read_compose();
-    // The service key must be indented under `services:` — a non-empty
+    // The service key must be indented under `services:` - a non-empty
     // leading indent distinguishes it from a top-level field.
     let has_service = content.lines().any(|l| {
         let trimmed = l.trim_start();
@@ -118,7 +118,7 @@ fn docker_compose_bind_mounts_host_data_dir() {
         content.contains("${DREVO_UID:-1000}:${DREVO_GID:-1000}"),
         "docker-compose.yml must run as the host user (DREVO_UID:DREVO_GID) to write the bind-mounted redb file"
     );
-    // The old named volume must be gone — a named volume would shadow the
+    // The old named volume must be gone - a named volume would shadow the
     // bind-mount and hide the host file.
     assert!(
         !content.contains("drevo-data:"),

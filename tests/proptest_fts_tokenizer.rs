@@ -1,26 +1,26 @@
-//! Phase 9 task `00057` — property-based tests for the FTS tokenizer.
+//! Phase 9 task `00057` - property-based tests for the FTS tokenizer.
 //!
 //! Properties covered (cf. `src/fts/tokenizer.rs`):
 //!
-//! 1. **`normalize` is total** — never panics on any UTF-8 input, including
+//! 1. **`normalize` is total** - never panics on any UTF-8 input, including
 //!    NUL bytes, control characters, surrogate-free Unicode, ZWJ emoji,
 //!    CJK, Cyrillic.
-//! 2. **`normalize` is idempotent** — `normalize(normalize(s)) == normalize(s)`.
-//! 3. **`normalize` collapses runs of separators** — the result never
+//! 2. **`normalize` is idempotent** - `normalize(normalize(s)) == normalize(s)`.
+//! 3. **`normalize` collapses runs of separators** - the result never
 //!    contains a leading space, a trailing space, or two consecutive
 //!    spaces.
-//! 4. **`normalize` is lowercased** — for every `c` in the output,
+//! 4. **`normalize` is lowercased** - for every `c` in the output,
 //!    `c == c.to_lowercase().next().unwrap()` when the lowercase mapping is
 //!    a single code point.
-//! 5. **`trigrams` is sorted and deduplicated** — required by the storage
+//! 5. **`trigrams` is sorted and deduplicated** - required by the storage
 //!    layer's `scan_prefix` semantics on the FTS index.
-//! 6. **`trigrams` length bound** — every trigram has 2 char-length (CJK
+//! 6. **`trigrams` length bound** - every trigram has 2 char-length (CJK
 //!    bigram window) or 3 char-length (sliding trigram); never more.
-//! 7. **`trigrams` self-consistency** — `trigrams(normalize(s))` equals
+//! 7. **`trigrams` self-consistency** - `trigrams(normalize(s))` equals
 //!    `trigrams(s)` because trigrams already calls `normalize` internally.
 //!    This pins down the "normalize before tokenize" pipeline against
 //!    accidental future refactors that would skip it.
-//! 8. **`extract_trigrams` is the union of its parts** — every trigram of
+//! 8. **`extract_trigrams` is the union of its parts** - every trigram of
 //!    `extract_trigrams(title, body)` is reachable from
 //!    `trigrams(title + " " + body)` (or one of the two when empty).
 //!
@@ -32,7 +32,7 @@ use drevo::fts::tokenizer::{extract_trigrams, normalize, trigrams};
 
 use proptest::prelude::*;
 
-/// Map a u32 into a char inside `[lo, hi]`. Total — `char::from_u32`
+/// Map a u32 into a char inside `[lo, hi]`. Total - `char::from_u32`
 /// returns `None` only for surrogate code points (U+D800..=U+DFFF), and
 /// the ranges we exercise all sit either entirely below or entirely
 /// above that range, so the unwrap is unreachable on inputs from those
@@ -60,7 +60,7 @@ fn diverse_char() -> impl Strategy<Value = char> {
     prop_oneof![
         // ASCII alnum and whitespace heavily
         20 => any::<char>().prop_filter("ascii", |c| c.is_ascii()),
-        // Latin extended (ß, é, ñ, …) — U+00C0..U+00FF
+        // Latin extended (ß, é, ñ, …) - U+00C0..U+00FF
         4 => char_from_range(0x00C0, 0x00FF),
         // Cyrillic block U+0400..U+04FF
         4 => char_from_range(0x0400, 0x04FF),
@@ -88,7 +88,7 @@ proptest! {
         .. ProptestConfig::default()
     })]
 
-    /// `normalize` is total — it never panics on any UTF-8 input.
+    /// `normalize` is total - it never panics on any UTF-8 input.
     #[test]
     fn normalize_is_total(s in diverse_string(64)) {
         // Just calling it without panic is the property.
@@ -126,7 +126,7 @@ proptest! {
     }
 
     /// Every character in `normalize`'s output is either a space or a
-    /// "keepable" character — alphanumeric or CJK. Punctuation, NUL, etc.
+    /// "keepable" character - alphanumeric or CJK. Punctuation, NUL, etc.
     /// must be gone.
     #[test]
     fn normalize_keeps_only_alphanumeric_cjk_and_space(s in diverse_string(64)) {
@@ -145,7 +145,7 @@ proptest! {
     /// Stronger property than the existing `normalize_lowercase` unit test:
     /// holds for ALL inputs, not just the one hand-rolled example. Skipped
     /// for characters whose Unicode lowercase mapping expands to multiple
-    /// code points (e.g. `ß → ss`) — Rust's `to_lowercase()` returns an
+    /// code points (e.g. `ß → ss`) - Rust's `to_lowercase()` returns an
     /// iterator in that case and the implementation pushes each scalar
     /// individually, which is still correct per the Unicode spec.
     #[test]
@@ -260,7 +260,7 @@ proptest! {
 
     /// Whitespace-only / punctuation-only / control-only strings produce
     /// no trigrams. This is the FTS analogue of invariant #2 (cascading
-    /// delete leaves no orphan index entries) — empty input must not
+    /// delete leaves no orphan index entries) - empty input must not
     /// silently create posting-list rows.
     #[test]
     fn punctuation_only_input_yields_no_trigrams(
@@ -294,7 +294,7 @@ proptest! {
 }
 
 /// Local copy of `is_cjk` so the assertion test can call it. The function
-/// in `src/fts/tokenizer.rs` is private (`const fn`) — we mirror the same
+/// in `src/fts/tokenizer.rs` is private (`const fn`) - we mirror the same
 /// ranges here; if a future refactor adds a range to the source, this
 /// helper must move in lockstep or the corresponding property test will
 /// (correctly) start failing.

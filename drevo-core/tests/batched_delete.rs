@@ -1,4 +1,4 @@
-//! Batched, single-fsync node deletion — `GraphEngine::delete_nodes` on the
+//! Batched, single-fsync node deletion - `GraphEngine::delete_nodes` on the
 //! native engine (issue #435). Deleting a subtree of `N` nodes must cost one
 //! durability flush, not `N`, while preserving `delete_node`'s per-node effects
 //! (cascade incident edges, durable tombstones per #389) and skipping ids that
@@ -142,7 +142,7 @@ fn delete_nodes_are_durable_across_reopen() {
 }
 
 /// A batched delete stamps a causal tombstone per node, exactly like the single
-/// `delete_node` path (issue #389) — a peer/replica can tell "deleted" from
+/// `delete_node` path (issue #389) - a peer/replica can tell "deleted" from
 /// "never existed". Observed through the CRDT delta, which advertises each
 /// tombstone as a `DeleteNode(uuid, stamp)`.
 #[test]

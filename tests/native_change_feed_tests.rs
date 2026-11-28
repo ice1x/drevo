@@ -6,7 +6,7 @@
 //! snapshot the graph once, remember [`change_head`], then poll
 //! [`changes_since`] and fold each change into the derived index. These tests
 //! lock the feed's ordering, cursor arithmetic, transaction semantics
-//! (committed writes appear, rolled-back ones do not), and — the headline — a
+//! (committed writes appear, rolled-back ones do not), and - the headline - a
 //! subscriber that reconstructs the exact node set purely from the feed.
 //!
 //! [`change_head`]: drevo::native::NativeGraph::change_head
@@ -39,7 +39,7 @@ fn new_edge(from: u64, to: u64, kind: &str) -> NewEdge {
 }
 
 /// A stand-in secondary index: `id -> title`, maintained purely by folding the
-/// change-feed — exactly the shape an FTS/vector indexer would keep.
+/// change-feed - exactly the shape an FTS/vector indexer would keep.
 #[derive(Default)]
 struct TitleIndex {
     titles: HashMap<u64, String>,
@@ -132,7 +132,7 @@ fn subscriber_reconstructs_state_by_tailing_the_feed() {
     index.pull(&g);
     assert_eq!(index.titles, live_titles(&g));
 
-    // Round 2: an update (rename), a new node, and a delete — then catch up
+    // Round 2: an update (rename), a new node, and a delete - then catch up
     // incrementally from the previous cursor.
     g.update_node(
         a.id,
@@ -221,7 +221,7 @@ fn trim_is_clamped_and_never_loses_unproduced_or_reverses() {
     g.create_node(new_node("k", "a")).unwrap();
     g.create_node(new_node("k", "b")).unwrap();
 
-    // Trimming beyond head is clamped to head — never trims a future change.
+    // Trimming beyond head is clamped to head - never trims a future change.
     assert_eq!(g.trim_before(999), 2);
     assert_eq!(g.change_floor(), 2);
 
@@ -257,7 +257,7 @@ fn lagged_subscriber_re_snapshots_then_tails_to_correct_state() {
     assert!(batch.lagged, "a cursor below the floor must report lagged");
 
     // On `lagged`, the subscriber discards its state, re-seeds from a fresh
-    // snapshot, and resumes tailing from the reported cursor — reaching the
+    // snapshot, and resumes tailing from the reported cursor - reaching the
     // correct state.
     let mut resynced = TitleIndex {
         titles: live_titles(&g),

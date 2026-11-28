@@ -2,22 +2,22 @@
 
 These fixtures favour *cheap*, *deterministic*, *focused* dependencies:
 
-* `drevo_db` — an in-memory drevo handle. Each test gets a fresh one.
+* `drevo_db` - an in-memory drevo handle. Each test gets a fresh one.
   The in-memory backend is the standard "unit-level boundary" for
   embedded databases: no disk I/O, no lockfile, no cleanup, but still
   the *real* storage code path. Pure `unittest.mock.Mock`-only tests
   belong further down (`mock_drevo`).
-* `mock_drevo` — a `unittest.mock.Mock` typed as a `drevo.Drevo`. Used
+* `mock_drevo` - a `unittest.mock.Mock` typed as a `drevo.Drevo`. Used
   by `drevo.rag` algorithmic tests where we want to assert on the
   method-call signature without paying for real storage.
-* `det_embedder` — a deterministic toy embedder (hash + bag-of-chars).
+* `det_embedder` - a deterministic toy embedder (hash + bag-of-chars).
   Lets the MMR / ingest tests assert exact floats without depending
   on an external model.
-* `connected_chain` — a 4-node linear chain (`a → b → c → d`) in the
+* `connected_chain` - a 4-node linear chain (`a → b → c → d`) in the
   in-memory backend; the BFS / Retriever tests reuse it.
 
 RFC §8 + the `drevo-tdd` skill (§"Unit tests") informs the *boundary*
-this suite operates against — exactly one Python-level public symbol
+this suite operates against - exactly one Python-level public symbol
 per test, where possible.
 """
 
@@ -38,8 +38,8 @@ import drevo
 def drevo_db():
     """Yield a fresh in-memory drevo handle; close on scope exit.
 
-    The in-memory backend is the canonical unit-level storage stand-in
-    — real code paths, zero disk, zero lockfile. A test that needs
+    The in-memory backend is the canonical unit-level storage stand-in -
+    real code paths, zero disk, zero lockfile. A test that needs
     behaviour the in-memory backend lacks (durability, file lock
     contention, recovery) belongs in `tests/integration/` (00119), not
     here.
@@ -55,7 +55,7 @@ def mock_drevo():
     Used by `drevo.rag` tests that exercise the *dispatch* layer (e.g.
     `Retriever._resolve_seeds` calling `search_fts` for a `str` seed).
     The point is to assert exactly which `Drevo.*` method gets called
-    with which args — not to verify storage semantics, which is the
+    with which args - not to verify storage semantics, which is the
     in-memory fixture's job.
     """
     m = MagicMock(spec=drevo.Drevo)

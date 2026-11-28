@@ -1,12 +1,12 @@
-//! End-to-end Cypher `CASE` expression tests — Phase 10 follow-up task `00137`.
+//! End-to-end Cypher `CASE` expression tests - Phase 10 follow-up task `00137`.
 //!
 //! `CASE` is Cypher's conditional expression. Two forms:
 //!
-//! * **Generic** (`CASE WHEN cond THEN val [WHEN …] [ELSE val] END`) —
+//! * **Generic** (`CASE WHEN cond THEN val [WHEN …] [ELSE val] END`) -
 //!   evaluates each boolean `WHEN` condition in order and returns the `THEN`
 //!   value of the first that is `true`. A `NULL` or `false` condition is
 //!   skipped; a non-boolean condition is a type error.
-//! * **Simple** (`CASE x WHEN v THEN val [WHEN …] [ELSE val] END`) —
+//! * **Simple** (`CASE x WHEN v THEN val [WHEN …] [ELSE val] END`) -
 //!   evaluates the scrutinee `x` once and returns the `THEN` value of the
 //!   first `WHEN` value equal to it. `NULL` never matches (Cypher's
 //!   three-valued equality), so a `NULL` scrutinee falls through to `ELSE`.
@@ -89,7 +89,7 @@ fn generic_case_without_else_yields_null() {
 #[test]
 fn generic_case_null_condition_is_skipped() {
     let db = db();
-    // `null` is neither true nor false — it does not select the arm.
+    // `null` is neither true nor false - it does not select the arm.
     let rows = run(
         "RETURN CASE WHEN null THEN 'a' WHEN true THEN 'b' ELSE 'c' END AS r",
         &db,

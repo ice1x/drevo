@@ -1,4 +1,4 @@
-//! Observability — Phase 15 task `00130`.
+//! Observability - Phase 15 task `00130`.
 //!
 //! Production deployments need to answer two operational questions without a
 //! debugger attached: *how much traffic is this process serving, and how fast?*
@@ -7,9 +7,9 @@
 //!
 //! * a dependency-free, lock-free **metrics registry**
 //!   ([`Registry`](crate::observability::Registry)) with the three Prometheus
-//!   metric shapes — [`Counter`](crate::observability::Counter),
+//!   metric shapes - [`Counter`](crate::observability::Counter),
 //!   [`Gauge`](crate::observability::Gauge),
-//!   [`Histogram`](crate::observability::Histogram) — and a
+//!   [`Histogram`](crate::observability::Histogram) - and a
 //!   [`render_prometheus`](crate::observability::Registry::render_prometheus)
 //!   renderer that emits the Prometheus text exposition format (version
 //!   `0.0.4`) the `drevo-server` `/metrics` route serves;
@@ -28,7 +28,7 @@
 //! registration-time [`std::sync::Mutex`], no spawned threads). The HTTP
 //! `/metrics` route and the per-request instrumentation live in
 //! [`crate::api`] behind the `http` feature; the OTLP wire exporter
-//! (`opentelemetry-otlp`) is deliberately **out of scope** for this task —
+//! (`opentelemetry-otlp`) is deliberately **out of scope** for this task -
 //! pulling tonic / gRPC / protobuf into the default dependency graph would
 //! contradict the crate's "embeddable, no external system deps" property, so
 //! it is left as an opt-in follow-up that attaches to the OTEL-semantic spans
@@ -43,19 +43,19 @@ use std::sync::{Arc, Mutex};
 /// test that asserts on them share one source of truth. See the OpenTelemetry
 /// database client semantic conventions.
 pub mod otel_fields {
-    /// `db.system` — identifies drevo as the database system.
+    /// `db.system` - identifies drevo as the database system.
     pub const DB_SYSTEM: &str = "db.system";
-    /// `db.operation` — the logical operation name (e.g. `cypher`, `fts`).
+    /// `db.operation` - the logical operation name (e.g. `cypher`, `fts`).
     pub const DB_OPERATION: &str = "db.operation";
-    /// `db.statement` — the query text that was executed.
+    /// `db.statement` - the query text that was executed.
     pub const DB_STATEMENT: &str = "db.statement";
-    /// `otel.status_code` — `OK` or `ERROR`, the span status.
+    /// `otel.status_code` - `OK` or `ERROR`, the span status.
     pub const OTEL_STATUS_CODE: &str = "otel.status_code";
     /// The constant value of [`DB_SYSTEM`] for this database.
     pub const DB_SYSTEM_VALUE: &str = "drevo";
 }
 
-/// The default histogram bucket boundaries (in seconds) for latency metrics —
+/// The default histogram bucket boundaries (in seconds) for latency metrics -
 /// the canonical Prometheus client default ladder, covering sub-millisecond to
 /// ten-second responses. Callers that know their latency profile can pass a
 /// tighter ladder to [`Registry::histogram`].
@@ -85,7 +85,7 @@ impl MetricKind {
     }
 }
 
-/// A monotonically increasing counter — request totals, error totals, and the
+/// A monotonically increasing counter - request totals, error totals, and the
 /// like. Cloning shares the same underlying atomic, so the handle can be held
 /// by every request handler at once and incremented lock-free.
 #[derive(Debug, Clone)]
@@ -106,7 +106,7 @@ impl Counter {
         self.inc_by(1);
     }
 
-    /// Add `n`. Saturates at [`u64::MAX`] rather than wrapping — a counter must
+    /// Add `n`. Saturates at [`u64::MAX`] rather than wrapping - a counter must
     /// never appear to go backwards.
     pub fn inc_by(&self, n: u64) {
         // `fetch_add` wraps on overflow; a CAS loop lets us saturate instead so
@@ -131,7 +131,7 @@ impl Counter {
     }
 }
 
-/// A gauge — a value that can rise and fall, such as in-flight requests or the
+/// A gauge - a value that can rise and fall, such as in-flight requests or the
 /// process uptime. Backed by a signed atomic so it can be decremented below
 /// its starting point. Cloning shares the underlying atomic.
 #[derive(Debug, Clone)]
@@ -179,7 +179,7 @@ struct HistogramInner {
     /// Upper bounds (inclusive `le`), strictly ascending and finite. The
     /// implicit `+Inf` bucket is rendered separately and equals `count`.
     bounds: Vec<f64>,
-    /// Per-bound observation counts — `counts[i]` is the number of observations
+    /// Per-bound observation counts - `counts[i]` is the number of observations
     /// whose value is `<= bounds[i]` *and* `> bounds[i-1]` (i.e. the
     /// non-cumulative tally for that band). Cumulated at render time.
     counts: Vec<AtomicU64>,
@@ -191,7 +191,7 @@ struct HistogramInner {
     sum_bits: AtomicU64,
 }
 
-/// A bucketed distribution — request and query latencies. Observations are
+/// A bucketed distribution - request and query latencies. Observations are
 /// tallied into the band whose upper bound first contains them; the Prometheus
 /// renderer cumulates the bands into `le` buckets plus `_sum` and `_count`
 /// series. Cloning shares the underlying atomics.
@@ -298,14 +298,14 @@ struct RegistryInner {
     entries: HashMap<(String, Vec<(String, String)>), Entry>,
 }
 
-/// A metrics registry — the thread-safe, dependency-free collection of named
+/// A metrics registry - the thread-safe, dependency-free collection of named
 /// metrics a process exposes.
 ///
 /// Metrics are registered once (typically at startup, via [`DrevoMetrics`]) and
 /// then updated lock-free through the [`Counter`] / [`Gauge`] / [`Histogram`]
 /// handles, which share the registered atomics. The single
 /// [`std::sync::Mutex`] guards only registration and rendering, not the hot
-/// update path. A poisoned lock is recovered in place — a panic in one
+/// update path. A poisoned lock is recovered in place - a panic in one
 /// registrar must not wedge metric collection for the whole process.
 #[derive(Debug, Clone)]
 pub struct Registry {
@@ -420,7 +420,7 @@ impl Registry {
         hist
     }
 
-    /// Recover the lock in place if a previous holder panicked — stale metric
+    /// Recover the lock in place if a previous holder panicked - stale metric
     /// state can never corrupt a rendered exposition, so proceeding is safe.
     fn lock(&self) -> std::sync::MutexGuard<'_, RegistryInner> {
         self.inner
@@ -596,16 +596,16 @@ impl QueryOutcome {
     }
 }
 
-/// One structured query-log record — the plain data behind a single
+/// One structured query-log record - the plain data behind a single
 /// observed query. Carries everything the metrics update and the
 /// OTEL-semantic tracing event need; constructing it has no side effects, so
 /// it is cheap to build and easy to assert on in tests.
 #[derive(Debug, Clone)]
 pub struct QueryObservation {
-    /// The logical operation (`cypher`, `fts`, `traversal`, …) — the
+    /// The logical operation (`cypher`, `fts`, `traversal`, …) - the
     /// `db.operation` OTEL field and the `operation` metric label.
     pub operation: String,
-    /// The query text — the `db.statement` OTEL field. Kept verbatim; callers
+    /// The query text - the `db.statement` OTEL field. Kept verbatim; callers
     /// that must redact secrets should do so before constructing the record.
     pub statement: String,
     /// Wall-clock duration of the query, in seconds.
@@ -657,48 +657,48 @@ pub struct DrevoMetrics {
     /// `drevo_process_uptime_seconds` (gauge, refreshed by the `/metrics`
     /// handler from the server's start instant).
     pub uptime_seconds: Gauge,
-    /// `drevo_storage_file_bytes` (gauge, #253 slice 1) — physical on-disk size
+    /// `drevo_storage_file_bytes` (gauge, #253 slice 1) - physical on-disk size
     /// of the backend file, refreshed by the `/metrics` handler from an O(1)
     /// file stat. Stays `0` for the ephemeral in-memory backend. Pair it with
     /// the logical size from the on-demand `GET /storage/bloat` report to alert
     /// on reclaimable copy-on-write bloat.
     pub storage_file_bytes: Gauge,
-    /// `drevo_statement_timeouts_total` (#552) — statements stopped by the
+    /// `drevo_statement_timeouts_total` (#552) - statements stopped by the
     /// statement timeout (#547), over HTTP and Bolt. Synced from
     /// [`crate::problems::statement_timeouts`] by the `/metrics` handler via
     /// [`DrevoMetrics::sync_statement_timeouts`].
     statement_timeouts: Counter,
-    /// `drevo_slow_statements_total` — statements logged as slow
+    /// `drevo_slow_statements_total` - statements logged as slow
     /// (`DREVO_SLOW_QUERY_MS`); mirrors [`crate::problems::slow_statements`]
     /// via [`DrevoMetrics::sync_slow_statements`].
     slow_statements: Counter,
-    /// `drevo_connections_rejected_total{protocol="bolt"|"http"}` — Bolt
+    /// `drevo_connections_rejected_total{protocol="bolt"|"http"}` - Bolt
     /// connections and HTTP requests refused by the connection limits.
     connections_rejected: [Counter; 2],
-    /// `drevo_connections_active{protocol="bolt"|"http"}` — open Bolt
+    /// `drevo_connections_active{protocol="bolt"|"http"}` - open Bolt
     /// connections and HTTP requests being served.
     connections_active: [Gauge; 2],
-    /// `drevo_tx_conflicts_total{reason}` (issue #749) — explicit-transaction
+    /// `drevo_tx_conflicts_total{reason}` (issue #749) - explicit-transaction
     /// commits rejected because the graph changed since they began, by what a
     /// per-entity rule would have said: `overlap`, `would_pass`, `history`.
     /// Synced from the engine's counters on every scrape.
     tx_conflicts: [Counter; 3],
-    /// `drevo_tx_merged_commits_total` — explicit-transaction commits that
+    /// `drevo_tx_merged_commits_total` - explicit-transaction commits that
     /// went through although others committed since they began, because none
     /// of those touched the same records (snapshot isolation).
     tx_merged: Counter,
-    /// `drevo_prepared_transactions` (#556) — prepared, unresolved
+    /// `drevo_prepared_transactions` (#556) - prepared, unresolved
     /// two-phase-commit transactions; while non-zero, writes are refused.
     /// Refreshed by the `/metrics` handler.
     pub prepared_transactions: Gauge,
-    /// `drevo_prepared_transaction_oldest_age_seconds` (#556) — age of the
+    /// `drevo_prepared_transaction_oldest_age_seconds` (#556) - age of the
     /// oldest prepared transaction (`0` when none). Refreshed by `/metrics`.
     pub prepared_oldest_age_seconds: Gauge,
-    /// `drevo_ingest_items_total{state="done"|"failed"|"dead"}` — ingest-job
+    /// `drevo_ingest_items_total{state="done"|"failed"|"dead"}` - ingest-job
     /// item attempts that were written, failed with a retry left, or failed
     /// for good. Synced by [`DrevoMetrics::sync_ingest`].
     ingest_items: [Counter; 3],
-    /// `drevo_ingest_jobs_active` — ingest jobs queued or running, in every
+    /// `drevo_ingest_jobs_active` - ingest jobs queued or running, in every
     /// database. Synced by [`DrevoMetrics::sync_ingest`].
     ingest_jobs_active: Gauge,
 }
@@ -838,7 +838,7 @@ impl DrevoMetrics {
             "Ingest jobs queued or running, in every database.",
             &[],
         );
-        // Publish the build version as a `1`-valued info gauge — the idiomatic
+        // Publish the build version as a `1`-valued info gauge - the idiomatic
         // Prometheus way to expose a constant string dimension.
         registry
             .gauge(
@@ -930,7 +930,7 @@ impl DrevoMetrics {
         }
     }
 
-    /// Map an HTTP status code (100–599) to its class index (`1xx`→0 … but only
+    /// Map an HTTP status code (100-599) to its class index (`1xx`→0 … but only
     /// `2xx`..`5xx` are tracked; `1xx` folds into `2xx`, anything ≥600 into
     /// `5xx`).
     fn status_class_index(status: u16) -> usize {
@@ -1001,7 +1001,7 @@ fn emit_query_trace(obs: &QueryObservation) {
     // The `tracing` macro reads a bare string literal as the message, so dotted
     // OTEL keys (`db.system`) cannot be field names directly. We emit
     // valid-identifier fields whose names map one-to-one onto the canonical
-    // OTEL attribute keys documented in [`otel_fields`] — `db_system` →
+    // OTEL attribute keys documented in [`otel_fields`] - `db_system` →
     // `db.system`, `db_operation` → `db.operation`, `db_statement` →
     // `db.statement`, `otel_status_code` → `otel.status_code`. A
     // `tracing-opentelemetry` layer (the opt-in OTLP-export follow-up) applies
@@ -1315,7 +1315,7 @@ mod tests {
 
     #[test]
     fn storage_file_bytes_gauge_settable() {
-        // #253 slice 1 — the /metrics handler refreshes this from an O(1) stat.
+        // #253 slice 1 - the /metrics handler refreshes this from an O(1) stat.
         let m = DrevoMetrics::new();
         m.storage_file_bytes.set(412_000_000);
         let out = m.render_prometheus();

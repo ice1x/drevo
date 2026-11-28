@@ -1,4 +1,4 @@
-//! Neo4j 5 label expressions — issue #572.
+//! Neo4j 5 label expressions - issue #572.
 //!
 //! `|` (or), `&` (and), `!` (not), `%` (any label) and parentheses, in node
 //! patterns and in the `n:…` predicate (#568). The legacy `:A:B` chain keeps

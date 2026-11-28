@@ -1,9 +1,9 @@
-//! The ingestion engine — poll, decode, apply, commit.
+//! The ingestion engine - poll, decode, apply, commit.
 //!
 //! [`IngestConsumer`] glues a [`StreamSource`] (the broker) to an
 //! [`IngestSink`] (the graph). One [`run_once`](IngestConsumer::run_once) pulls
 //! a batch, decodes each payload into an [`IngestEvent`], applies it to the
-//! sink, and — on success — commits the batch's high-water offset back to the
+//! sink, and - on success - commits the batch's high-water offset back to the
 //! source. [`run_to_idle`](IngestConsumer::run_to_idle) repeats that until the
 //! partition drains.
 //!
@@ -13,10 +13,10 @@
 //! ([`StreamError::Parse`]) and a well-formed event the sink rejects
 //! ([`StreamError::Sink`]). The [`ErrorPolicy`] chooses what happens:
 //!
-//! * [`ErrorPolicy::Halt`] — stop immediately, returning the error. Offsets up
+//! * [`ErrorPolicy::Halt`] - stop immediately, returning the error. Offsets up
 //!   to (but not including) the bad message are still committed, so a fixed /
 //!   skipped message can be resumed past.
-//! * [`ErrorPolicy::DeadLetter`] — record the bad message in
+//! * [`ErrorPolicy::DeadLetter`] - record the bad message in
 //!   [`dead_letters`](IngestConsumer::dead_letters) and carry on. The graph
 //!   keeps ingesting good events; an operator inspects the dead-letter queue
 //!   out of band. This is the production default for an unattended consumer.
@@ -26,7 +26,7 @@
 //! The consumer tracks a `resume_after` watermark and silently skips any
 //! message whose offset is at or below it. Combined with the at-least-once
 //! re-delivery of [`StreamSource`], a message processed but not yet committed
-//! before a crash is re-delivered and — if it slips past the watermark — re-
+//! before a crash is re-delivered and - if it slips past the watermark - re-
 //! applied harmlessly, because every [`IngestEvent`] is idempotent.
 
 use crate::streaming::error::{Result, StreamError};
@@ -149,7 +149,7 @@ impl IngestConsumer {
         self.applied_total
     }
 
-    /// The current resume watermark — messages at or below this offset are
+    /// The current resume watermark - messages at or below this offset are
     /// skipped as already-applied.
     #[must_use]
     pub fn resume_watermark(&self) -> Offset {
@@ -279,7 +279,7 @@ impl IngestConsumer {
 }
 
 impl Default for IngestConsumer {
-    /// Equivalent to [`IngestConsumer::new`] — the [`ErrorPolicy::DeadLetter`]
+    /// Equivalent to [`IngestConsumer::new`] - the [`ErrorPolicy::DeadLetter`]
     /// default with the default batch size. (A derived `Default` would set a
     /// `0` batch size and silently stall, so it is delegated to `new`.)
     fn default() -> Self {

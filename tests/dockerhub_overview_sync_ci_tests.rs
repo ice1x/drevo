@@ -2,7 +2,7 @@
 //! committed `DOCKERHUB.md`.
 //!
 //! Docker Hub's overview (the long description on the repo's page) is
-//! populated only through the web form or the Docker Hub API — a
+//! populated only through the web form or the Docker Hub API - a
 //! `docker push` never touches it. So without automation the published
 //! overview silently drifts from, or simply never matches, the source of
 //! truth in the repo (the page showed "No overview available" until this
@@ -11,7 +11,7 @@
 //! Docker Hub API with the file's contents.
 //!
 //! These pure-text invariants keep the file and the workflow from drifting
-//! apart — e.g. a rename of `DOCKERHUB.md` that forgets the workflow, or a
+//! apart - e.g. a rename of `DOCKERHUB.md` that forgets the workflow, or a
 //! workflow edit that drops the sync. Mirrors the pattern of
 //! `tests/ci_self_hosted_runner_tests.rs` /
 //! `tests/cbindgen_header_sync_ci_tests.rs`.

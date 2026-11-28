@@ -29,7 +29,7 @@ fn fresh<V: Clone>() -> (Arc<TransactionManager>, Arc<VersionedStore<String, V>>
     (mgr, store)
 }
 
-/// Seed a committed key/value, returning nothing — just establishes state.
+/// Seed a committed key/value, returning nothing - just establishes state.
 fn seed<V: Clone>(mgr: &Arc<TransactionManager>, store: &VersionedStore<String, V>, k: &str, v: V) {
     let w = mgr.begin().unwrap();
     let snap = mgr.snapshot(w).unwrap();
@@ -38,7 +38,7 @@ fn seed<V: Clone>(mgr: &Arc<TransactionManager>, store: &VersionedStore<String, 
 }
 
 /// Bug-tracker workflow: two triagers open the same bug at the same time and
-/// both try to change its status. First-updater-wins — the second triager's
+/// both try to change its status. First-updater-wins - the second triager's
 /// stale write is rejected, and they must re-read the bug before editing.
 #[test]
 fn bug_tracker_two_triagers_race_one_status_change() {
@@ -233,7 +233,7 @@ fn delete_then_concurrent_update_conflicts() {
 
 /// Sustained head-on contention on a single key with a tiny retry budget must
 /// eventually surface [`MvccError::RetriesExhausted`] rather than spin
-/// forever — proving the budget is a real ceiling.
+/// forever - proving the budget is a real ceiling.
 #[test]
 fn exhausted_retry_budget_is_reported() {
     let (mgr, store) = fresh::<i64>();
@@ -300,7 +300,7 @@ fn many_threads_increment_without_losing_updates() {
 proptest! {
     /// Core OCC safety invariant: a batch of `n` conflict-checked increments
     /// against one key, driven through `run_with_retry`, always converges to
-    /// exactly `n` — regardless of how many of them initially raced off the
+    /// exactly `n` - regardless of how many of them initially raced off the
     /// same value. (Single-threaded but with interleaved fresh snapshots, so
     /// the retry path is genuinely exercised: each increment re-reads.)
     #[test]

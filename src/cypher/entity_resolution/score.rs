@@ -7,7 +7,7 @@ use super::normalise::{split_initials, words};
 /// `'token'` blocking).
 pub(crate) const MIN_TOKEN_CHARS: usize = 3;
 
-/// Jaro–Winkler similarity of `a` and `b` over characters: `1` for equal
+/// Jaro-Winkler similarity of `a` and `b` over characters: `1` for equal
 /// strings, `0` when nothing matches; a common prefix (up to four characters)
 /// raises a Jaro similarity above `0.7`.
 pub(crate) fn jaro_winkler(a: &str, b: &str) -> f64 {
@@ -62,7 +62,7 @@ fn jaro(a: &[char], b: &[char]) -> f64 {
 }
 
 /// How alike two compared names are: the highest of
-/// - their Jaro–Winkler similarity;
+/// - their Jaro-Winkler similarity;
 /// - the similarity of their words without initials, when the initials do not
 ///   disagree (one name has none, or both have the same), so «пушкин» matches
 ///   «а с пушкин»;

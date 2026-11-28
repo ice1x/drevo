@@ -6,8 +6,8 @@
   <title>drevo browser</title>
   <!--
     Favicon: the Christmas-tree emoji as an inline SVG *text* glyph. We ship the
-    Unicode code point (U+1F384), not any vendor's emoji artwork — the browser
-    renders it with the viewer's own system emoji font — so there is no
+    Unicode code point (U+1F384), not any vendor's emoji artwork - the browser
+    renders it with the viewer's own system emoji font - so there is no
     third-party image license to honour. No file, no route, no network.
   -->
   <link
@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="/ui/styles.css" />
   <!--
     Cytoscape.js (v3.30.2) is VENDORED same-origin under /ui/vendor/ and
-    baked into the drevo-server binary — it is NOT loaded from a public
+    baked into the drevo-server binary - it is NOT loaded from a public
     CDN. A CDN load (the old unpkg.com setup) silently breaks the WebUI
     wherever the CDN is unreachable: offline boxes, locked-down networks,
     and privacy browsers (Brave Shields blocks unpkg by default), leaving
@@ -27,7 +27,7 @@
   -->
   <script src="/ui/vendor/cytoscape.min.js"></script>
   <!--
-    Phase 15 task 00093 — kinetics. The fcose ("fast Compound Spring
+    Phase 15 task 00093 - kinetics. The fcose ("fast Compound Spring
     Embedder") physics layout is a Cytoscape extension. Its UMD bundle
     auto-registers against the global `cytoscape` as long as it loads
     after the core, and it pulls in `cose-base` → `layout-base`, so the
@@ -187,7 +187,7 @@
 
   <!-- Storage panel (modal overlay). Opened from the ⛁ topbar button; shows
        the active database's on-disk footprint (from GET /storage/bloat), the
-       per-keyspace row/byte breakdown (GET /storage/keyspaces — the `fts` row
+       per-keyspace row/byte breakdown (GET /storage/keyspaces - the `fts` row
        is what dominates a text-heavy graph), the running transactions, the
        newest physical backups, a GraphML backup download, an online Shrink
        and a Benchmark. While it is open the footprint and keyspaces follow
@@ -430,7 +430,7 @@
       <button type="button" id="stop-request" class="stop-request" hidden
               title="Stop waiting for this request (the server may still finish it)">Stop</button>
     </span>
-    <span class="hint" title="Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.">Tip: a sample graph loads on start — click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.</span>
+    <span class="hint" title="Tip: a sample graph loads on start - click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.">Tip: a sample graph loads on start - click a kind chip or change the node limit to refocus; double-click a node to expand its neighbours. Query results open in the Graph, Table or JSON tab.</span>
   </footer>
 
   <!-- Pure graph-geometry helpers (unit-tested in graph_math.test.js); must

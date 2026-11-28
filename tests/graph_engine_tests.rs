@@ -2,7 +2,7 @@
 //!
 //! These tests pin that (a) the seam exists and is object-safe, and (b) driving
 //! the native engine purely through `&dyn GraphEngine` reproduces the expected
-//! graph CRUD + traversal behaviour — the executable contract every engine
+//! graph CRUD + traversal behaviour - the executable contract every engine
 //! behind the seam must match.
 
 use std::collections::HashMap;
@@ -102,7 +102,7 @@ fn seam_matches_inherent_api_for_update_and_delete() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1.2 — the Cypher executor's node/edge read paths flow through the seam.
+// Phase 1.2 - the Cypher executor's node/edge read paths flow through the seam.
 //
 // After routing `Executor::get_node` / `get_edge` call sites through the
 // `GraphEngine` accessor, a MATCH that resolves a node, expands a relationship
@@ -135,7 +135,7 @@ fn executor_read_paths_resolve_nodes_and_edges_through_the_seam() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1.3 — the Cypher executor's node/edge write paths flow through the seam.
+// Phase 1.3 - the Cypher executor's node/edge write paths flow through the seam.
 //
 // CREATE (create_node + create_edge), SET (update_node) and DELETE
 // (delete_edge + delete_node) must still mutate the store correctly after the
@@ -178,7 +178,7 @@ fn executor_write_paths_create_update_delete_through_the_seam() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1.4 — update_edge on the seam.
+// Phase 1.4 - update_edge on the seam.
 //
 // The seam now carries edge updates. Assert both the direct trait call and a
 // Cypher `SET r.<prop>` (which the executor routes through the seam) mutate
@@ -218,7 +218,7 @@ fn update_edge_through_the_seam_direct_and_via_cypher() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1.5 — read-scan surface on the seam.
+// Phase 1.5 - read-scan surface on the seam.
 //
 // Full scans (all_nodes / all_edges), the kind (label) scan, and full-edge
 // expansion (edges_of) now go through GraphEngine. Assert both the direct

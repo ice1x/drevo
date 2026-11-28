@@ -1,4 +1,4 @@
-# Native engine — load & concurrency
+# Native engine - load & concurrency
 
 > **Note (epic #444):** the `examples/native_load.rs` harness described below
 > compared the native engine against the now-removed KV `Drevo` engine over the
@@ -39,25 +39,25 @@ Throughput in ops/sec; latency in µs. `native` = `native-durable`.
 | three_hop_bfs | 8 | 57 k | 64 k | 672 | 655 |
 | **write_edge autocommit** | 1 | **4.5 k** | 187 | **337** | 8 875 |
 | **write_edge autocommit** | 8 | **8.1 k** | 136 | 12 396 | **737 205** |
-| **write_edge tx-batched** | 1 | — | **172 563** | — | — |
+| **write_edge tx-batched** | 1 | - | **172 563** | - | - |
 
-## What it shows — honestly
+## What it shows - honestly
 
-**Reads: native wins decisively and scales.** Point reads are ~100–700×
+**Reads: native wins decisively and scales.** Point reads are ~100-700×
 faster (a RAM hashmap lookup vs a redb page walk) and even the 3-hop
-breadth-first traversal — where the index-free adjacency thesis is supposed
-to pay off — is ~2–3× ahead at low concurrency. This is the real,
+breadth-first traversal - where the index-free adjacency thesis is supposed
+to pay off - is ~2-3× ahead at low concurrency. This is the real,
 non-latent win the durability flip banked.
 
 **Deep traversal narrows under high concurrency.** At 8 threads the 3-hop
 advantage collapses to ~1.1× (64 k vs 57 k). The BFS op allocates a fresh
 `HashSet`/frontier per call, so at high thread counts the bottleneck moves
-from the engine to the allocator, not the adjacency structure — a harness
+from the engine to the allocator, not the adjacency structure - a harness
 artefact worth knowing before reading too much into the top row.
 
 **Writes are the real weakness, and load testing is the only thing that
-showed it.** The KV engine sustains 4.5–8 k single-edge inserts/sec;
-`native-durable` autocommit does **~130–190/sec** — *30–60× slower* — with a
+showed it.** The KV engine sustains 4.5-8 k single-edge inserts/sec;
+`native-durable` autocommit does **~130-190/sec** - *30-60× slower* - with a
 p99 that degrades from ~9 ms at one thread to **~0.7 s at eight**. Cause: the
 durable store does a full `fsync` **per acknowledged write**, and concurrent
 writers serialize behind the single WAL writer, so tail latency explodes
@@ -68,18 +68,18 @@ this is purely the write path.
 
 The live `native-durable` deployment is excellent for a read-heavy graph
 (which this KG is) but the autocommit write path is **not** suited to
-high-concurrency write bursts as-is. The fix already exists in the engine —
+high-concurrency write bursts as-is. The fix already exists in the engine -
 **batch writes into a transaction** (`NativeTx`), which commits a whole batch
-with a *single* `fsync` — and the harness now **measures** it rather than
+with a *single* `fsync` - and the harness now **measures** it rather than
 asserting it: the same durable edge inserts run at
 
 * **autocommit: ~174 inserts/sec** (one `fsync` each), versus
-* **tx-batched: ~172 600 inserts/sec** (one `fsync` at commit) —
+* **tx-batched: ~172 600 inserts/sec** (one `fsync` at commit) -
 
 a **~1 000× speedup**, which also puts native's batched write throughput
 ~20× *above* the KV engine's ~8 k/sec. So the fix is real, not just plausible.
 Write-heavy callers should still wrap bulk inserts in a transaction rather
-than firing autocommit statements — that is the ~1 000× path.
+than firing autocommit statements - that is the ~1 000× path.
 
 ### Group commit for autocommit (landed, measured)
 
@@ -89,7 +89,7 @@ batch with a single fsync** (`GroupCommit` in `drevo-core`; a batch of N
 writes counts as one, exposed as `NativeGraph::wal_fsync_count`). Measured
 effect on the concurrent autocommit workload (8 threads):
 
-* **p99 tail: ~737 ms → ~27 ms (~27× better)** — the catastrophic tail above
+* **p99 tail: ~737 ms → ~27 ms (~27× better)** - the catastrophic tail above
   is gone, which is the point for many concurrent MCP writers;
 * **throughput: ~136 → ~595 inserts/sec (~4×)**, and it now *scales* with
   threads instead of staying flat.
@@ -110,7 +110,7 @@ now run over a **Compressed-Sparse-Row** adjacency: `AdjacencyList` stores a
 flat `edges` array sliced by an `offsets` table instead of a
 `Vec<Vec<(usize, f64)>>` (#382), so a whole-graph sweep walks contiguous memory.
 
-The obvious next step — parallelise PageRank across cores — was **measured, not
+The obvious next step - parallelise PageRank across cores - was **measured, not
 assumed**, and it does not pay off. `benches/pagerank_bench.rs` (serial
 `pagerank` vs the rayon `pagerank_parallel`, identical ranks, over CSR) on
 synthetic scale-free-ish graphs:
@@ -123,17 +123,17 @@ synthetic scale-free-ish graphs:
 
 PageRank is **memory-bandwidth-bound**: the per-iteration rayon fork/join and
 the pull-based reverse index cost more than extra cores save, and the CSR
-layout — while the right storage for locality — does not change that verdict
+layout - while the right storage for locality - does not change that verdict
 even at 500k nodes / 3M edges. So the shipped path (`pagerank_native` and
 friends) stays **serial over CSR**; `pagerank_parallel` is kept only as the
 bench baseline. A real parallel win would need a fundamentally different scheme
-(NUMA-aware block partitioning of the iteration), not just more threads — a
+(NUMA-aware block partitioning of the iteration), not just more threads - a
 deliberately deferred follow-up on #382. (Numbers are synthetic-graph scaling
 measurements; the point is the cross-core *ratio*, which real-graph shape does
-not rescue — and the live graph, ~2.7k nodes, is far too small to ever amortise
+not rescue - and the live graph, ~2.7k nodes, is far too small to ever amortise
 fork/join.)
 
-### Storage access is not the bottleneck — arena/slot deferred (measured)
+### Storage access is not the bottleneck - arena/slot deferred (measured)
 
 The remaining #382 idea was an **arena/slot** vertex/edge store, replacing the
 native engine's `HashMap<u64, Arc<Node>>` with a densely-indexed slab. Before
@@ -145,8 +145,8 @@ storage access actually costs (20 000 nodes, 5 out-edges each):
 | `get_node` × all ids | ~702 µs | **~35 ns / lookup** (hash probe + `Arc` bump) |
 | `neighbor_ids` × all nodes | ~7.1 ms | **~355 ns / fan-out** (5 neighbours + dedup) |
 
-An arena/slot store would turn the ~35 ns hashed lookup into a direct index —
-saving perhaps 15–20 ns on an operation that is already cold — while
+An arena/slot store would turn the ~35 ns hashed lookup into a direct index -
+saving perhaps 15-20 ns on an operation that is already cold - while
 `neighbor_ids` is dominated by its per-call dedup allocation, not the single
 map lookup (adjacency is already a `Vec`). Against that marginal, cold-path gain
 sits real cost and risk: rewriting the **live** engine's core storage and its
@@ -154,13 +154,13 @@ interaction with the **never-reuse-ids** invariant that the WAL and the CRDT
 delta layer depend on (a slot free-list would recycle ids). And the live graph
 (~2.7 k nodes) is orders of magnitude below where any of this would register.
 
-So arena/slot is **deliberately deferred** — not on evidence of no value ever,
+So arena/slot is **deliberately deferred** - not on evidence of no value ever,
 but on evidence that storage access is not today's bottleneck and the rewrite's
 blast radius is not justified until a workload shows map access dominating. The
 CSR layout that *did* pay for the analytics (above) is the part of #382 worth
 having now.
 
-The pieces this harness depends on — the BFS reach, KV/native traversal
+The pieces this harness depends on - the BFS reach, KV/native traversal
 parity, error-free concurrent reads, durable writes surviving a WAL reopen,
-group-commit fsync coalescing, and single-fsync transactions — are guarded on
+group-commit fsync coalescing, and single-fsync transactions - are guarded on
 the normal PR gate by `tests/native_load_tests.rs`.

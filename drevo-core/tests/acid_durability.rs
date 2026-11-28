@@ -1,4 +1,4 @@
-//! ACID conformance — **D (Durability)** for the default `native-durable`
+//! ACID conformance - **D (Durability)** for the default `native-durable`
 //! engine, exercised as **Rust** tests directly against the `drevo-core`
 //! [`NativeGraph`] seam (no HTTP layer).
 //!
@@ -65,7 +65,7 @@ fn acknowledged_writes_are_fsynced_and_survive_reopen() {
             g.wal_fsync_count() >= 2,
             "each acknowledged write must fsync the log before returning"
         );
-        // No close/flush call — just drop, as a crash would.
+        // No close/flush call - just drop, as a crash would.
     }
     let g = NativeGraph::open_durable(&path).unwrap();
     assert_eq!(
@@ -120,7 +120,7 @@ fn wal_replay_is_idempotent() {
     assert_eq!(
         (once.node_count(), once.edge_count()),
         (twice.node_count(), twice.edge_count()),
-        "replaying the ops twice must not double the graph — replay is idempotent"
+        "replaying the ops twice must not double the graph - replay is idempotent"
     );
     assert_eq!(once.node_count(), 2);
 }

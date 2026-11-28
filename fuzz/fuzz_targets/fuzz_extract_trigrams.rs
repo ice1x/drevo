@@ -11,7 +11,7 @@
 //!   down the documented "join with a space" behaviour against accidental
 //!   future refactors.
 //! - **Same sort+dedup post-conditions as `trigrams`.** Repeated here
-//!   for defence in depth — the helper does its own filter so it could
+//!   for defence in depth - the helper does its own filter so it could
 //!   in principle diverge.
 //!
 //! The fuzz target reads a `(title, body)` tuple via `libfuzzer-sys`'s
@@ -32,7 +32,7 @@ fuzz_target!(|input: (&str, &str)| {
     let combined_expected = trigrams(&joined(title, body));
     assert_eq!(
         result, combined_expected,
-        "extract_trigrams diverged from trigrams(joined) — title={title:?} body={body:?}"
+        "extract_trigrams diverged from trigrams(joined) - title={title:?} body={body:?}"
     );
 
     // 2. Sort + dedup parity is implied by (1), but assert it directly

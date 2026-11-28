@@ -1,4 +1,4 @@
-//! End-to-end Cypher `reduce` tests — Phase 10 follow-up task `00148`.
+//! End-to-end Cypher `reduce` tests - Phase 10 follow-up task `00148`.
 //!
 //! `reduce(accumulator = init, var IN list | expr)` is a left fold over a
 //! list: the seed `init` primes the accumulator, then each element is bound to
@@ -288,8 +288,8 @@ fn story_editor_concatenates_chapter_titles() {
 #[test]
 fn bug_tracker_counts_high_severity_via_fold() {
     let d = db();
-    // Bug tracker: fold a severity list into a count of the high-severity ones
-    // — a reduce standing in for a filtered count.
+    // Bug tracker: fold a severity list into a count of the high-severity ones -
+    // a reduce standing in for a filtered count.
     assert_eq!(
         cell(&run(
             "RETURN reduce(n = 0, sev IN ['low', 'high', 'high', 'medium'] \

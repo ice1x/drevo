@@ -1,9 +1,9 @@
-//! Phase 16 task `00117` — text-level scaffolding tests for the
+//! Phase 16 task `00117` - text-level scaffolding tests for the
 //! `drevo.rag` pure-Python idioms layer.
 //!
 //! Mirror of `python_api_scaffolding_tests.rs` (`00115`) and
 //! `python_package_wheels_tests.rs` (`00116`): these tests do **not**
-//! invoke any Python interpreter — they grep the on-disk files to lock
+//! invoke any Python interpreter - they grep the on-disk files to lock
 //! the layout and contract of every public symbol the task ships, so a
 //! reviewer can see in one place what the Rust workspace promises to
 //! the Python side.
@@ -17,33 +17,33 @@
 //!
 //! Files locked by this module (relative to repo root):
 //!
-//! 1. `drevo-py/python/drevo/rag/__init__.py` — module entry point;
+//! 1. `drevo-py/python/drevo/rag/__init__.py` - module entry point;
 //!    re-exports `Document`, `SimpleDocument`, `IngestSchema`,
 //!    `ingest_documents`, `Retriever`, `Context`, `ContextStats`,
 //!    `MMRReranker`, `expand_neighborhood` and declares `__all__`.
-//! 2. `drevo-py/python/drevo/rag/_document.py` — `Document` Protocol
+//! 2. `drevo-py/python/drevo/rag/_document.py` - `Document` Protocol
 //!    (RFC §8.1) + `SimpleDocument` reference implementation.
-//! 3. `drevo-py/python/drevo/rag/ingest.py` — `ingest_documents` +
+//! 3. `drevo-py/python/drevo/rag/ingest.py` - `ingest_documents` +
 //!    `IngestSchema` dataclass (RFC §8.2).
-//! 4. `drevo-py/python/drevo/rag/retriever.py` — `Retriever`, `Context`,
+//! 4. `drevo-py/python/drevo/rag/retriever.py` - `Retriever`, `Context`,
 //!    `ContextStats` (RFC §8.3 + §8.4).
-//! 5. `drevo-py/python/drevo/rag/neighborhood.py` — `expand_neighborhood`
+//! 5. `drevo-py/python/drevo/rag/neighborhood.py` - `expand_neighborhood`
 //!    free function (00117 task description, bounded BFS with kind
 //!    filter + max_nodes cap).
-//! 6. `drevo-py/python/drevo/rag/rerank.py` — `MMRReranker` (RFC §8.5).
-//! 7. `drevo-py/python/drevo/rag/__init__.pyi` — type stubs for the
+//! 6. `drevo-py/python/drevo/rag/rerank.py` - `MMRReranker` (RFC §8.5).
+//! 7. `drevo-py/python/drevo/rag/__init__.pyi` - type stubs for the
 //!    full `drevo.rag` public surface, so `mypy --strict` resolves
 //!    every name re-exported from `__init__.py`.
-//! 8. `drevo-py/pyproject.toml` — `[project.optional-dependencies]`
+//! 8. `drevo-py/pyproject.toml` - `[project.optional-dependencies]`
 //!    keeps `langchain` and `llamaindex` extras reserved (the adapter
 //!    packages themselves are follow-up tasks; the namespaces must be
 //!    claimed at 00117 ship so `pip install drevo-py[langchain]`
 //!    autocomplete works today, even if the wrapper modules ship later).
-//! 9. `drevo-py/CHANGELOG.md` — records the 00117 entry under a new
+//! 9. `drevo-py/CHANGELOG.md` - records the 00117 entry under a new
 //!    version stanza so consumers can see the rag layer in the package
 //!    metadata.
 //! 10. `drevo-py/python/drevo/__init__.py` does NOT eagerly import
-//!     `drevo.rag` — the rag layer is opt-in (`from drevo import rag`
+//!     `drevo.rag` - the rag layer is opt-in (`from drevo import rag`
 //!     or `from drevo.rag import Retriever`), keeping
 //!     `import drevo` itself zero-cost-after-cdylib.
 
@@ -79,7 +79,7 @@ fn rag_init_module_exists() {
     let init = rag_dir().join("__init__.py");
     assert!(
         init.exists(),
-        "drevo-py/python/drevo/rag/__init__.py must exist — RFC §2 \
+        "drevo-py/python/drevo/rag/__init__.py must exist - RFC §2 \
          package layout puts the graph-RAG idioms layer at drevo.rag"
     );
 }
@@ -125,7 +125,7 @@ fn rag_document_module_defines_protocol_and_simple_impl() {
     assert!(
         doc.contains("Protocol"),
         "_document.py must declare a typing.Protocol so the Document \
-         contract is structural — RFC §8.1 explicitly rules out \
+         contract is structural - RFC §8.1 explicitly rules out \
          inheriting from langchain.Document"
     );
     assert!(
@@ -135,12 +135,12 @@ fn rag_document_module_defines_protocol_and_simple_impl() {
     );
     assert!(
         doc.contains("page_content"),
-        "Document protocol must expose `page_content` (str) — RFC §8.1; \
+        "Document protocol must expose `page_content` (str) - RFC §8.1; \
          this is the field LangChain/LlamaIndex/Haystack all share"
     );
     assert!(
         doc.contains("metadata"),
-        "Document protocol must expose `metadata` (dict) — RFC §8.1"
+        "Document protocol must expose `metadata` (dict) - RFC §8.1"
     );
     assert!(
         doc.contains("runtime_checkable"),
@@ -209,7 +209,7 @@ fn rag_retriever_module_defines_retriever_and_context() {
     );
     assert!(
         r.contains("class ContextStats"),
-        "retriever.py must define `class ContextStats` — telemetry \
+        "retriever.py must define `class ContextStats` - telemetry \
          shape mentioned in RFC §8.4 (hops actually used, dedup count, etc.)"
     );
     assert!(
@@ -218,7 +218,7 @@ fn rag_retriever_module_defines_retriever_and_context() {
     );
     assert!(
         r.contains("retrieve_with_embedding"),
-        "Retriever must declare `retrieve_with_embedding(...)` — RFC §8.3 \
+        "Retriever must declare `retrieve_with_embedding(...)` - RFC §8.3 \
          explicitly names this method (implemented in Phase 12 task 00079)"
     );
     assert!(
@@ -250,7 +250,7 @@ fn rag_neighborhood_module_defines_bounded_bfs() {
     let n = read(&rag_dir().join("neighborhood.py"));
     assert!(
         n.contains("def expand_neighborhood"),
-        "neighborhood.py must define `def expand_neighborhood(...)` — \
+        "neighborhood.py must define `def expand_neighborhood(...)` - \
          00117 task description names this exact free function"
     );
     assert_contains_all(
@@ -260,11 +260,11 @@ fn rag_neighborhood_module_defines_bounded_bfs() {
          max_nodes kwargs (task 00117 description)",
     );
     // Bounded BFS must use the existing PyO3 surface for graph
-    // traversal — `edges_of`, `get_node`, or `subgraph`.
+    // traversal - `edges_of`, `get_node`, or `subgraph`.
     assert!(
         n.contains("edges_of") || n.contains("subgraph") || n.contains("neighbors"),
         "expand_neighborhood must call into the existing PyO3 graph \
-         surface (edges_of / neighbors / subgraph) — it is a Python \
+         surface (edges_of / neighbors / subgraph) - it is a Python \
          orchestration layer, not a re-implementation of BFS in Rust"
     );
 }
@@ -286,7 +286,7 @@ fn rag_rerank_module_defines_mmr_reranker() {
     assert!(
         r.contains("lambda_"),
         "MMRReranker must take a `lambda_` knob (trailing underscore \
-         avoids the Python keyword) — RFC §8.5 + RFC §10 Q-4 fixes \
+         avoids the Python keyword) - RFC §8.5 + RFC §10 Q-4 fixes \
          semantics: 1.0 = pure relevance, 0.0 = pure diversity"
     );
     assert!(
@@ -314,7 +314,7 @@ fn rag_type_stubs_declare_public_surface() {
             "def expand_neighborhood",
         ],
         "drevo-py/python/drevo/rag/__init__.pyi must declare class/def \
-         stubs for every public symbol re-exported by rag/__init__.py — \
+         stubs for every public symbol re-exported by rag/__init__.py - \
          mypy --strict resolves these signatures (RFC §3.3 + §8)",
     );
     assert!(
@@ -325,8 +325,8 @@ fn rag_type_stubs_declare_public_surface() {
     );
     assert!(
         pyi.contains("retrieve_with_embedding"),
-        "rag/__init__.pyi must declare Retriever.retrieve_with_embedding \
-         — the stub locks the signature for downstream typecheckers"
+        "rag/__init__.pyi must declare Retriever.retrieve_with_embedding - \
+         the stub locks the signature for downstream typecheckers"
     );
 }
 
@@ -339,17 +339,17 @@ fn pyproject_optional_extras_reserve_langchain_and_llamaindex() {
         toml.contains("[project.optional-dependencies]"),
         "drevo-py/pyproject.toml must declare \
          [project.optional-dependencies] so `pip install drevo-py[X]` \
-         autocomplete works — RFC §8.1 names langchain/llamaindex/haystack"
+         autocomplete works - RFC §8.1 names langchain/llamaindex/haystack"
     );
     assert!(
         toml.contains("langchain"),
         "pyproject.toml must reserve the `langchain` extra namespace \
-         (RFC §8.1) — adapter package itself is a follow-up task"
+         (RFC §8.1) - adapter package itself is a follow-up task"
     );
     assert!(
         toml.contains("llamaindex") || toml.contains("llama-index"),
         "pyproject.toml must reserve the `llamaindex` extra namespace \
-         (RFC §8.1) — adapter package itself is a follow-up task"
+         (RFC §8.1) - adapter package itself is a follow-up task"
     );
 }
 
@@ -360,7 +360,7 @@ fn changelog_documents_00117_rag_idioms_entry() {
     let changelog = read(&repo_root().join("drevo-py").join("CHANGELOG.md"));
     assert!(
         changelog.contains("00117"),
-        "drevo-py/CHANGELOG.md must cite task 00117 — graph-RAG idioms \
+        "drevo-py/CHANGELOG.md must cite task 00117 - graph-RAG idioms \
          landed in the rag/ subpackage"
     );
     assert!(
@@ -370,7 +370,7 @@ fn changelog_documents_00117_rag_idioms_entry() {
     );
 }
 
-// ── 10. drevo/__init__.py stays cheap — no eager `import drevo.rag` ────
+// ── 10. drevo/__init__.py stays cheap - no eager `import drevo.rag` ────
 
 #[test]
 fn drevo_top_level_does_not_eagerly_import_rag() {
@@ -386,7 +386,7 @@ fn drevo_top_level_does_not_eagerly_import_rag() {
     // `import drevo` must not load the rag tree (no LangChain
     // imports, no heavy dataclass construction). The rag/ subpackage
     // is auto-discoverable simply because it lives at
-    // drevo-py/python/drevo/rag/ — there is no need for the top-level
+    // drevo-py/python/drevo/rag/ - there is no need for the top-level
     // shim to do an explicit `from . import rag` (and adding one would
     // pay an unnecessary import-cost on every `import drevo`).
     let normalised: String = init
@@ -401,7 +401,7 @@ fn drevo_top_level_does_not_eagerly_import_rag() {
         !normalised.contains("from . import rag")
             && !normalised.contains("from .rag")
             && !normalised.contains("import drevo.rag"),
-        "drevo/__init__.py must NOT eagerly import drevo.rag — the rag \
+        "drevo/__init__.py must NOT eagerly import drevo.rag - the rag \
          layer is opt-in. Users explicitly `from drevo.rag import \
          Retriever` when they want it. Keeping `import drevo` cheap is \
          the cdylib-only contract from RFC §2."

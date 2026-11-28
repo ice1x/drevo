@@ -1,13 +1,13 @@
-//! Phase 16 task `00115` — text-level scaffolding tests for the
+//! Phase 16 task `00115` - text-level scaffolding tests for the
 //! `drevo-py` workspace member.
 //!
 //! These tests do **not** compile the PyO3 crate (the workspace's
-//! existing CI doesn't ship a Python interpreter — that's task `00122`).
+//! existing CI doesn't ship a Python interpreter - that's task `00122`).
 //! Instead they lock the *layout* and *contract* of the new crate by
 //! grepping the files on disk:
 //!
 //! 1. The repo root `Cargo.toml` declares a `[workspace]` with
-//!    `members = [".", "drevo-py"]` and `default-members = ["."]` — so
+//!    `members = [".", "drevo-py"]` and `default-members = ["."]` - so
 //!    a future contributor cannot accidentally pull `drevo-py` into the
 //!    default build path (which would break CI on the first push that
 //!    runs `cargo check` without Python available).
@@ -28,7 +28,7 @@
 //!    `StorageError`, `SerializationError`, `LockedError`, `PanicError`).
 //!
 //! 6. Every `DrevoError` variant from `src/error.rs` has a matching arm
-//!    in the Python error-mapping table. This is a "structural" check —
+//!    in the Python error-mapping table. This is a "structural" check -
 //!    the test reads both files and asserts each Rust variant appears
 //!    in `drevo-py/src/errors.rs`.
 //!
@@ -60,7 +60,7 @@ fn root_cargo_toml_declares_workspace_with_drevo_py_member() {
     assert!(
         root_toml.contains("[workspace]"),
         "root Cargo.toml must declare a [workspace] section for Phase 16 \
-         task 00115 — drevo-py is its second member"
+         task 00115 - drevo-py is its second member"
     );
     assert!(
         root_toml.contains("\"drevo-py\""),
@@ -87,7 +87,7 @@ fn root_cargo_toml_keeps_drevo_py_out_of_default_members() {
     );
     assert!(
         !line.contains("\"drevo-py\""),
-        "default-members MUST NOT include drevo-py — CI runners do not have \
+        "default-members MUST NOT include drevo-py - CI runners do not have \
          Python on PATH; got {line:?}"
     );
 }
@@ -103,7 +103,7 @@ fn drevo_py_cargo_toml_declares_correct_metadata() {
     );
     assert!(
         toml.contains("name = \"_drevo\""),
-        "drevo-py [lib].name must be `_drevo` — the runtime extension \
+        "drevo-py [lib].name must be `_drevo` - the runtime extension \
          module name imported by the pure-Python shim per RFC §2 \"Wheel \
          layout\""
     );
@@ -142,7 +142,7 @@ fn drevo_py_lib_rs_has_pymodule_named_underscore_drevo() {
         lib.contains("#[pymodule]"),
         "drevo-py/src/lib.rs must carry a #[pymodule] entry point"
     );
-    // The function name is what becomes the Python module name — must
+    // The function name is what becomes the Python module name - must
     // be `_drevo` to match the [lib] declaration above.
     assert!(
         lib.contains("fn _drevo("),
@@ -162,7 +162,7 @@ fn drevo_py_required_modules_exist_and_cite_rfc() {
             .join(format!("{module}.rs"));
         assert!(
             path.exists(),
-            "drevo-py/src/{module}.rs must exist — required by RFC §2"
+            "drevo-py/src/{module}.rs must exist - required by RFC §2"
         );
         let body = read(&path);
         assert!(
@@ -170,7 +170,7 @@ fn drevo_py_required_modules_exist_and_cite_rfc() {
                 || body.contains("audit/RFC-python-api.md")
                 || body.contains("RFC-python-api"),
             "drevo-py/src/{module}.rs must cite audit/RFC-python-api.md \
-             in its rustdoc preamble — every Phase 16 task references the \
+             in its rustdoc preamble - every Phase 16 task references the \
              RFC as its contract"
         );
     }
@@ -208,7 +208,7 @@ fn every_rust_drevo_error_variant_has_a_python_arm() {
     let py_err = read(&repo_root().join("drevo-py").join("src").join("errors.rs"));
 
     // src/error.rs may define sibling enums, so scope the scan to the
-    // `pub enum DrevoError { … }` block — otherwise a sibling's variants
+    // `pub enum DrevoError { … }` block - otherwise a sibling's variants
     // could be mistaken for DrevoError variants.
     let enum_body = {
         let start = rust_err
@@ -267,19 +267,19 @@ fn every_rust_drevo_error_variant_has_a_python_arm() {
 
     assert!(
         !variants.is_empty(),
-        "could not parse any DrevoError variants from src/error.rs — \
+        "could not parse any DrevoError variants from src/error.rs - \
          either the file moved or the heuristic in this test needs an update"
     );
 
     for variant in &variants {
-        // The Python error mapper uses `D::Variant(...)` patterns —
+        // The Python error mapper uses `D::Variant(...)` patterns -
         // search for the variant name with the `D::` prefix to avoid
         // matching unrelated identifiers.
         let needle = format!("D::{variant}");
         assert!(
             py_err.contains(&needle),
             "DrevoError::{variant} has no arm in drevo-py/src/errors.rs \
-             map_err — RFC §5.2 requires every Rust variant to map to a \
+             map_err - RFC §5.2 requires every Rust variant to map to a \
              Python exception. Add a `D::{variant} => ...` arm there."
         );
     }
@@ -323,7 +323,7 @@ fn handle_exposes_rfc_required_methods() {
     for method in required {
         assert!(
             handle.contains(method),
-            "drevo-py/src/handle.rs is missing `{method}` — RFC §3.3 \
+            "drevo-py/src/handle.rs is missing `{method}` - RFC §3.3 \
              type-stub block lists this method as part of the `Drevo` \
              class contract."
         );
@@ -336,13 +336,13 @@ fn handle_exposes_rfc_required_methods() {
 fn handle_releases_gil_on_storage_io() {
     let handle = read(&repo_root().join("drevo-py").join("src").join("handle.rs"));
     // RFC §4.2: "Every storage I/O call wraps the Rust body in
-    // py.allow_threads(|| {...})". Count occurrences as a cheap proxy —
+    // py.allow_threads(|| {...})". Count occurrences as a cheap proxy -
     // we expect at least one per method that performs storage I/O.
     // Today there are ~25 such methods.
     let count = handle.matches("allow_threads").count();
     assert!(
         count >= 20,
-        "drevo-py/src/handle.rs has only {count} `allow_threads` calls — \
+        "drevo-py/src/handle.rs has only {count} `allow_threads` calls - \
          RFC §4.2 requires the GIL be released on every storage I/O. \
          Audit the file and add the missing `py.allow_threads(...)` \
          wrappers."
@@ -357,7 +357,7 @@ fn handle_wraps_methods_in_catch_unwind() {
     assert!(
         handle.contains("catch_unwind"),
         "drevo-py/src/handle.rs must wrap method bodies in \
-         std::panic::catch_unwind — RFC §5.4 forbids a Rust panic from \
+         std::panic::catch_unwind - RFC §5.4 forbids a Rust panic from \
          crossing the FFI boundary as an abort signal. See `guarded()` \
          in handle.rs for the canonical pattern."
     );
@@ -365,6 +365,6 @@ fn handle_wraps_methods_in_catch_unwind() {
         handle.contains("panic_to_pyerr"),
         "drevo-py/src/handle.rs must convert caught panics via \
          errors::panic_to_pyerr so they surface as `drevo.PanicError` \
-         (RFC §5.2 table — bottom row, \"panic across FFI\")"
+         (RFC §5.2 table - bottom row, \"panic across FFI\")"
     );
 }

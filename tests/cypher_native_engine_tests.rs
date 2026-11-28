@@ -1,9 +1,9 @@
-//! Phase 6 slice 1 — the Cypher executor runs over the native `drevo-core`
+//! Phase 6 slice 1 - the Cypher executor runs over the native `drevo-core`
 //! engine (RFC `docs/rfc-native-core.md`, #307).
 //!
 //! [`execute_on_engine`](drevo::cypher::executor::execute_on_engine) drives the
 //! Cypher executor against a [`NativeGraph`](drevo::native::NativeGraph). The
-//! core graph language — CREATE, MATCH, MERGE, SET, DELETE, traversal, RETURN —
+//! core graph language - CREATE, MATCH, MERGE, SET, DELETE, traversal, RETURN -
 //! runs on the native engine through the shared
 //! [`GraphEngine`](drevo::engine::GraphEngine) seam. Queries that reach for a
 //! secondary subsystem that needs the index stack or an embedder (FTS,
@@ -163,7 +163,7 @@ fn scores(rows: &[Vec<Value>]) -> Vec<f64> {
 #[test]
 fn vector_query_works_on_native() {
     // `drevo.vector.query` (bring-your-own-vector) reads through the GraphEngine
-    // seam (`all_nodes` + cosine), so it needs no KV secondary — it works on the
+    // seam (`all_nodes` + cosine), so it needs no KV secondary - it works on the
     // native engine.
     let corpus = [
         "CREATE (:Emb {title: 'x-axis', vec: [1.0, 0.0, 0.0]})",
@@ -199,7 +199,7 @@ fn vector_query_works_on_native() {
 #[test]
 fn semantic_query_needs_the_embedder_on_native() {
     // `drevo.semantic.query` embeds the query text server-side before scanning,
-    // so it needs the KV embedder — on the native engine it must surface a clear
+    // so it needs the KV embedder - on the native engine it must surface a clear
     // capability error rather than a wrong answer.
     let g = NativeGraph::new();
     run_native("CREATE (:Emb {title: 'a', vec: [1.0, 0.0]})", &g);

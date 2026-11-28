@@ -1,4 +1,4 @@
-// drevo browser — pure helpers for the query editor: the per-browser query
+// drevo browser - pure helpers for the query editor: the per-browser query
 // history, the key that runs a query, the Ask (text-to-Cypher) request and
 // reply, how long a request has run, and the node menu's queries. DOM-free so
 // they can be unit-tested under `node --test` (see query_history.test.js).

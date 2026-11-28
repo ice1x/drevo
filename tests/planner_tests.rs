@@ -5,10 +5,10 @@
 //! *real* [`NativeService`] graph: ingest a domain graph (bug tracker, task manager,
 //! CBT journal) while tallying a [`StatisticsCollector`] in the same pass, then
 //! plan representative Cypher queries and assert the cardinality estimates,
-//! `EXPLAIN` rendering, plan-cache behaviour, and — for `00086` — that the
+//! `EXPLAIN` rendering, plan-cache behaviour, and - for `00086` - that the
 //! optimiser anchors at the rarer label, seeks property indexes, and orders
 //! disconnected components cheapest-first. The planner itself stays decoupled
-//! from the executor — here it is fed through the public `NativeService` API exactly as
+//! from the executor - here it is fed through the public `NativeService` API exactly as
 //! the executor-wiring task will.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -391,7 +391,7 @@ fn optimizer_orders_disconnected_components_cheapest_first() {
 /// the average degree stays low. Returns the live db and the collected
 /// statistics, including the per-node degree distribution. The hub Tag is
 /// connected to 50 Posts, 50 Comments and 50 Users (degree 150); every other
-/// node has degree 1, so the average is ≈ 1 but the maximum is 150 — a
+/// node has degree 1, so the average is ≈ 1 but the maximum is 150 - a
 /// supernode under the derived threshold.
 fn tag_hub_graph() -> (NativeService, GraphStatistics) {
     let db = NativeService::in_memory();

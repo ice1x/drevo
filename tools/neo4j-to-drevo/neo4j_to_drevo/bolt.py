@@ -1,4 +1,4 @@
-"""Live Neo4j (Bolt) source — streams a running database into the engine.
+"""Live Neo4j (Bolt) source - streams a running database into the engine.
 
 `Neo4jSource` wraps a live `neo4j` driver and presents it as the engine's
 source-agnostic `GraphSource`: it streams every node (`MATCH (n) RETURN
@@ -8,8 +8,8 @@ driver's `graph.Node` / `graph.Relationship` records to `SourceNode` /
 
 The `neo4j` package is an **optional** dependency of this tool
 (`pip install neo4j-to-drevo[live]`). It is imported lazily inside
-`connect()`, so importing the package — and using the offline
-`ApocJsonSource` path — never requires the driver. `Neo4jSource(driver)`
+`connect()`, so importing the package - and using the offline
+`ApocJsonSource` path - never requires the driver. `Neo4jSource(driver)`
 itself takes an already-constructed driver (real or mock), so the
 adapter's mapping logic is testable with no driver installed at all.
 """
@@ -35,7 +35,7 @@ class Neo4jSource:
     Construct with an existing driver (`Neo4jSource(driver)`), or use
     `Neo4jSource.connect(uri, user, password)` to build the driver from
     connection parameters (requires the `neo4j` package). Usable as a
-    context manager — `with Neo4jSource.connect(...) as src:` closes the
+    context manager - `with Neo4jSource.connect(...) as src:` closes the
     driver on exit.
     """
 

@@ -1,14 +1,14 @@
 //! Native Cypher execution-parity corpus: full-scan vs index-accelerated
 //! (RFC `docs/rfc-native-core.md`, #307; epic #444).
 //!
-//! The native engine executes a read two ways — a plain full scan, and an
+//! The native engine executes a read two ways - a plain full scan, and an
 //! index-narrowed / cache-served path when the label + property indexes and the
-//! `NodeValue` cache are attached — and both **must** produce identical results.
+//! `NodeValue` cache are attached - and both **must** produce identical results.
 //! This suite is the guard for that invariant: it catches an index or cache bug
 //! that would otherwise silently return a different (wrong) answer than the
 //! full scan. Every scenario builds a graph on a native
 //! [`NativeGraph`](drevo::native::NativeGraph), then runs each check query two
-//! ways —
+//! ways -
 //!
 //! 1. [`execute_on_engine`](drevo::cypher::executor::execute_on_engine)
 //!    (full-scan paths),
@@ -21,13 +21,13 @@
 //! indexed path must reject it with the same rendered error.
 //!
 //! (This was formerly a KV-vs-native differential suite; the KV oracle was
-//! dropped with the KV engine — epic #444 — leaving the native full-scan as the
+//! dropped with the KV engine - epic #444 - leaving the native full-scan as the
 //! reference the indexed path is checked against.)
 //!
 //! Non-deterministic values are normalised before comparison: node/relationship
 //! `uuid`s (v7) are zeroed, and the executor's `__cypher__:{label}:{uuid}`
 //! placeholder titles for unnamed nodes are collapsed to a fixed marker. Ids are
-//! **not** scrubbed — the native engine allocates monotonically from 1.
+//! **not** scrubbed - the native engine allocates monotonically from 1.
 //!
 //! Queries that reach index-backed subsystems (FTS, vector, keywords) are
 //! covered by `tests/cypher_native_engine_tests.rs`, as are non-deterministic
@@ -35,12 +35,12 @@
 //!
 //! # Unordered scan order is converged (id-ascending on both engines)
 //!
-//! Without an `ORDER BY`, Cypher row order is unspecified — which historically
+//! Without an `ORDER BY`, Cypher row order is unspecified - which historically
 //! let the engines differ (the KV path enumerated full scans newest-first via
 //! `list_recent`; native scanned in `HashMap` iteration order). Both now
 //! enumerate **id-ascending** (`collect_all_nodes` on KV, sorted `all_nodes`
 //! on native), and the "unordered scans" scenario below pins that parity
-//! without any `ORDER BY`. Ordered checks still pin their order explicitly —
+//! without any `ORDER BY`. Ordered checks still pin their order explicitly -
 //! note a trailing `ORDER BY` binds to the *last arm* of a `UNION` on both
 //! engines, so union checks that need whole-result determinism sort per arm
 //! via `WITH … ORDER BY`.
@@ -59,7 +59,7 @@ use drevo::native_property_index::NativePropertyIndex;
 use drevo::native_value_cache::NativeValueCache;
 
 // ---------------------------------------------------------------------------
-// Normalisation — strip the per-engine non-determinism, keep everything else
+// Normalisation - strip the per-engine non-determinism, keep everything else
 // ---------------------------------------------------------------------------
 
 /// Marker every executor-synthesised placeholder title collapses to.
@@ -122,7 +122,7 @@ fn comparable(res: &ExecResult) -> (Vec<String>, Vec<Vec<Value>>, String) {
 }
 
 // ---------------------------------------------------------------------------
-// The harness — one fresh pair of engines per scenario
+// The harness - one fresh pair of engines per scenario
 // ---------------------------------------------------------------------------
 
 struct Pair {
@@ -138,7 +138,7 @@ impl Pair {
 
     /// Apply one setup/write statement to the native graph. A statement that
     /// errors is tolerated (some scenarios deliberately include a write that
-    /// must fail — e.g. a plain `DELETE` of a connected node — leaving the
+    /// must fail - e.g. a plain `DELETE` of a connected node - leaving the
     /// graph unchanged); the read `check`s that follow validate the resulting
     /// state two ways and are the real assertions. A *parse* error, by
     /// contrast, is a bug in the test corpus and panics.
@@ -148,7 +148,7 @@ impl Pair {
     }
 
     /// Run one read query two ways (native full-scan, native indexed) and
-    /// assert both comparable results are equal — or that both fail with the
+    /// assert both comparable results are equal - or that both fail with the
     /// same rendered error.
     fn check(&self, scenario: &str, source: &str) {
         let q = parse(source).unwrap_or_else(|e| panic!("[{scenario}] parse `{source}`: {e:?}"));
@@ -272,7 +272,7 @@ fn create_and_match_parity() {
         },
         Scenario {
             // Even *without* an ORDER BY, both engines must enumerate a scan
-            // in the same (id-ascending) order — the row-order convergence
+            // in the same (id-ascending) order - the row-order convergence
             // the DREVO_ENGINE flip depends on. This is the one scenario
             // that deliberately omits ORDER BY.
             name: "unordered scans enumerate id-ascending on both engines",
@@ -289,7 +289,7 @@ fn create_and_match_parity() {
         Scenario {
             // Count pushdown: the bare shapes are answered from
             // cardinalities (on every engine/index configuration of this
-            // harness), the guarded shapes from the ordinary scan — all of
+            // harness), the guarded shapes from the ordinary scan - all of
             // them must agree across engines either way.
             name: "count pushdown agrees across engines",
             setup: TEAM,
@@ -413,7 +413,7 @@ fn where_filter_parity() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. RETURN shaping — DISTINCT / ORDER BY / SKIP / LIMIT / CASE
+// 3. RETURN shaping - DISTINCT / ORDER BY / SKIP / LIMIT / CASE
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -657,7 +657,7 @@ fn delete_parity() {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Traversal — var-length, OPTIONAL MATCH, paths, shortestPath
+// 8. Traversal - var-length, OPTIONAL MATCH, paths, shortestPath
 // ---------------------------------------------------------------------------
 
 #[test]

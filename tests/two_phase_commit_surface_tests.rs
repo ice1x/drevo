@@ -1,4 +1,4 @@
-//! Two-phase commit surfaces — #556 slice 2.
+//! Two-phase commit surfaces - #556 slice 2.
 //!
 //! The engine half (slice 1, `drevo-core/tests/two_phase_commit.rs`) is
 //! exposed through the serving layer:
@@ -343,7 +343,7 @@ fn expired_prepared_transactions_are_rolled_back_heuristically() {
 /// The fence's Bolt code must be one official drivers actually *retry*. The
 /// Neo4j drivers reclassify `Neo.TransientError.Transaction.Terminated` and
 /// `…LockClientStopped` as client errors (they mean "stopped by the user"),
-/// so either would make a fenced write fail instead of backing off — found on
+/// so either would make a fenced write fail instead of backing off - found on
 /// the live server with the Python driver (#556).
 #[test]
 fn the_fence_bolt_code_is_retryable_by_official_drivers() {

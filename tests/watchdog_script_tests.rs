@@ -1,7 +1,7 @@
 //! Behavioural tests for the local-container ops scripts in `scripts/`.
 //!
 //! The watchdog ([`scripts/drevo-watchdog.sh`]) is the layer that self-heals an
-//! accidental `docker rm -f drevo` — a removal a Docker restart policy cannot
+//! accidental `docker rm -f drevo` - a removal a Docker restart policy cannot
 //! cover. These tests pin its decision logic without a real Docker daemon by
 //! injecting a stub `docker` (via `DREVO_DOCKER`) and a marker-writing recreate
 //! command (via `DREVO_UP_CMD`):

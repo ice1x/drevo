@@ -1,4 +1,4 @@
-//! Integration tests for the Bolt TCP listener — Phase 11 task `00070`.
+//! Integration tests for the Bolt TCP listener - Phase 11 task `00070`.
 //!
 //! The listener binds to an OS-assigned port, accepts one connection,
 //! reads the 20-byte handshake, replies with the negotiated version
@@ -220,7 +220,7 @@ async fn accept_and_run_session_handles_hello_run_pull_goodbye_end_to_end() {
         .unwrap();
     assert!(matches!(v, Value::Structure { tag, .. } if tag == 0x70));
 
-    // GOODBYE — server returns no reply and closes; allow either Ok or
+    // GOODBYE - server returns no reply and closes; allow either Ok or
     // a peer-closed read attempt below.
     drop(client);
     timeout(Duration::from_secs(2), server)
@@ -401,13 +401,13 @@ async fn accept_and_run_session_handles_begin_run_pull_commit_round_trip() {
         }
     }
     // Expected sequence:
-    //   HELLO ack       — 0x70 SUCCESS
-    //   BEGIN ack       — 0x70 SUCCESS
-    //   RUN (CREATE)    — 0x70 SUCCESS
-    //   PULL (CREATE)   — 0x70 SUCCESS (no rows produced)
-    //   COMMIT          — 0x70 SUCCESS
-    //   RUN (MATCH)     — 0x70 SUCCESS (fields metadata)
-    //   PULL (MATCH)    — 0x71 RECORD followed by 0x70 SUCCESS
+    //   HELLO ack       - 0x70 SUCCESS
+    //   BEGIN ack       - 0x70 SUCCESS
+    //   RUN (CREATE)    - 0x70 SUCCESS
+    //   PULL (CREATE)   - 0x70 SUCCESS (no rows produced)
+    //   COMMIT          - 0x70 SUCCESS
+    //   RUN (MATCH)     - 0x70 SUCCESS (fields metadata)
+    //   PULL (MATCH)    - 0x71 RECORD followed by 0x70 SUCCESS
     let success: u8 = 0x70;
     let record: u8 = 0x71;
     assert_eq!(

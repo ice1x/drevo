@@ -48,7 +48,7 @@ impl BoltVersion {
 
     /// Decode a 4-byte handshake version slot.
     pub fn from_be_bytes(bytes: [u8; 4]) -> Self {
-        // bytes[0], bytes[1] reserved / range — ignored. bytes[2] is
+        // bytes[0], bytes[1] reserved / range - ignored. bytes[2] is
         // the minor version, bytes[3] is the major.
         Self {
             minor: bytes[2],
@@ -62,13 +62,13 @@ impl BoltVersion {
         [0x00, 0x00, self.minor, self.major]
     }
 
-    /// `true` if both major and minor are zero — the sentinel slot.
+    /// `true` if both major and minor are zero - the sentinel slot.
     pub fn is_none(self) -> bool {
         self.major == 0 && self.minor == 0
     }
 }
 
-/// Parsed client handshake — the four version proposals in the order
+/// Parsed client handshake - the four version proposals in the order
 /// they arrived.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientHandshake {
@@ -102,8 +102,8 @@ impl ClientHandshake {
 ///
 /// # Errors
 ///
-/// * [`BoltError::InvalidHandshakeLength`] — `bytes.len() != 20`.
-/// * [`BoltError::InvalidMagic`] — the first four bytes did not
+/// * [`BoltError::InvalidHandshakeLength`] - `bytes.len() != 20`.
+/// * [`BoltError::InvalidMagic`] - the first four bytes did not
 ///   match [`MAGIC_PREAMBLE`].
 pub fn parse_client_handshake(bytes: &[u8]) -> BoltResult<ClientHandshake> {
     if bytes.len() != HANDSHAKE_LEN {
@@ -136,7 +136,7 @@ pub const SUPPORTED_VERSIONS: &[BoltVersion] = &[
 
 /// Pick the first client-proposed version that drevo supports, matching
 /// each proposal's exact version (no ranges; see [`ClientHandshake::select`]).
-/// Returns `None` if no proposal is supported — the caller should
+/// Returns `None` if no proposal is supported - the caller should
 /// then write `0x00 0x00 0x00 0x00` back and close the connection.
 pub fn select_version(proposals: &[BoltVersion; 4]) -> Option<BoltVersion> {
     for proposal in proposals {

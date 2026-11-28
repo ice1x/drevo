@@ -1,9 +1,9 @@
-//! `GET /report` — the server half of the Web UI's "Report a problem" (#552).
+//! `GET /report` - the server half of the Web UI's "Report a problem" (#552).
 //!
 //! The UI combines this with what only the browser knows (the failing query,
 //! UI errors, a screenshot) into a prefilled GitHub issue. The endpoint must
-//! describe the server well enough to triage a bug — build, engine, limits,
-//! graph size, recent problems — and must never leak a secret: the issue is
+//! describe the server well enough to triage a bug - build, engine, limits,
+//! graph size, recent problems - and must never leak a secret: the issue is
 //! public.
 
 #![cfg(feature = "http")]

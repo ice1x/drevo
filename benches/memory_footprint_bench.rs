@@ -3,19 +3,19 @@
 //! OpenStreetMap road network.
 //!
 //! Every OSM node on a street becomes a `Junction {osm_id, lat, lon}` and every
-//! stretch between two of them a `ROAD {car_s, walk_s}` — the shape of a
+//! stretch between two of them a `ROAD {car_s, walk_s}` - the shape of a
 //! routing graph. A counting allocator measures the live heap after each
 //! step, so the numbers are exact allocations, not RSS:
 //!
 //! 1. the graph as written (`NativeGraph`, durable, nodes and relationships
 //!    created in batches);
-//! 2. the same store reopened from its log — what a server holds after a
-//!    restart — and the part of it that is the change feed;
+//! 2. the same store reopened from its log - what a server holds after a
+//!    restart - and the part of it that is the change feed;
 //! 3. each secondary index the server keeps, built alone over the reopened
 //!    graph: labels, property values, the value cache, full-text over nodes
 //!    and over relationships;
-//! 4. the whole service reopened over the same log after one query — what a
-//!    server holds after a restart — with every index, and with the
+//! 4. the whole service reopened over the same log after one query - what a
+//!    server holds after a restart - with every index, and with the
 //!    secondary indexes turned off (`drevo.indexes.setSecondary(false)`),
 //!    each followed by the resident set size of the whole process.
 //!
@@ -169,7 +169,7 @@ fn report(what: &str, bytes: isize, nodes: usize, edges: usize) {
     );
 }
 
-/// The process's resident set size in MB as `ps` reports it — the number an
+/// The process's resident set size in MB as `ps` reports it - the number an
 /// operator sees; `None` where `ps` is unavailable.
 fn rss_mb() -> Option<f64> {
     let out = std::process::Command::new("ps")
@@ -187,7 +187,7 @@ fn report_rss(what: &str) {
 }
 
 /// Open the service over an existing log in a fresh process and report its
-/// heap and resident set size — the restart a server goes through, without
+/// heap and resident set size - the restart a server goes through, without
 /// the loader's memory in the picture.
 fn reopen_only(wal: &str) {
     let before = live();

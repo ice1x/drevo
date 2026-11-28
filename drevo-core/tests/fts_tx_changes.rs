@@ -4,7 +4,7 @@
 //!
 //! The rule every test here comes down to: the answer inside the transaction
 //! is the answer [`search`](NativeFtsIndex::search) gives once the
-//! transaction is committed and the index has caught up — the same hits, in
+//! transaction is committed and the index has caught up - the same hits, in
 //! the same order, with the same scores.
 
 use drevo_core::engine::GraphEngine;

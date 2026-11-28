@@ -1,7 +1,7 @@
 //! Triangle counting + local clustering coefficient over the native engine and
 //! `CALL drevo.triangles()` (RFC #307 Phase 8). Same pattern as the other
 //! analytics slices: the KV `Drevo::triangle_counts` is the oracle, and a
-//! hand-built graph — a triangle {0,1,2} with a pendant 2-3 — pins the counts
+//! hand-built graph - a triangle {0,1,2} with a pendant 2-3 - pins the counts
 //! and coefficients. Gated on `redb-backend` for the `CALL drevo.<algo>()` procedure path.
 
 use std::collections::HashMap;

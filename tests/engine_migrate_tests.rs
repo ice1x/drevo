@@ -2,14 +2,14 @@
 //! (RFC `docs/rfc-native-core.md`, #307).
 //!
 //! [`drevo::migrate::migrate`] copies a live graph from one
-//! [`drevo::engine::GraphEngine`] into another without losing a byte — same
+//! [`drevo::engine::GraphEngine`] into another without losing a byte - same
 //! node and edge **ids**, same content, same adjacency, and with the
 //! id-allocation counters clamped so a post-migration create never reuses an
 //! imported id. It rides the same [`drevo::dump::Dump`] format that
 //! round-trips through JSON / GraphML.
 //!
 //! These tests exercise the native engine ([`drevo::native::NativeGraph`]) as
-//! both source and destination — the KV engine has been retired (epic #444),
+//! both source and destination - the KV engine has been retired (epic #444),
 //! so `migrate` and `apply_dump` are validated engine-to-engine on native
 //! alone.
 //!
@@ -250,7 +250,7 @@ fn apply_dump_rejects_edge_with_missing_endpoint() {
 #[test]
 fn migration_into_durable_native_survives_reopen() {
     // Migrating into a durable engine must journal the imported records, so the
-    // moved graph is still there after a crash/reopen — the whole point of
+    // moved graph is still there after a crash/reopen - the whole point of
     // adopting the native engine on disk.
     let src = NativeGraph::new();
     seed(&src);

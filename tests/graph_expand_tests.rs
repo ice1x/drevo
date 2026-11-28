@@ -1,7 +1,7 @@
 //! `CALL drevo.graph.expand(seeds[, config]) YIELD node, distance, via,
 //! truncated`: a breadth-first walk from seed nodes inside the database that
 //! returns each node reached once, at its shortest distance, with the
-//! relationship that reached it — the "find seeds, then widen" step of
+//! relationship that reached it - the "find seeds, then widen" step of
 //! graph-RAG in one call instead of one `neighbors` round-trip per node.
 //!
 //! The fixtures are a small IT task tracker (tasks blocking tasks, owned by

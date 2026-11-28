@@ -1,25 +1,25 @@
-# Contributing — Conventions & Agent Instructions
+# Contributing - Conventions & Agent Instructions
 
 ## Coding Conventions
 
 ### Language
 
-- **All code comments, documentation, README, and commit messages — English only**
+- **All code comments, documentation, README, and commit messages - English only**
 
 ### Rust style
 
 - Edition 2021, MSRV latest stable
 - `cargo fmt` before every commit
 - `cargo clippy -- -W clippy::all` with zero warnings
-- No `unwrap()` / `expect()` in library code — `Result` only
+- No `unwrap()` / `expect()` in library code - `Result` only
 - `unwrap()` allowed only in tests and benchmarks
 - No `unsafe` without explicit justification
 
 ### Naming
 
-- Modules: `snake_case` — Files: `snake_case.rs`
-- Structs/traits: `PascalCase` — Functions: `snake_case`
-- Constants: `SCREAMING_SNAKE_CASE` — Type aliases: `PascalCase`
+- Modules: `snake_case` - Files: `snake_case.rs`
+- Structs/traits: `PascalCase` - Functions: `snake_case`
+- Constants: `SCREAMING_SNAKE_CASE` - Type aliases: `PascalCase`
 
 ### Errors
 
@@ -27,13 +27,13 @@ Use `thiserror` for all error definitions. `Result<T>` type alias everywhere.
 
 ### Serialization
 
-- Internal data (KV store): `bincode` — compact, fast
-- Configs and dumps: `serde_json` — human-readable
+- Internal data (KV store): `bincode` - compact, fast
+- Configs and dumps: `serde_json` - human-readable
 - All persistable structs: `#[derive(Serialize, Deserialize)]`
 
 ### Testing
 
-- Every public method — at least 1 test
+- Every public method - at least 1 test
 - Edge cases mandatory: empty graph, single node, cycles
 - Storage tests parameterized by backend (MemoryBackend, RedbBackend)
 - Benchmarks with `criterion`
@@ -55,15 +55,15 @@ Senior Rust developer working on drevo. The project is educational, but the arch
 
 ### Session start
 
-1. Read this README — it is the single source of truth
+1. Read this README - it is the single source of truth
 2. Check "Current Status" section below for the current task
 3. Ask the user if they want to continue or switch tasks
 
 ### Working on a task
 
-1. Before writing code — briefly describe the plan
-2. Write code incrementally — one file/function at a time
-3. After each logical block — run `cargo check` / `cargo test`
+1. Before writing code - briefly describe the plan
+2. Write code incrementally - one file/function at a time
+3. After each logical block - run `cargo check` / `cargo test`
 4. Do not write the entire project at once
 
 ### Code rules

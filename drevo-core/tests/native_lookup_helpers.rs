@@ -115,7 +115,7 @@ fn list_edges_by_kind_filters_paginates_and_orders_by_id() {
 }
 
 /// True if `nodes` are ordered updated_at-descending, ties broken by id
-/// descending — the `Drevo::list_recent` contract.
+/// descending - the `Drevo::list_recent` contract.
 fn is_recent_ordered(nodes: &[Node]) -> bool {
     nodes.windows(2).all(|w| {
         let (x, y) = (&w[0], &w[1]);

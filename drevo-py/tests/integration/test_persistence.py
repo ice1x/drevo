@@ -6,7 +6,7 @@ file-lock release path only show up here. Each test exercises:
 
     open(path) → write → close → open(path) → assert
 
-— the minimum interesting test for a durable embedded database. If any
+the minimum interesting test for a durable embedded database. If any
 of these fail, downstream agents using `drevo` as a knowledge store
 silently lose data across process restarts.
 """
@@ -99,7 +99,7 @@ def test_node_lookup_by_title_after_reopen(tmp_db_path: str) -> None:
 def test_kind_index_survives_reopen(tmp_db_path: str) -> None:
     """`list_nodes_by_kind` returns the same rows after reopen.
 
-    Specifically asserts the secondary index — not the primary table —
+    Specifically asserts the secondary index - not the primary table -
     survives. A previous regression had primary intact, index lost.
     """
     with drevo.Drevo.open(tmp_db_path) as db:
@@ -126,7 +126,7 @@ def test_fts_index_survives_reopen(tmp_db_path: str) -> None:
 
 
 def test_deletes_persist_across_reopen(tmp_db_path: str) -> None:
-    """A deleted node stays deleted after reopen — the tombstone /
+    """A deleted node stays deleted after reopen - the tombstone /
     primary-row removal is committed, not just buffered.
     """
     with drevo.Drevo.open(tmp_db_path) as db:
@@ -138,7 +138,7 @@ def test_deletes_persist_across_reopen(tmp_db_path: str) -> None:
 
 
 def test_allocator_continues_ids_after_reopen(tmp_db_path: str) -> None:
-    """Node ids are monotonically increasing across reopens — the
+    """Node ids are monotonically increasing across reopens - the
     allocator persists its `next_id` cursor (not just the existing
     rows).
     """

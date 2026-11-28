@@ -1,6 +1,6 @@
 //! Guards for `DREVO_ENGINE=native-durable` (RFC #307, Phase 4/7): the
-//! server mode where the WAL-backed native engine IS the store of record —
-//! no KV store, no redb file — serving the minimal native HTTP surface.
+//! server mode where the WAL-backed native engine IS the store of record -
+//! no KV store, no redb file - serving the minimal native HTTP surface.
 
 #![cfg(all(not(target_arch = "wasm32"), feature = "http"))]
 
@@ -102,7 +102,7 @@ async fn cypher_reads_writes_and_fts_flow_through_the_native_router() {
     assert_eq!(s["engine"], "native-durable");
 
     // The raw-REST surface is now served on the native engine too (REST-CRUD
-    // parity): `GET /nodes` without a `kind` is a 400, not a 404 — the route
+    // parity): `GET /nodes` without a `kind` is a 400, not a 404 - the route
     // exists and validates its query, exactly like the KV router.
     let (status, _) = send(&app, "GET", "/nodes", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -129,7 +129,7 @@ async fn parse_and_execution_errors_are_bad_requests() {
     let (status, _) = cypher(&app, "MATCH (((").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // A still-KV-only procedure (engine.status) surfaces as 400 on native.
-    // (semantic.status now runs on native — see native_service_tests, #447.)
+    // (semantic.status now runs on native - see native_service_tests, #447.)
     let (status, _) = cypher(&app, "CALL drevo.engine.status()").await;
     assert_eq!(
         status,
@@ -304,7 +304,7 @@ async fn traversal_and_import_have_parity_with_the_kv_router() {
     .await;
     assert_eq!(st, StatusCode::CREATED);
 
-    // GET /nodes/{id}/edges — the one incident edge (default direction=both).
+    // GET /nodes/{id}/edges - the one incident edge (default direction=both).
     let (st, edges) = send(&app, "GET", &format!("/nodes/{a_id}/edges"), None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(edges["edges"].as_array().unwrap().len(), 1);
@@ -318,7 +318,7 @@ async fn traversal_and_import_have_parity_with_the_kv_router() {
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
 
-    // GET /nodes/{id}/neighbors — b; a missing node is 404.
+    // GET /nodes/{id}/neighbors - b; a missing node is 404.
     let (st, neigh) = send(&app, "GET", &format!("/nodes/{a_id}/neighbors"), None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(neigh["nodes"].as_array().unwrap().len(), 1);
@@ -326,7 +326,7 @@ async fn traversal_and_import_have_parity_with_the_kv_router() {
     let (st, _) = send(&app, "GET", "/nodes/999999/neighbors", None).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 
-    // GET /nodes/{id}/subgraph — a + b within 1 hop; missing root is 404.
+    // GET /nodes/{id}/subgraph - a + b within 1 hop; missing root is 404.
     let (st, sub) = send(
         &app,
         "GET",
@@ -339,7 +339,7 @@ async fn traversal_and_import_have_parity_with_the_kv_router() {
     let (st, _) = send(&app, "GET", "/nodes/999999/subgraph", None).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 
-    // POST /import/json — export this graph, replay it into a fresh engine.
+    // POST /import/json - export this graph, replay it into a fresh engine.
     let (st, dump) = send(&app, "GET", "/export/json", None).await;
     assert_eq!(st, StatusCode::OK);
     // /export/json returns the raw dump document; feed it back verbatim.
@@ -763,7 +763,7 @@ async fn graphml_round_trip_through_the_native_router() {
 #[tokio::test]
 async fn a_kv_backup_restores_into_the_durable_engine() {
     // A backup produced by the retired KV engine (`Drevo::export_graphml`),
-    // captured verbatim as a fixture — the exact on-disk format of the
+    // captured verbatim as a fixture - the exact on-disk format of the
     // pre-native live deployment's `/export/graphml`. Historical backups in
     // this shape must still restore into a zero-redb native server even after
     // the KV engine is deleted from the tree, so the format is pinned here as
@@ -832,7 +832,7 @@ async fn import_accepts_bodies_beyond_the_default_axum_limit() {
     // backup impossible; the native route raises it from day one. A >2 MiB
     // node body proves the raise without a slow test.
     // Build the oversized graph directly on a service (POST /cypher itself
-    // keeps axum's default body limit — only the restore route is raised).
+    // keeps axum's default body limit - only the restore route is raised).
     let source = NativeService::in_memory();
     let big_body = "x".repeat(3 * 1024 * 1024);
     let q = drevo::cypher::parser::parse(&format!(

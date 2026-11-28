@@ -1,4 +1,4 @@
-//! A multi-version key-value store — the engine that ties transaction
+//! A multi-version key-value store - the engine that ties transaction
 //! snapshots and tuple versioning together.
 //!
 //! [`VersionedStore`] keeps, for every key, an append-only chain of
@@ -6,7 +6,7 @@
 //! version (stamps its `xmax`) and appends a fresh one; a delete only stamps
 //! the `xmax`. Reads resolve a key against a [`Snapshot`], walking the chain
 //! newest-first and returning the first visible version. The upshot is the
-//! defining MVCC property — a reader holding an older snapshot keeps seeing
+//! defining MVCC property - a reader holding an older snapshot keeps seeing
 //! the data as of that snapshot even while writers move on, so **readers and
 //! writers never see each other's in-flight state**.
 //!
@@ -130,13 +130,13 @@ where
     }
 
     /// Decide whether a write by `writer` against `chain` collides with a
-    /// concurrent transaction — the optimistic-concurrency-control check of
+    /// concurrent transaction - the optimistic-concurrency-control check of
     /// task `00083`.
     ///
     /// Only the chain **head** (newest version) can carry a concurrent
     /// modification: a serial update retires the previous live version and
     /// appends a fresh one, so whoever last touched the key authored the
-    /// head — either by creating it (the head is live) or by retiring it (the
+    /// head - either by creating it (the head is live) or by retiring it (the
     /// head is a tombstone). The "deciding" transaction is therefore the
     /// head's `xmin` when it is live, or its `xmax` when it has been deleted.
     ///
@@ -146,7 +146,7 @@ where
     /// the snapshot is the row `writer` legitimately builds on, not a race),
     /// and not aborted (an aborted writer's mark is void). What survives all
     /// four filters is exactly an in-progress writer or one that committed
-    /// *after* `writer`'s snapshot — the first-updater-wins loser.
+    /// *after* `writer`'s snapshot - the first-updater-wins loser.
     ///
     /// Returns `Some(xid)` naming the winner on conflict, or `None` when the
     /// write may proceed.
@@ -172,7 +172,7 @@ where
         if snapshot.sees_effect(decider, &self.mgr)? {
             return Ok(None);
         }
-        // An aborted mark is void — the head is logically untouched by it.
+        // An aborted mark is void - the head is logically untouched by it.
         if matches!(self.mgr.status(decider)?, XidStatus::Aborted) {
             return Ok(None);
         }
@@ -188,7 +188,7 @@ where
     /// transaction, the write is refused with
     /// [`MvccError::WriteConflict`] and the
     /// store is left untouched. The caller should abort `xid` and retry
-    /// against a fresh snapshot — see
+    /// against a fresh snapshot - see
     /// [`run_with_retry`](crate::mvcc::run_with_retry).
     ///
     /// The check and the mutation happen under one acquisition of the store
@@ -254,14 +254,14 @@ where
     }
 
     /// Decide whether a key this transaction *read* was modified by a
-    /// concurrent **committed** transaction — the read-write antidependency
+    /// concurrent **committed** transaction - the read-write antidependency
     /// check the Serializable isolation level (task `00084`) runs at commit.
     ///
     /// Like [`conflicting_writer`](Self::conflicting_writer) it inspects only
     /// the chain head (the newest version is authored by whoever last touched
     /// the key), but the filter differs in one decisive way: it flags **only
     /// committed** concurrent modifications, not in-flight ones. That is what
-    /// makes serializable commits *first-committer-wins* — an in-flight writer
+    /// makes serializable commits *first-committer-wins* - an in-flight writer
     /// has not yet created an anomaly, and whichever transaction commits second
     /// will observe the first one's now-committed write in its own read set and
     /// abort then. Flagging in-flight writers here instead would abort the
@@ -305,7 +305,7 @@ where
     }
 
     /// Validate `reads` against concurrent committers and, if clean, commit
-    /// `xid` — the Serializable commit path (task `00084`).
+    /// `xid` - the Serializable commit path (task `00084`).
     ///
     /// Acquires the store write lock once, walks every key in the read set
     /// through [`read_conflict`](Self::read_conflict), and:
@@ -316,7 +316,7 @@ where
     ///   fresh snapshot;
     /// * otherwise commits `xid` **while still holding the write lock**, so two
     ///   serializable transactions can never both validate clean and then both
-    ///   commit — their validate-then-commit critical sections are serialized
+    ///   commit - their validate-then-commit critical sections are serialized
     ///   against each other.
     ///
     /// Lock order is the established store→manager (the write lock is held
@@ -425,7 +425,7 @@ where
     /// physically removed. A chain that becomes empty (its last live version
     /// was deleted and the delete is now below the horizon) is dropped from
     /// the index. Versions still reachable by some snapshot at or above the
-    /// horizon — and every live version — are retained, so visibility is
+    /// horizon - and every live version - are retained, so visibility is
     /// unchanged for any reader the horizon respects.
     ///
     /// `horizon` is normally [`TransactionManager::gc_horizon`]; pass a
@@ -464,7 +464,7 @@ where
     }
 
     /// Vacuum the store at the manager's current
-    /// [`gc_horizon`](TransactionManager::gc_horizon) — the convenience
+    /// [`gc_horizon`](TransactionManager::gc_horizon) - the convenience
     /// entry point the background [`GcWorker`](super::gc::GcWorker) drives.
     ///
     /// # Errors

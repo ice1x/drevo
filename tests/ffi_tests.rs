@@ -732,7 +732,7 @@ fn test_free_null_string_is_safe() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 00110 — input validation across the C boundary
+// Task 00110 - input validation across the C boundary
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -958,7 +958,7 @@ fn test_neighbors_with_kind_filter() {
             props.as_ptr(),
         ));
 
-        // Filter by "blocks" — should return only C
+        // Filter by "blocks" - should return only C
         let filter = CString::new("blocks").unwrap();
         let result = drevo_neighbors(db, a["id"].as_u64().unwrap(), 0, filter.as_ptr());
         assert!(!result.is_null());

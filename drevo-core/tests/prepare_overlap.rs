@@ -10,7 +10,7 @@
 //! - several transactions can be prepared at once, as long as they wrote
 //!   different records and can all commit together;
 //! - whatever is prepared, in whatever order it is resolved, resolution
-//!   cannot fail — also after a restart.
+//!   cannot fail - also after a restart.
 
 use std::fs;
 use std::path::PathBuf;

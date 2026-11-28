@@ -4,7 +4,7 @@
 //! - [`normalise`] puts a name in the form names are compared in
 //!   («А. С. Пушкин» → «а с пушкин»).
 //! - [`blocking`] picks the pairs worth comparing.
-//! - [`score`] rates a pair: Jaro–Winkler on the compared names, cosine on
+//! - [`score`] rates a pair: Jaro-Winkler on the compared names, cosine on
 //!   embeddings, and the reasons a reviewer reads.
 //! - [`merge`] plans folding dropped nodes into a kept one: relationships
 //!   re-attached without duplicates, properties combined, aliases recorded.

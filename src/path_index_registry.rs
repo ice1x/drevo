@@ -120,7 +120,7 @@ impl PathIndexRegistry {
         &self.indexes
     }
 
-    /// Every spec of every registered index — what the path index maintains.
+    /// Every spec of every registered index - what the path index maintains.
     #[must_use]
     pub fn specs(&self) -> Vec<PathIndexSpec> {
         let mut specs: Vec<PathIndexSpec> = Vec::new();
@@ -132,7 +132,7 @@ impl PathIndexRegistry {
         specs
     }
 
-    /// Every spec of every registered text index — what the text index
+    /// Every spec of every registered text index - what the text index
     /// maintains.
     #[must_use]
     pub fn text_specs(&self) -> Vec<TextIndexSpec> {
@@ -145,7 +145,7 @@ impl PathIndexRegistry {
         specs
     }
 
-    /// Every spec of every registered point index — what the point index
+    /// Every spec of every registered point index - what the point index
     /// maintains.
     #[must_use]
     pub fn point_specs(&self) -> Vec<PointIndexSpec> {
@@ -173,7 +173,7 @@ impl PathIndexRegistry {
 
 /// The name Neo4j-style DDL gets when none is given:
 /// `index_<label|all>_<paths>`, with every non-alphanumeric character as `_`
-/// and a wildcard as `star` — e.g. `index_Bug_meta_severity`,
+/// and a wildcard as `star` - e.g. `index_Bug_meta_severity`,
 /// `index_all_star`. A text index gets a `text_` prefix:
 /// `text_index_Ticket_title`, a point index a `point_` prefix:
 /// `point_index_Stop_lat_lon`.

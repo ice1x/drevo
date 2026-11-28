@@ -1,10 +1,10 @@
 //! Crash-recovery guards for the native engine's write-ahead log (RFC ACID
-//! "D", Phase 3/4 — the durability track toward retiring redb).
+//! "D", Phase 3/4 - the durability track toward retiring redb).
 //!
 //! A crash can only ever tear the **unacknowledged tail** of the log (an
 //! acknowledged write returns after fsync), so recovery must (a) truncate a
-//! torn tail and open successfully — losing only what was never acknowledged
-//! — while (b) still refusing a log whose *acknowledged middle* is corrupt,
+//! torn tail and open successfully - losing only what was never acknowledged -
+//! while (b) still refusing a log whose *acknowledged middle* is corrupt,
 //! and (c) never replaying half of a transaction's batch: a commit is
 //! all-or-nothing on disk exactly as it is in memory.
 
@@ -75,7 +75,7 @@ fn torn_tail_cut_mid_record_recovers_the_prefix() {
         GraphEngine::create_node(&g, node("ada")).unwrap();
         GraphEngine::create_node(&g, node("bob")).unwrap();
     }
-    // Cut the file mid-way through the LAST record (never before it — an
+    // Cut the file mid-way through the LAST record (never before it - an
     // fsynced record cannot be torn).
     let bytes = fs::read(&path).unwrap();
     let body = &bytes[..bytes.len() - 1]; // drop the final newline
@@ -105,7 +105,7 @@ fn corrupt_middle_record_is_an_error_not_silent_data_loss() {
         GraphEngine::create_node(&g, node("cy")).unwrap();
     }
     // Corrupt the SECOND line; valid data follows it, so this is not a torn
-    // tail — it is lost acknowledged history and must be surfaced, never
+    // tail - it is lost acknowledged history and must be surfaced, never
     // silently dropped.
     let text = fs::read_to_string(&path).unwrap();
     let mut lines: Vec<&str> = text.lines().collect();
@@ -142,7 +142,7 @@ fn a_torn_transaction_batch_replays_nothing() {
     // Simulate the crash landing INSIDE the transaction's batch record: cut
     // the file at several points within the final record. However much of
     // the batch bytes survived, recovery must apply either none of the
-    // transaction or all of it — never one of its two writes.
+    // transaction or all of it - never one of its two writes.
     let bytes = fs::read(&path).unwrap();
     let body = &bytes[..bytes.len() - 1];
     let batch_start = body.iter().rposition(|b| *b == b'\n').map_or(0, |p| p + 1);
@@ -223,7 +223,7 @@ fn tombstones_survive_a_restart_and_block_resurrection() {
     assert!(g.node_id_of_uuid(doomed.uuid).is_none(), "still deleted");
 
     // A peer resending the doomed node at a *stale* stamp loses to the
-    // surviving tombstone — no resurrection.
+    // surviving tombstone - no resurrection.
     let stale = Stamp::new(Hlc::new(1, 0), OriginId(999));
     let delta = Delta {
         changes: vec![StampedChange::Node(doomed.clone(), stale)],

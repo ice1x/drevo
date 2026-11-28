@@ -4,7 +4,7 @@ name: Docker Hub Overview
 # committed DOCKERHUB.md.
 #
 # Why this exists: Docker Hub's overview is populated only via the web form
-# or the Docker Hub API — a `docker push` never touches it. Without this the
+# or the Docker Hub API - a `docker push` never touches it. Without this the
 # published overview silently drifts from, or never matches, the source of
 # truth in the repo (the page read "No overview available" until this landed).
 #
@@ -13,8 +13,8 @@ name: Docker Hub Overview
 # `jq --rawfile` JSON-escapes the whole file so any markdown content is safe.
 #
 # Required repo secrets (Settings → Secrets and variables → Actions):
-#   DOCKERHUB_USERNAME — the Docker Hub account that owns ice1x/drevo
-#   DOCKERHUB_TOKEN    — a Docker Hub *access token* (Account Settings →
+#   DOCKERHUB_USERNAME - the Docker Hub account that owns ice1x/drevo
+#   DOCKERHUB_TOKEN    - a Docker Hub *access token* (Account Settings →
 #                        Security → New Access Token) with Read/Write on the
 #                        repo. A token, never the account password.
 #
@@ -43,11 +43,11 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           DOCKERHUB_REPO: ice1x/drevo
-          SHORT_DESCRIPTION: "Embedded graph + vector database — Neo4j-compatible, built-in FTS, no external deps."
+          SHORT_DESCRIPTION: "Embedded graph + vector database - Neo4j-compatible, built-in FTS, no external deps."
         run: |
           set -euo pipefail
           if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
-            echo "::error::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets are not set — add them in repo Settings." >&2
+            echo "::error::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets are not set - add them in repo Settings." >&2
             exit 1
           fi
 
@@ -57,7 +57,7 @@ jobs:
           token=$(curl -sf -X POST https://hub.docker.com/v2/users/login/ \
             -H 'Content-Type: application/json' -d "$login_body" | jq -r '.token // empty')
           if [ -z "$token" ]; then
-            echo "::error::Docker Hub login failed — check DOCKERHUB_USERNAME / DOCKERHUB_TOKEN." >&2
+            echo "::error::Docker Hub login failed - check DOCKERHUB_USERNAME / DOCKERHUB_TOKEN." >&2
             exit 1
           fi
 

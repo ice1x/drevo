@@ -1,8 +1,8 @@
 //! Engine-independent storage & semantic **report** DTOs.
 //!
 //! These small serde-friendly value types describe the *result* of a graph
-//! operation — a compaction, a bloat scan, a per-keyspace breakdown, a semantic
-//! reindex pass, or a semantic-target health snapshot — independently of which
+//! operation - a compaction, a bloat scan, a per-keyspace breakdown, a semantic
+//! reindex pass, or a semantic-target health snapshot - independently of which
 //! engine produced them. They live here (rather than in `crate::db`) so they
 //! survive the retirement of the legacy KV engine (epic #444): the durable
 //! native serving layer (`crate::native_service` / `crate::native_api`) and the
@@ -20,7 +20,7 @@ pub struct SemanticReindexReport {
     pub scanned: usize,
     /// Nodes embedded this pass (text present, embedding written).
     pub embedded: usize,
-    /// Nodes skipped — already carrying the embedding, or no text to embed.
+    /// Nodes skipped - already carrying the embedding, or no text to embed.
     pub skipped: usize,
     /// Candidates still needing embedding after this pass: those left when
     /// `batch_size` was reached, plus any whose embed attempt failed this pass.
@@ -33,7 +33,7 @@ pub struct SemanticReindexReport {
 #[derive(Debug, Clone)]
 pub struct SemanticTargetStatus {
     /// Whether this target matches a node label (`"node"`) or a relationship
-    /// type (`"relationship"`) — #266. For a node target `index.label` is the
+    /// type (`"relationship"`) - #266. For a node target `index.label` is the
     /// node label; for a relationship target it is the relationship type.
     pub target_kind: &'static str,
     /// The registered target (label, properties, mode, control-plane state).
@@ -46,7 +46,7 @@ pub struct SemanticTargetStatus {
     pub failed: u64,
     /// The most recent swallowed failure message, if any.
     pub last_error: Option<String>,
-    /// True when `pending > 0` — writes have landed with embeddings missing, so
+    /// True when `pending > 0` - writes have landed with embeddings missing, so
     /// semantic search under-returns until the backlog is drained.
     pub degraded: bool,
 }
@@ -61,7 +61,7 @@ pub struct SemanticTargetStatus {
 /// it rides over the HTTP / FFI / WASM boundaries cleanly.
 ///
 /// `bytes_before` / `bytes_after` are `Option<u64>` because the ephemeral
-/// memory backend has no measurable on-disk footprint — fields stay
+/// memory backend has no measurable on-disk footprint - fields stay
 /// `None` rather than reporting a fake zero.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompactReport {
@@ -84,14 +84,14 @@ pub struct CompactReport {
     pub next_edge_id: u64,
 }
 
-/// Storage-bloat snapshot (#253 slice 1) — the physical file footprint versus
+/// Storage-bloat snapshot (#253 slice 1) - the physical file footprint versus
 /// the irreducible logical data it holds, so operators and automation can see
 /// how much of a redb file is reclaimable copy-on-write high-water-mark bloat.
 ///
 /// redb never returns freed pages to the OS on its own (see #240 / #241 /
 /// #243): under churn the file grows to its high-water mark and only
 /// `Drevo::compact` (or the `drevo shrink` CLI) reclaims it. The ratio is
-/// measured against `stored_bytes` — records **plus** every secondary index —
+/// measured against `stored_bytes` - records **plus** every secondary index -
 /// precisely because a text-heavy graph's FTS index is a large but legitimate
 /// cost: measuring against records alone would report such a file as massively
 /// bloated when a rebuild cannot shrink it at all. A ratio near 1 is a minimal
@@ -99,18 +99,18 @@ pub struct CompactReport {
 /// slices act on it (opt-in auto-compaction + a steady-state churn test).
 ///
 /// `file_bytes` and `bloat_ratio` are `Option` because the ephemeral in-memory
-/// backend has no on-disk footprint — they stay `None` rather than reporting a
+/// backend has no on-disk footprint - they stay `None` rather than reporting a
 /// fake zero.
 ///
 /// Three byte totals are reported, coarse → fine:
-/// - `stored_bytes` — **every** stored row (records + all secondary indexes),
+/// - `stored_bytes` - **every** stored row (records + all secondary indexes),
 ///   the honest total of real data in the file. This is the ratio denominator.
-/// - `logical_bytes` — just the `node:` + `edge:` record rows, comparable to a
+/// - `logical_bytes` - just the `node:` + `edge:` record rows, comparable to a
 ///   GraphML dump.
-/// - `index_bytes` — `stored_bytes − logical_bytes`, the secondary structures
+/// - `index_bytes` - `stored_bytes − logical_bytes`, the secondary structures
 ///   (uuid / title / kind keys, adjacency, property index, FTS trigrams,
 ///   vectors). For text-heavy graphs the FTS index alone can dwarf the records,
-///   so this is a large but entirely *legitimate* cost — not bloat.
+///   so this is a large but entirely *legitimate* cost - not bloat.
 ///
 /// `bloat_ratio = file_bytes / stored_bytes` is therefore the *reclaimable*
 /// bloat signal: a value near 1 means the file is essentially minimal for its
@@ -124,14 +124,14 @@ pub struct BloatReport {
     /// Physical on-disk size of the backend file, or `None` for the ephemeral
     /// in-memory backend.
     pub file_bytes: Option<u64>,
-    /// Summed size (key + value bytes) of **all** stored rows — records *and*
+    /// Summed size (key + value bytes) of **all** stored rows - records *and*
     /// every secondary index. The real logical data footprint, and the
     /// denominator of [`bloat_ratio`](Self::bloat_ratio).
     pub stored_bytes: u64,
-    /// Summed size (key + value bytes) of the `node:` + `edge:` record rows —
+    /// Summed size (key + value bytes) of the `node:` + `edge:` record rows -
     /// the irreducible graph data, excluding indexes.
     pub logical_bytes: u64,
-    /// `stored_bytes − logical_bytes` — the secondary-index footprint
+    /// `stored_bytes − logical_bytes` - the secondary-index footprint
     /// (adjacency, uuid/title/kind keys, property index, FTS trigrams,
     /// vectors). Legitimate overhead, not reclaimable bloat.
     pub index_bytes: u64,
@@ -139,7 +139,7 @@ pub struct BloatReport {
     pub node_count: u64,
     /// Number of edge records scanned.
     pub edge_count: u64,
-    /// `file_bytes / stored_bytes` — how many physical bytes back each byte of
+    /// `file_bytes / stored_bytes` - how many physical bytes back each byte of
     /// real stored data. `None` when the footprint is unmeasurable (in-memory
     /// backend) or there is no data yet (`stored_bytes == 0`). A value well
     /// above 1 signals reclaimable high-water-mark bloat; near 1 means the file
@@ -153,7 +153,7 @@ pub struct BloatReport {
 /// Physical bytes per prefix are not exposed by redb, but **entry count** is the
 /// signal that matters for the FTS blowup: the FTS index stores one tiny row per
 /// `(trigram, node_id)` pair, so on a text-heavy graph `fts` dwarfs every other
-/// keyspace in row count — and redb's fixed per-row / per-page overhead on those
+/// keyspace in row count - and redb's fixed per-row / per-page overhead on those
 /// millions of near-empty rows is what inflates the physical file to several×
 /// its content. This report makes that dominance measurable.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

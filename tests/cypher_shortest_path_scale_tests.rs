@@ -1,9 +1,9 @@
-//! `shortestPath` / `allShortestPaths` at scale — issue #546.
+//! `shortestPath` / `allShortestPaths` at scale - issue #546.
 //!
 //! On the live knowledge graph (3.4k nodes) a single
 //! `MATCH p = shortestPath((a)-[*..4]-(b)) WHERE a.name = … RETURN …` never
 //! finished: the search enumerated every *trail* up to the bound (no visited
-//! set, `O(deg^depth)`), once per `(source, target)` pair — so each
+//! set, `O(deg^depth)`), once per `(source, target)` pair - so each
 //! unreachable target paid a full depth-4 enumeration of the source's
 //! component.
 //!
@@ -15,7 +15,7 @@
 //! - **exactness:** on seeded random multigraphs (parallel edges, self-loops,
 //!   two relationship types) every pair's `length(p)` equals an independent
 //!   BFS distance, and `allShortestPaths` yields exactly as many rows as there
-//!   are distinct minimum-length paths (counted by a path-count DP) — for
+//!   are distinct minimum-length paths (counted by a path-count DP) - for
 //!   directed, undirected and type-filtered patterns.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};

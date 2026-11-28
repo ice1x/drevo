@@ -1,4 +1,4 @@
-//! The broker abstraction — where messages come from and how progress is
+//! The broker abstraction - where messages come from and how progress is
 //! tracked.
 //!
 //! drevo does not bundle a Kafka or NATS client (that would drag a heavyweight,
@@ -10,11 +10,11 @@
 //!
 //! # Offsets and at-least-once delivery
 //!
-//! Every message carries a monotonically increasing [`Offset`] — exactly the
+//! Every message carries a monotonically increasing [`Offset`] - exactly the
 //! Kafka partition-offset / NATS sequence model. A consumer processes messages
 //! and periodically [`commit`](StreamSource::commit)s the highest offset it has
 //! durably applied. After a crash it resumes from
-//! [`committed`](StreamSource::committed) — which means messages processed but
+//! [`committed`](StreamSource::committed) - which means messages processed but
 //! not yet committed are **re-delivered**. This is at-least-once delivery, and
 //! it is why every [`IngestEvent`](crate::streaming::IngestEvent) is designed to
 //! be idempotent: replaying a window converges on the same graph state.
@@ -48,7 +48,7 @@ impl std::fmt::Display for Offset {
 /// One message pulled from a [`StreamSource`]: an opaque payload stamped with
 /// its [`Offset`].
 ///
-/// The payload is the raw broker message body — typically a JSON
+/// The payload is the raw broker message body - typically a JSON
 /// [`IngestEvent`](crate::streaming::IngestEvent), decoded by the consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamMessage {
@@ -58,7 +58,7 @@ pub struct StreamMessage {
     pub payload: Vec<u8>,
 }
 
-/// A pollable, committable source of stream messages — the broker-partition
+/// A pollable, committable source of stream messages - the broker-partition
 /// abstraction the ingestion engine consumes.
 ///
 /// Implementors wrap a concrete transport (Kafka, NATS, CDC, an in-process
@@ -95,7 +95,7 @@ pub trait StreamSource {
 /// * [`poll`](StreamSource::poll) hands out messages after the in-flight
 ///   cursor and advances it.
 /// * [`rewind_to_committed`](Self::rewind_to_committed) resets the in-flight
-///   cursor back to the committed mark — simulating a consumer crash /
+///   cursor back to the committed mark - simulating a consumer crash /
 ///   partition rebalance that re-delivers everything not yet committed.
 #[derive(Debug, Default)]
 pub struct MemorySource {

@@ -65,7 +65,7 @@ test("meanEdgeLength falls back when every segment is degenerate", () => {
   assert.equal(meanEdgeLength(segments), 90);
 });
 
-// segmentLength — the per-edge rest length backing the jolt-free live drag.
+// segmentLength - the per-edge rest length backing the jolt-free live drag.
 
 test("segmentLength returns the Euclidean length of one segment", () => {
   // 3-4-5 triangle.

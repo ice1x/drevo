@@ -73,7 +73,7 @@ def test_kind_filter_excludes_other_kinds(drevo_db: drevo.Drevo, mixed_kind_neig
 
 
 def test_kind_filter_does_not_exclude_root(drevo_db: drevo.Drevo, mixed_kind_neighbourhood) -> None:
-    """`kind_filter=['note']` constrains the *frontier* — the root,
+    """`kind_filter=['note']` constrains the *frontier* - the root,
     whose kind is `task`, is always returned (RFC neighborhood §)."""
     root, _ = mixed_kind_neighbourhood
     nh = expand_neighborhood(drevo_db, root.uuid, hops=1, kind_filter=["note"])

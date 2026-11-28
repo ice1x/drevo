@@ -2,8 +2,8 @@
 //!
 //! Phase 13 task `00081` keeps the multi-version concurrency primitives in
 //! their own error channel rather than reaching straight for
-//! [`crate::error::DrevoError`]. The MVCC engine is still a standalone module
-//! — task `00083` adds the optimistic-concurrency-control conflict and retry
+//! [`crate::error::DrevoError`]. The MVCC engine is still a standalone module -
+//! task `00083` adds the optimistic-concurrency-control conflict and retry
 //! variants here, and full wiring into the `Drevo` mutation
 //! paths lands with the isolation levels of `00084`. A self-contained
 //! [`MvccError`] keeps each task's blast radius to the new module and leaves
@@ -22,7 +22,7 @@ pub enum MvccError {
     LockPoisoned,
 
     /// [`TransactionManager::commit`] / [`TransactionManager::abort`] was
-    /// called for a transaction id that is not currently in progress —
+    /// called for a transaction id that is not currently in progress -
     /// either it was never allocated, or it has already been committed or
     /// aborted (double-finish).
     ///
@@ -35,7 +35,7 @@ pub enum MvccError {
     /// of task `00083`: the writer tried to update or delete a key whose
     /// chain head had already been modified by a *concurrent* transaction
     /// (one still in progress, or one that committed after the writer's
-    /// snapshot was taken). First-updater-wins — the second writer must abort
+    /// snapshot was taken). First-updater-wins - the second writer must abort
     /// and retry against a fresh snapshot rather than silently lose the
     /// concurrent update.
     ///
@@ -53,7 +53,7 @@ pub enum MvccError {
     /// would let this through as a write-skew anomaly; the serializable
     /// read-set validation refuses it (first-committer-wins) so the schedule
     /// stays serializable. The loser must abort and retry against a fresh
-    /// snapshot — see [`run_transaction`](super::isolation::run_transaction).
+    /// snapshot - see [`run_transaction`](super::isolation::run_transaction).
     ///
     /// Distinct from [`WriteConflict`](Self::WriteConflict), which is a
     /// write-write race on a key this transaction *wrote*; this is a

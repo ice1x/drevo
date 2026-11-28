@@ -1,4 +1,4 @@
-//! Weakly connected components (WCC) — RFC #307 Phase 8.
+//! Weakly connected components (WCC) - RFC #307 Phase 8.
 //!
 //! Two nodes are in the same weakly connected component when a path joins them
 //! once every edge is treated as **undirected**. This is the third global
@@ -11,7 +11,7 @@
 //!
 //! Component IDs are assigned by the **minimum node ID** in each component, in
 //! ascending order, so the labelling is fully independent of the order the
-//! engine happened to enumerate nodes in — the native snapshot and the KV
+//! engine happened to enumerate nodes in - the native snapshot and the KV
 //! backend produce byte-identical results over the same graph.
 //!
 //! Dependency-free, infallible, always compiled, WASM-safe.

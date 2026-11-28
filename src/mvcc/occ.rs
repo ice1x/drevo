@@ -1,17 +1,17 @@
-//! Optimistic concurrency control — retry semantics (Phase 13 task `00083`).
+//! Optimistic concurrency control - retry semantics (Phase 13 task `00083`).
 //!
 //! Detection lives one layer down: [`VersionedStore::put_checked`] and
 //! [`VersionedStore::delete_checked`] refuse a write whose key was
 //! concurrently modified, returning
 //! [`MvccError::WriteConflict`]. This module
-//! supplies the other half OCC needs — the *retry loop* that turns a detected
+//! supplies the other half OCC needs - the *retry loop* that turns a detected
 //! conflict into forward progress instead of a propagated error.
 //!
 //! [`run_with_retry`] runs a transaction body optimistically: it begins a
 //! transaction, captures a fresh snapshot, and runs the body. If the body
 //! returns a [`WriteConflict`](crate::mvcc::MvccError::WriteConflict) the
 //! transaction is aborted and the whole thing is retried against a brand-new
-//! snapshot — which now observes the commit that won the previous race, so the
+//! snapshot - which now observes the commit that won the previous race, so the
 //! next attempt builds on it rather than colliding again. A body that succeeds
 //! is committed; any other error aborts and propagates unchanged. After
 //! `max_retries` failed attempts the loop gives up with

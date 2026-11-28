@@ -10,7 +10,7 @@
 //!
 //! These tests do NOT exercise execution (that lands in task `00063`).
 //! They verify only that the *grammar* is rich enough to express each
-//! scenario domain — once the executor lands the same queries become the
+//! scenario domain - once the executor lands the same queries become the
 //! seed for the Phase 10 "definition of done" suite (per `README.md`).
 
 use drevo::cypher::ast::{
@@ -36,7 +36,7 @@ fn has_clause_kind<F: Fn(&Clause) -> bool>(q: &Query, pred: F) -> bool {
     q.parts[0].query.clauses.iter().any(pred)
 }
 
-// ===== Scenario 1 — CBT Journal ============================================
+// ===== Scenario 1 - CBT Journal ============================================
 //
 // Cognitive Behavioural Therapy journal: thought entries, mood ratings,
 // cognitive distortions, reframes. The graph models thoughts as nodes,
@@ -90,7 +90,7 @@ fn cbt_find_thoughts_by_distortion_kind() {
         Clause::Match(m) => m,
         _ => panic!(),
     };
-    // Anonymous variable on Distortion node — variable is None, label
+    // Anonymous variable on Distortion node - variable is None, label
     // remains present.
     let dist_node = &m.patterns[0].path.tail[0].node;
     assert!(dist_node.variable.is_none());
@@ -141,7 +141,7 @@ fn cbt_record_reframe_with_set() {
     }
 }
 
-// ===== Scenario 2 — Story / Book editor =====================================
+// ===== Scenario 2 - Story / Book editor =====================================
 //
 // Long-form fiction with chapters, scenes, characters, and a separate
 // world-building tree. Authors care about character co-occurrence across
@@ -166,7 +166,7 @@ fn story_create_chapter_with_first_scene() {
 
 #[test]
 fn story_link_character_to_scene_via_merge() {
-    // MERGE is the natural idiom — multiple FEATURES rels for the same
+    // MERGE is the natural idiom - multiple FEATURES rels for the same
     // (scene, character) pair would be a bug.
     let q = parse(
         "MATCH (s:Scene {id: $sid}), (ch:Character {name: 'Aldric'})
@@ -256,7 +256,7 @@ fn story_count_scenes_per_chapter() {
     assert_eq!(w.items.len(), 2);
 }
 
-// ===== Scenario 3 — IT Task Manager =========================================
+// ===== Scenario 3 - IT Task Manager =========================================
 //
 // Backlog of engineering tasks with assignees, statuses, priorities, and
 // "BLOCKS" dependencies. Variable-length paths matter because a task is
@@ -362,7 +362,7 @@ fn taskmgr_close_task() {
     assert!(matches!(clause_at(&q, 2), Clause::Remove(_)));
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 //
 // Tiny ERP slice: customers, orders, line items, inventory. Many of the
 // real-world reports are aggregations after multi-hop joins, so this
@@ -492,7 +492,7 @@ fn erp_customer_summary_with_optional_orders() {
     }
 }
 
-// ===== Scenario 5 — Bug Tracker =============================================
+// ===== Scenario 5 - Bug Tracker =============================================
 //
 // Bug filing → triage → assignment → resolution. Tracks duplicates,
 // component ownership, comment threads. Heavy on string predicates
@@ -706,7 +706,7 @@ fn cross_union_combines_two_domains_into_inbox() {
 
 #[test]
 fn cross_unwind_then_create_bulk_import() {
-    // Bulk-insert idiom — load a list of payloads then materialise nodes.
+    // Bulk-insert idiom - load a list of payloads then materialise nodes.
     let q = parse(
         "UNWIND $rows AS row
          CREATE (e:Entry {id: row.id, body: row.body, created_at: row.ts})",

@@ -1,4 +1,4 @@
-//! Integration tests for the HNSW index — Phase 12 task `00076`.
+//! Integration tests for the HNSW index - Phase 12 task `00076`.
 //!
 //! Exercises the public `drevo::vector::HnswIndex` surface the way the joint
 //! graph+vector Cypher predicate (`00077`) and the persistence layer
@@ -33,7 +33,7 @@ impl Rng {
     }
 }
 
-/// Exact top-`k` by Euclidean distance — the ground truth HNSW approximates.
+/// Exact top-`k` by Euclidean distance - the ground truth HNSW approximates.
 fn brute_force(data: &[(u64, Vec<f32>)], query: &[f32], k: usize) -> Vec<u64> {
     let mut scored: Vec<(u64, f32)> = data
         .iter()
@@ -108,7 +108,7 @@ fn high_recall_on_high_dimensional_data() {
 #[test]
 fn cosine_metric_finds_same_direction_regardless_of_magnitude() {
     // Under cosine, a long vector pointing the same way as the query beats a
-    // short vector pointing elsewhere — magnitude must not matter.
+    // short vector pointing elsewhere - magnitude must not matter.
     let mut index = HnswIndex::new(HnswConfig {
         metric: Metric::Cosine,
         ..HnswConfig::default()

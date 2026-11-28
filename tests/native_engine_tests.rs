@@ -2,7 +2,7 @@
 //! #307, Phase 2).
 //!
 //! These lock the native engine's contract through the shared
-//! [`drevo::engine::GraphEngine`] seam — ids, node/edge content, adjacency,
+//! [`drevo::engine::GraphEngine`] seam - ids, node/edge content, adjacency,
 //! transactions, constraints, WAL durability, and the
 //! [`drevo_core::error::CoreError`] variants on the error paths. The KV↔native
 //! differential workloads that once cross-checked [`drevo::native::NativeGraph`]
@@ -66,7 +66,7 @@ fn new_edge(from: u64, to: u64, kind: &str, weight: f32) -> NewEdge {
 }
 
 // ---------------------------------------------------------------------------
-// Op-parity checkers — run the same call on both engines, compare the outcome
+// Op-parity checkers - run the same call on both engines, compare the outcome
 // ---------------------------------------------------------------------------
 
 /// Assert both engines expose an identical observable graph: node set, edge
@@ -146,7 +146,7 @@ fn native_enforces_core_semantics() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.1 — snapshot isolation for reads.
+// Phase 3.1 - snapshot isolation for reads.
 //
 // A GraphSnapshot is a frozen, consistent view: writes to the engine after the
 // snapshot is taken must not change what the snapshot reports, and a fresh
@@ -184,7 +184,7 @@ fn snapshot_is_isolated_from_later_writes() {
     )
     .unwrap();
 
-    // The snapshot is unchanged — still the frozen 2-node, 1-edge graph.
+    // The snapshot is unchanged - still the frozen 2-node, 1-edge graph.
     assert_eq!(snap.all_nodes().len(), 2);
     assert_eq!(snap.all_edges().len(), 1);
     assert_eq!(
@@ -205,7 +205,7 @@ fn snapshot_is_isolated_from_later_writes() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.2 — transactions: snapshot-isolated buffered writes, atomic commit,
+// Phase 3.2 - transactions: snapshot-isolated buffered writes, atomic commit,
 // rollback, and optimistic conflict detection.
 // ---------------------------------------------------------------------------
 
@@ -281,7 +281,7 @@ fn native_tx_detects_write_conflict() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.3 — constraints (ACID "C"): UNIQUE(kind, property) validated at
+// Phase 3.3 - constraints (ACID "C"): UNIQUE(kind, property) validated at
 // transaction commit, and when the constraint is declared over existing data.
 // ---------------------------------------------------------------------------
 
@@ -363,7 +363,7 @@ fn native_add_constraint_rejects_violating_existing_data() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.4 — WAL substrate (ACID "D" foundation): a logical operation log the
+// Phase 3.4 - WAL substrate (ACID "D" foundation): a logical operation log the
 // engine's state can be dumped to and deterministically replayed from.
 // ---------------------------------------------------------------------------
 
@@ -427,7 +427,7 @@ fn wal_replay_honours_delete_ops_and_advances_ids() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.5 — file-backed WAL (ACID "D"): direct writes are fsynced to a log,
+// Phase 3.5 - file-backed WAL (ACID "D"): direct writes are fsynced to a log,
 // and reopening the path reconstructs the graph after a "crash" (drop).
 // ---------------------------------------------------------------------------
 
@@ -456,7 +456,7 @@ fn durable_wal_survives_reopen() {
         let ghost = g.create_node(new_node("k", "ghost")).unwrap();
         g.delete_node(ghost.id).unwrap();
         (a.id, b.id, e.id)
-    }; // engine dropped — equivalent to a crash (every write already fsynced)
+    }; // engine dropped - equivalent to a crash (every write already fsynced)
 
     // Reopen: the graph is reconstructed purely from the WAL.
     let g2 = NativeGraph::open_durable(&path).unwrap();
@@ -474,7 +474,7 @@ fn durable_wal_survives_reopen() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.6 — durable transactions: a committed transaction's writes are WAL-
+// Phase 3.6 - durable transactions: a committed transaction's writes are WAL-
 // logged and survive reopen; a rolled-back transaction leaves no trace.
 // ---------------------------------------------------------------------------
 
@@ -505,7 +505,7 @@ fn durable_tx_commit_persists_and_rollback_does_not() {
     } // crash
 
     let g2 = NativeGraph::open_durable(&path).unwrap();
-    assert_eq!(g2.all_nodes().unwrap().len(), 2); // a, b — ghost never persisted
+    assert_eq!(g2.all_nodes().unwrap().len(), 2); // a, b - ghost never persisted
     assert!(g2.get_node(committed_node).unwrap().is_some());
     assert_eq!(g2.all_edges().unwrap().len(), 1);
     let edges = g2.all_edges().unwrap();
@@ -513,7 +513,7 @@ fn durable_tx_commit_persists_and_rollback_does_not() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.7 — WAL compaction: rewrite the log as the compact snapshot form so
+// Phase 3.7 - WAL compaction: rewrite the log as the compact snapshot form so
 // it does not grow without bound, without changing the recovered graph.
 // ---------------------------------------------------------------------------
 
@@ -565,7 +565,7 @@ fn compact_wal_shrinks_log_and_preserves_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3.8 — EXISTS and NODE KEY constraints, rounding out ACID "C" to full
+// Phase 3.8 - EXISTS and NODE KEY constraints, rounding out ACID "C" to full
 // Neo4j schema-constraint parity. All validated at transaction commit.
 // ---------------------------------------------------------------------------
 
@@ -675,7 +675,7 @@ fn native_add_exists_constraint_rejects_violating_data() {
 }
 
 // ---------------------------------------------------------------------------
-// Zero-copy reads (Arc-backed storage) — native-core 8.0
+// Zero-copy reads (Arc-backed storage) - native-core 8.0
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -782,7 +782,7 @@ fn snapshot_arc_read_is_frozen_against_later_writes() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 6.5 — node-kind index: `nodes_by_kind` must be index-driven yet stay
+// Phase 6.5 - node-kind index: `nodes_by_kind` must be index-driven yet stay
 // observably identical to the old full scan across every mutation, including a
 // node changing kind (its id must move buckets) and deletion (it must leave).
 // ---------------------------------------------------------------------------

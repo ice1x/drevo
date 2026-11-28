@@ -33,8 +33,8 @@ fn s(v: &str) -> Value {
 ///
 /// ```text
 ///   A ──▶ B ──▶ C        A→B→C is one-way for cars (60 s a block)
-///   │     │     │        B–E is slow (90 s), A–D residential (120 s)
-///   D ─── E ─── F        a footpath runs A–E (walk only, 100 s)
+///   │     │     │        B-E is slow (90 s), A-D residential (120 s)
+///   D ─── E ─── F        a footpath runs A-E (walk only, 100 s)
 /// ```
 ///
 /// Two-way streets are a relationship each way. Every street takes 300 s on

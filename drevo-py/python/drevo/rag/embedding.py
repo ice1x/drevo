@@ -1,24 +1,24 @@
-"""`drevo.rag.embedding` — embedding integration helpers (Phase 12 task `00079`).
+"""`drevo.rag.embedding` - embedding integration helpers (Phase 12 task `00079`).
 
 The capstone of Phase 12: pure-Python helpers that wire a user-supplied
 *embedder* to drevo's first-class vector storage (`00078`) and HNSW search
-(`00076`). Phases `00075`–`00078` built the durable embedding store and the
+(`00076`). Phases `00075`-`00078` built the durable embedding store and the
 approximate-nearest-neighbour index in Rust and exposed them on the
 `Drevo` handle (`set_embedding` / `set_embeddings_batch` / `get_embedding`
 / `delete_embedding` / `embedding_count` / `vector_search`); this module is
 the ergonomic Python layer the SDK and the FastMCP server call.
 
 Like the rest of `drevo.rag`, this is pure-Python composition over the
-PyO3 `Drevo` methods — no FFI, testable with `pytest` alone.
+PyO3 `Drevo` methods - no FFI, testable with `pytest` alone.
 
 Public surface:
-- `Embedder` — structural protocol for a batch text→vector callable
+- `Embedder` - structural protocol for a batch text→vector callable
   (the same shape LangChain / LlamaIndex / Haystack embedders expose).
-- `VectorHit` — frozen dataclass: a matched `Node` plus its raw index
+- `VectorHit` - frozen dataclass: a matched `Node` plus its raw index
   `distance` and a convenience `similarity` score.
-- `embed_and_store` — embed the text of existing nodes and persist the
+- `embed_and_store` - embed the text of existing nodes and persist the
   vectors first-class in one batched write.
-- `vector_search` — embed a query (or accept a raw vector) and return the
+- `vector_search` - embed a query (or accept a raw vector) and return the
   `k` nearest nodes as `VectorHit`s.
 """
 
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 class Embedder(Protocol):
     """A batch text→vector callable.
 
-    `embedder(["a", "b"])` returns `[[...], [...]]` — one float vector per
+    `embedder(["a", "b"])` returns `[[...], [...]]` - one float vector per
     input string, in order. This is the structural shape every major
     framework's embedder already satisfies, so users pass theirs directly
     without an adapter.
@@ -45,7 +45,7 @@ class Embedder(Protocol):
 
 
 # A plain function with the same signature is also accepted everywhere an
-# `Embedder` is — kept as an alias for call sites that prefer the verb.
+# `Embedder` is - kept as an alias for call sites that prefer the verb.
 EmbedderFn = Callable[[list[str]], list[list[float]]]
 
 
@@ -53,7 +53,7 @@ EmbedderFn = Callable[[list[str]], list[list[float]]]
 class VectorHit:
     """One result of a `vector_search`.
 
-    `distance` is the raw index metric (cosine distance by default —
+    `distance` is the raw index metric (cosine distance by default -
     smaller is nearer). `similarity` is the convenience inverse
     `1 - distance`, clamped to `[0, 1]`, so callers ranking by "higher is
     better" do not have to flip the sign. The dataclass is frozen so a hit
@@ -112,7 +112,7 @@ def embed_and_store(
     if len(vectors) != len(nodes):
         raise ValueError(
             f"embedder returned {len(vectors)} vectors for {len(nodes)} "
-            f"nodes — counts must match"
+            f"nodes - counts must match"
         )
     pairs = [(n.id, list(v)) for n, v in zip(nodes, vectors)]
     drevo.set_embeddings_batch(pairs)

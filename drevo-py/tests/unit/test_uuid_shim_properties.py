@@ -4,7 +4,7 @@ These complement the example-based cases in ``tests/test_shim.py`` by
 fuzzing the pure-Python ``drevo._wrap_uuid`` helper in ``drevo.__init__``
 with Hypothesis. The boundary is a strong fuzz target: it is pure Python
 (no compiled extension needed), it has clear round-trip invariants, and
-it guards on length — exactly the kind of logic where hand-picked
+it guards on length - exactly the kind of logic where hand-picked
 examples miss edge cases.
 
 Invariants exercised:
@@ -35,7 +35,7 @@ class TestWrapUuidProperties:
 
     @given(st.uuids())
     def test_uuid_passed_through_unchanged(self, u: uuid.UUID) -> None:
-        # A `uuid.UUID` input is returned by identity — no re-wrap.
+        # A `uuid.UUID` input is returned by identity - no re-wrap.
         assert _wrap_uuid(u) is u
 
     @given(st.uuids())
@@ -45,6 +45,6 @@ class TestWrapUuidProperties:
     @given(st.binary(max_size=64).filter(lambda b: len(b) != 16))
     def test_rejects_any_wrong_length(self, raw: bytes) -> None:
         # `uuid.UUID(bytes=...)` raises ValueError for any non-16-byte
-        # input — the shim forwards that without masking it.
+        # input - the shim forwards that without masking it.
         with pytest.raises(ValueError):
             _wrap_uuid(raw)

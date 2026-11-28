@@ -14,7 +14,7 @@
 //! The chat endpoint is a local HTTP server answering like an
 //! OpenAI-compatible `chat/completions` upstream: for each passage it is
 //! sent it reports the mentions of a fixed cast and the facts whose quote
-//! the passage holds, with offsets into the passage — plus, when asked, a
+//! the passage holds, with offsets into the passage - plus, when asked, a
 //! hallucinated mention the passage does not hold. The scenario is a book
 //! editor feeding manuscripts.
 
@@ -728,7 +728,7 @@ mod upstream {
             other => panic!("{other:?}"),
         };
         assert!(
-            message.starts_with("no source `missing` — add it first with drevo.memory.addSource"),
+            message.starts_with("no source `missing` - add it first with drevo.memory.addSource"),
             "{message}"
         );
         assert_eq!(count(&svc, "MATCH (n) RETURN count(n)"), 0);
@@ -1142,7 +1142,7 @@ mod upstream {
         assert_eq!(
             calls, chunks,
             "a commit conflict repeated the model calls: the fake upstream saw {calls} \
-             requests for {chunks} chunks after {rejected} rejected commit(s) — the retry \
+             requests for {chunks} chunks after {rejected} rejected commit(s) - the retry \
              loop re-ran the extraction (#805)"
         );
         assert!(

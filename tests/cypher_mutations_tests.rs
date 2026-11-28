@@ -1,10 +1,10 @@
-//! End-to-end Cypher mutation tests — Phase 10 task `00064`.
+//! End-to-end Cypher mutation tests - Phase 10 task `00064`.
 //!
 //! The five scenario domains (CBT journal, story editor, IT task
 //! manager, ERP, bug tracker) are the same ones exercised by
 //! `cypher_parser_e2e_tests.rs` and `cypher_executor_tests.rs`. Here we
-//! drive the *mutation* surface — `SET`, `REMOVE`, `DELETE` /
-//! `DETACH DELETE`, and `MERGE` (incl. `ON CREATE` / `ON MATCH`) — using
+//! drive the *mutation* surface - `SET`, `REMOVE`, `DELETE` /
+//! `DETACH DELETE`, and `MERGE` (incl. `ON CREATE` / `ON MATCH`) - using
 //! realistic mixed-clause queries the agentic workload (Phase 10.5,
 //! `00123` / `00128`) will replay against this same executor.
 
@@ -33,7 +33,7 @@ fn err(source: &str, drevo: &NativeGraph) -> ExecError {
     execute(&q, drevo, HashMap::new()).expect_err("expected error")
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_set_thought_reframing_text_via_match_set() {
@@ -99,7 +99,7 @@ fn cbt_remove_property_when_user_clears_reframe() {
     assert_eq!(rows[0][0], Value::Null);
 }
 
-// ===== Scenario 2 — Story editor ============================================
+// ===== Scenario 2 - Story editor ============================================
 
 #[test]
 fn story_promote_scene_to_climax_via_set_label() {
@@ -153,7 +153,7 @@ fn story_replace_scene_properties_with_assignment() {
     assert_eq!(rows[0][2], Value::Null);
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_manager_mark_task_done_via_set() {
@@ -199,7 +199,7 @@ fn task_manager_delete_task_with_subtask_requires_detach() {
     );
     let e = err("MATCH (p:Task {title: 'Parent'}) DELETE p", &db);
     assert!(matches!(e, ExecError::InvalidMutation(_)));
-    // Now use DETACH DELETE — should succeed and cascade-remove the edge.
+    // Now use DETACH DELETE - should succeed and cascade-remove the edge.
     run("MATCH (p:Task {title: 'Parent'}) DETACH DELETE p", &db);
     let remaining = run("MATCH (t:Task) RETURN t.title AS title", &db);
     assert_eq!(remaining.len(), 1);
@@ -227,7 +227,7 @@ fn task_manager_parametrised_set_via_with_params() {
     assert_eq!(rows[0][0], Value::String("in_progress".into()));
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_merge_supplier_idempotent_across_runs() {
@@ -285,7 +285,7 @@ fn erp_remove_outdated_property_from_legacy_orders() {
     assert_eq!(rows[0][1], Value::String("sent".into()));
 }
 
-// ===== Scenario 5 — Bug tracker =============================================
+// ===== Scenario 5 - Bug tracker =============================================
 
 #[test]
 fn bug_tracker_escalate_severity_via_set_merge_map() {
@@ -344,7 +344,7 @@ fn bug_tracker_merge_label_does_not_duplicate_node_kind() {
     let rows = run("MATCH (b:Regression) RETURN b.title AS title", &db);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0][0], Value::String("Login broken".into()));
-    // Remove the secondary label — the node still exists under :Bug.
+    // Remove the secondary label - the node still exists under :Bug.
     run("MATCH (b:Regression) REMOVE b:Regression", &db);
     let none = run("MATCH (b:Regression) RETURN b.title AS title", &db);
     assert!(none.is_empty());

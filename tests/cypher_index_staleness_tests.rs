@@ -2,17 +2,17 @@
 //! durability track): the native secondary indexes are synced from the
 //! change-feed *between* statements, so **within** a statement that has
 //! already written, index-narrowed candidate sets can be missing this
-//! statement's own writes — a false negative that would return wrong rows.
+//! statement's own writes - a false negative that would return wrong rows.
 //!
 //! The rule under test: once a statement has performed any write, the
 //! executor must stop trusting index narrowing (falling back to the scan +
 //! exact filter, which reads the live engine), so a stale index can only
-//! ever cost speed, never answers — the same invariant the value cache and
+//! ever cost speed, never answers - the same invariant the value cache and
 //! the read mirror hold.
 //!
 //! Every case runs on a native engine executing THROUGH the indexed entry
-//! point with indexes synced before the statement — the exact serving shape
-//! of the durable-native track — and asserts the exact expected rows, so a
+//! point with indexes synced before the statement - the exact serving shape
+//! of the durable-native track - and asserts the exact expected rows, so a
 //! stale index that leaked a wrong answer would fail.
 
 use std::collections::HashMap;
@@ -26,7 +26,7 @@ use drevo::native_value_cache::NativeValueCache;
 
 /// An indexed-native engine where every statement (seeds included) runs
 /// through the indexed entry, with all indexes re-synced before each
-/// statement — statements are the staleness unit, exactly like the serving
+/// statement - statements are the staleness unit, exactly like the serving
 /// layer.
 struct IndexedPair {
     native: NativeGraph,
@@ -45,8 +45,8 @@ impl IndexedPair {
         }
     }
 
-    /// Run one statement through the indexed entry (indexes synced up to — but
-    /// not within — the statement) and return its rows.
+    /// Run one statement through the indexed entry (indexes synced up to - but
+    /// not within - the statement) and return its rows.
     fn check(&mut self, source: &str) -> ExecResult {
         self.labels.sync(&self.native);
         self.props.sync(&self.native);
@@ -120,7 +120,7 @@ fn delete_then_match_old_value_in_one_statement() {
     let mut pair = IndexedPair::new();
     pair.check("CREATE (:Gone {title: 'g', k: 1})");
     // A stale index can also over-approximate (the deleted node is still in
-    // its postings) — the exact filter must drop it. Guards the superset
+    // its postings) - the exact filter must drop it. Guards the superset
     // direction stays safe too.
     let r = pair.check(
         "MATCH (n {k: 1}) DETACH DELETE n WITH 1 AS one \
@@ -131,7 +131,7 @@ fn delete_then_match_old_value_in_one_statement() {
 
 #[test]
 fn reads_before_any_write_still_use_the_indexes_between_statements() {
-    // Sanity: the staleness rule is per-statement — pure reads after a
+    // Sanity: the staleness rule is per-statement - pure reads after a
     // separately-applied write (with a re-sync in between) keep index
     // parity, matching the differential corpus.
     let mut pair = IndexedPair::new();

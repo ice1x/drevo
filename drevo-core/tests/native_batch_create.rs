@@ -1,4 +1,4 @@
-//! Native batch create (issue #446 S3 prerequisite, epic #444) — the native
+//! Native batch create (issue #446 S3 prerequisite, epic #444) - the native
 //! counterparts of `Drevo::create_nodes` / `create_edges`, needed before the
 //! drevo-py binding can move onto native.
 //!

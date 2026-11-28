@@ -1,16 +1,16 @@
-# Lightweight Python CI gate for `drevo-py` — landed alongside
+# Lightweight Python CI gate for `drevo-py` - landed alongside
 # Phase 16 task `00116` packaging.
 #
 # This workflow is the **fast-feedback** Python signal on every PR:
 # one self-hosted job × Python 3.13 that runs `maturin develop`,
 # then `pytest`, `mypy --strict`, `ruff check`, and `black --check`.
-# Total runtime ≈ 1–2 minutes on the warm self-hosted runner (the
+# Total runtime ≈ 1-2 minutes on the warm self-hosted runner (the
 # persistent venv at `$RUNNER_TOOL_CACHE/drevo-py-venv-py313` plus
 # the persistent `$CARGO_TARGET_DIR` mean `maturin develop` is
 # usually an incremental relink).
 #
 # Runs on the same self-hosted macOS runner as `ci.yml` /
-# `slow-tests.yml` / `bench.yml` — no GitHub-hosted minutes are
+# `slow-tests.yml` / `bench.yml` - no GitHub-hosted minutes are
 # billed. An earlier landing of this file mistakenly targeted
 # `ubuntu-latest`; corrected 2026-05-27 alongside
 # `python-wheels.yml`'s self-hosted move after a Phase 10 merge
@@ -23,12 +23,12 @@
 #     `drevo-py/tests/test_shim.py`; running them across 12 cells
 #     would burn CI minutes without proportional signal.
 #   * The full matrix lights up when `00118` (unit ~80) + `00119`
-#     (integration ~40) + `00120` (e2e 5 scenarios + RAG) ship —
+#     (integration ~40) + `00120` (e2e 5 scenarios + RAG) ship -
 #     ~125 more tests with meaningful per-OS / per-Python divergence
 #     (FTS UTF-8 boundaries, redb file locking, GIL re-acquisition).
 #   * `python-wheels.yml` (cibuildwheel) already exercises the shim
 #     contract on every wheel before upload, so a Windows-specific
-#     regression in the shim itself is caught there too — just
+#     regression in the shim itself is caught there too - just
 #     slower. This workflow gives the fast signal; cibuildwheel
 #     gives the cross-platform proof.
 #
@@ -62,7 +62,7 @@ on:
   workflow_dispatch:
 
 # Cancel an in-flight run when a newer commit lands on the same PR /
-# branch — same pattern as ci.yml / python-wheels.yml. Distinct group
+# branch - same pattern as ci.yml / python-wheels.yml. Distinct group
 # key so the three workflows do not collide.
 concurrency:
   group: python-ci-${{ github.ref }}
@@ -91,7 +91,7 @@ jobs:
         # GitHub-hosted runner. (The old self-hosted step searched macOS
         # system paths and fails on ubuntu.) Pinned to 3.13 because
         # `[tool.black].target-version` in `drevo-py/pyproject.toml`
-        # includes `py313` — black's AST safety check fails on an older
+        # includes `py313` - black's AST safety check fails on an older
         # interpreter. The abi3-py310 wheel tag still supports 3.10+, so
         # only the CI lint/test Python moves up.
         uses: actions/setup-python@v5
@@ -109,17 +109,17 @@ jobs:
         # download-restored cache is what keeps `maturin develop` fast.
         uses: Swatinem/rust-cache@v2
 
-      - name: clippy — drevo as drevo-py builds it (no default features)
+      - name: clippy - drevo as drevo-py builds it (no default features)
         # drevo-py depends on `drevo` with `default-features = false`, a
         # feature set ci.yml never lints. Without this step cfg-gated dead
         # code (e.g. items only used under `http`) warns in every
         # `maturin develop` and nobody notices.
         run: cargo clippy -p drevo --no-default-features --lib -- -D warnings
 
-      - name: clippy — drevo-py (lib + tests)
+      - name: clippy - drevo-py (lib + tests)
         run: cargo clippy -p drevo-py --no-default-features --all-targets -- -D warnings
 
-      - name: cargo test — drevo-py Rust unit tests
+      - name: cargo test - drevo-py Rust unit tests
         # `--no-default-features` drops pyo3's `extension-module`, so the
         # test binary links libpython and hosts its own interpreter.
         # PYO3_PYTHON pins it to the setup-python 3.13 located above.
@@ -127,7 +127,7 @@ jobs:
 
       - name: Ensure persistent venv at $DREVO_PY_VENV (create on first run)
         # The previous form `python -m venv .venv` recreated a fresh
-        # venv inside the repo every run — every pip install paid the
+        # venv inside the repo every run - every pip install paid the
         # cold-cache cost. Moving the venv to
         # `$RUNNER_TOOL_CACHE/drevo-py-venv-py313` makes it survive
         # between runs; subsequent runs only verify that the venv
@@ -137,7 +137,7 @@ jobs:
         #
         # Uses `$DREVO_PY_BIN` (exported by the previous step) so the
         # venv binds to the same interpreter that was located on the
-        # runner — not whatever happens to be on PATH.
+        # runner - not whatever happens to be on PATH.
         run: |
           if [ ! -x "$DREVO_PY_VENV/bin/python" ]; then
             "$DREVO_PY_BIN" -m venv "$DREVO_PY_VENV"
@@ -172,7 +172,7 @@ jobs:
           cd drevo-py
           maturin develop --release
 
-      - name: pytest (drevo-py/tests — 40 shim runtime tests)
+      - name: pytest (drevo-py/tests - 40 shim runtime tests)
         # The shim suite at drevo-py/tests/test_shim.py exercises
         # UUID wrapping, InvalidWeightError subclass, __all__
         # consistency, RFC §3.3 method enumeration, context-manager

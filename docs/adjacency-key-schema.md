@@ -3,15 +3,15 @@
 > Investigation for [#240]. Documents how
 > drevo encodes graph data as keys over its KV backend, and assesses the layout for
 > traversal cost, type-filtering, supernode behavior, and churn. Grounded in
-> `src/db.rs` (key builders around L2714–2856, expansion at `outgoing_edges`
-> L2413). No code change — measurement and follow-up planning only.
+> `src/db.rs` (key builders around L2714-2856, expansion at `outgoing_edges`
+> L2413). No code change - measurement and follow-up planning only.
 
 ## Storage substrate
 
 The redb backend (`src/storage/redb.rs`) exposes **two** physical tables:
 
-- `data` — `&[u8] → &[u8]`, holds every logical record and index entry
-- `meta` — `&str → &[u8]`, counters (`meta:next_node_id`, …), `format_version`
+- `data` - `&[u8] → &[u8]`, holds every logical record and index entry
+- `meta` - `&str → &[u8]`, counters (`meta:next_node_id`, …), `format_version`
 
 All graph structure lives in `data`, namespaced by a **string key prefix**. redb is a
 copy-on-write B-tree, so `data` is one ordered keyspace and any contiguous prefix is a
@@ -41,7 +41,7 @@ the scan with **zero** `get_edge`. A migrated value is always ≥ 8 bytes, so it
 unambiguously distinct from a legacy **empty** value (databases written before
 #243). Readers decode the value and fall back to `get_edge` only for legacy
 empties; [`Drevo::backfill_adjacency_values`] upgrades them in place. This is a
-**value-only** change — the key format is untouched, so no `format_version` bump.
+**value-only** change - the key format is untouched, so no `format_version` bump.
 
 ² **#243 slice 2 (landed).** The edge `kind` is now folded into the adjacency
 **key** (`out:{from}:{kind}:{edge_id}`), so a kind-filtered fan-out
@@ -51,7 +51,7 @@ the first 8 after the prefix, so parsing stays layout-agnostic across v1/v2.
 This is a **key-format** change, so it bumps the on-disk `format_version` major
 to **2**: [`Drevo::open`] refuses a v1 file with [`DrevoError::NeedsMigration`]
 until [`Drevo::migrate`]/[`Drevo::migrate_adjacency`] rewrites the index (a
-safe, reversible, index-only rebuild — the node/edge records are never touched)
+safe, reversible, index-only rebuild - the node/edge records are never touched)
 and re-stamps the version. Run it via `drevo migrate up <db>` (raw-file backup
 first) or `Drevo.migrate(path, "up")`.
 
@@ -59,11 +59,11 @@ Neighbor expansion now splits into two paths. The **id/kind-only** fan-out
 (`neighbor_ids`, and `neighbors` built on it) never loads an edge record:
 
 ```rust
-// src/db.rs — adjacency_targets_prefixed (feeds neighbor_ids)
+// src/db.rs - adjacency_targets_prefixed (feeds neighbor_ids)
 let entries = self.backend.scan_prefix(&prefix)?;   // 1 range scan → ALL out-edge keys
 for (key, value) in entries {
     match decode_adjacency_value(&value) {
-        Some((neighbor_id, kind)) => { /* straight from the value — 0 get_edge */ }
+        Some((neighbor_id, kind)) => { /* straight from the value - 0 get_edge */ }
         None => { /* legacy empty value → one get_edge fallback */ }
     }
 }
@@ -73,7 +73,7 @@ The **full-edge** path (`edges_of`, used by weighted traversal / Dijkstra, which
 still needs `weight` + props) keeps the 1-scan-+-N-`get_edge` shape:
 
 ```rust
-// src/db.rs — outgoing_edges
+// src/db.rs - outgoing_edges
 let entries = self.backend.scan_prefix(&prefix)?;   // 1 range scan → ALL out-edge keys
 for (key, _) in entries {
     let edge_id = edge_id_from_adjacency_key(&key, &prefix);
@@ -94,15 +94,15 @@ for (key, _) in entries {
 - **Symmetric reverse index**: in-edges have their own mirrored `in:` prefix, so
   `<-[:T]-` is as cheap to *locate* as `->`. (Q5)
 - **Clean delete path**: deleting an edge removes its `edge:`, `out:`, `in:`, and
-  `edge_kind:` keys (db.rs:840–844); updates delete-then-reput. redb is a COW B-tree,
-  so there are **no tombstones** — no deleted-edge read-amp, unlike an LSM backend. (Q6/Q7)
+  `edge_kind:` keys (db.rs:840-844); updates delete-then-reput. redb is a COW B-tree,
+  so there are **no tombstones** - no deleted-edge read-amp, unlike an LSM backend. (Q6/Q7)
 
 ### Gaps (supernode / type-filter unfriendly)
 
-1. ~~**Empty adjacency value → 1 + N point lookups.**~~ **Fixed — #243 slice 1.** The
+1. ~~**Empty adjacency value → 1 + N point lookups.**~~ **Fixed - #243 slice 1.** The
    `out:`/`in:` value now denormalizes `neighbor_id + kind`, so `neighbor_ids` (and
    `neighbors`) recover "who are X's neighbors" and do in-memory `kind` filtering from
-   the scan alone — **0 `get_edge`**. The full-edge path (`edges_of`, for weighted
+   the scan alone - **0 `get_edge`**. The full-edge path (`edges_of`, for weighted
    traversal that needs `weight`/props) still pays 1 + N, which is inherent to loading
    whole edges. Legacy (pre-#243) databases keep working via a `get_edge` fallback until
    `backfill_adjacency_values()` upgrades them.
@@ -110,10 +110,10 @@ for (key, _) in entries {
 2. **`edge_kind` is not in the adjacency key → no type slicing.** (Q3) `(X)-[:KNOWS]->()`
    cannot scan only the KNOWS slice; it scans **all** out-edges of X, loads each edge
    record, and filters `kind` in memory. The global `edge_kind:{kind}:{edge_id}` index
-   does **not** help here — it is not scoped by `from_id`, so using it would require an
+   does **not** help here - it is not scoped by `from_id`, so using it would require an
    intersection with `out:{X}:`.
 
-3. ~~**`scan_prefix` returns a full `Vec` → no pagination / streaming.**~~ **Fixed —
+3. ~~**`scan_prefix` returns a full `Vec` → no pagination / streaming.**~~ **Fixed -
    #243 slice 3.** `StorageBackend::scan_prefix_limited(prefix, start_after, limit)` reads
    at most `limit` entries starting after an opaque cursor (native lazy range on redb and
    the in-memory `BTreeMap`; a correct-but-unbounded default for other backends).
@@ -124,7 +124,7 @@ for (key, _) in entries {
    for callers that genuinely want the full set.
 
 **Supernode verdict:** originally scan-*correct* but not supernode-*friendly*. All three
-gaps are now closed — the mandatory extra read per edge (slice 1), the missing type slice
+gaps are now closed - the mandatory extra read per edge (slice 1), the missing type slice
 (slice 2), and unbounded materialization (slice 3). A `kind`-filtered fan-out now
 sub-prefix-scans `out:{from}:{kind}:` in `O(matches)` (`neighbor_ids` pushes the `kind`
 into the scan) instead of scanning the whole hub degree.
@@ -133,7 +133,7 @@ into the scan) instead of scanning the whole hub degree.
 freelist; adjacency + kind index keys are all removed/rewritten, so no index drift from
 the adjacency side). Physical locality still degrades under churn per the general
 COW-B-tree story (file holds its high-water mark; neighbor pages scatter across the
-freelist) and is restored by `compact()` — the exact degradation [#241] is meant to
+freelist) and is restored by `compact()` - the exact degradation [#241] is meant to
 measure.
 
 ### Subtle notes
@@ -153,17 +153,17 @@ measure.
 
 Ordered cheapest-first; validate against [#241]'s numbers before any format migration:
 
-1. ~~**Denormalize `to_id` (+ optionally `kind`) into the adjacency _value_.**~~ **Done —
+1. ~~**Denormalize `to_id` (+ optionally `kind`) into the adjacency _value_.**~~ **Done -
    #243 slice 1.** Value-only change, no key-format migration. Kills the 1 + N for pure
    neighbor reads and in-memory `kind` filtering via `neighbor_ids` / `neighbors`; legacy
    entries fall back to `get_edge` until `backfill_adjacency_values()` runs.
-2. ~~**Put `kind` in the adjacency _key_**~~ **Done — #243 slice 2.**
+2. ~~**Put `kind` in the adjacency _key_**~~ **Done - #243 slice 2.**
    `out:{from}:{kind}:{edge_id}` / `in:{to}:{kind}:{edge_id}` gives true type-sliced
    sub-prefix scans. This is a key-format migration (on-disk `format_version` major → 2):
    [`Drevo::open`] refuses a v1 file with [`DrevoError::NeedsMigration`] until the
    reversible, index-only [`Drevo::migrate`] (`drevo migrate up`) rebuilds the index and
    re-stamps the version. The `edge_id` stays the last 8 bytes so reads are layout-agnostic.
-3. ~~**Streaming / bounded scan API**~~ **Done — #243 slice 3.** `scan_prefix_limited`
+3. ~~**Streaming / bounded scan API**~~ **Done - #243 slice 3.** `scan_prefix_limited`
    plus the `outgoing_adjacency_page` / `incoming_adjacency_page` cursor API bound
    supernode expansion to `limit` entries per call. Format-independent, low risk.
 

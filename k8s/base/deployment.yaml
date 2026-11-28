@@ -1,4 +1,4 @@
-# drevo — Kubernetes Deployment
+# drevo - Kubernetes Deployment
 #
 # Phase 8 task 00049. Single-replica Deployment that runs the
 # `drevo-server` HTTP API container with a ReadWriteOnce PVC mounted at
@@ -6,7 +6,7 @@
 #
 # Why a single replica (and not a StatefulSet):
 #   * drevo is a single-writer redb-backed store. Two concurrent writers
-#     would corrupt the database file — MVCC arrives in Phase 13
+#     would corrupt the database file - MVCC arrives in Phase 13
 #     (task 00080).
 #   * A Deployment with `strategy.type: Recreate` plus a RWO PVC is the
 #     simplest topology that matches that constraint and still gives us
@@ -23,8 +23,8 @@
 #   first, releasing the volume, then starts the new pod.
 #
 # Probes:
-#   * livenessProbe → /health (cheap, no DB touch — task 00042)
-#   * readinessProbe → /ready (probes redb — task 00048; flips to 503
+#   * livenessProbe → /health (cheap, no DB touch - task 00042)
+#   * readinessProbe → /ready (probes redb - task 00048; flips to 503
 #     during SIGTERM drain so Endpoints withdraws traffic before SIGKILL)
 apiVersion: apps/v1
 kind: Deployment

@@ -512,7 +512,7 @@ test("nodes with no relationship are kept together, apart from the groups", () =
 
 // ── Hubs (#856) ─────────────────────────────────────────────────────────
 // Small clusters of related files, where most files also link to the same
-// few hubs — a project's `types.py`, its layer, its task — and a share
+// few hubs - a project's `types.py`, its layer, its task - and a share
 // `cross` of the files also to a file of another cluster.
 function hubbedGraph(clusters, size, hubs, seed, cross = 0) {
   const rand = rng(seed);

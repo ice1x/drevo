@@ -2,7 +2,7 @@
 //!
 //! The resolver lives in `version_resolve.rs` at the repo root and is pulled
 //! into `build.rs` via `include!`; we `include!` the same file here so the exact
-//! logic that emits `DREVO_VERSION` is under test — in particular that a
+//! logic that emits `DREVO_VERSION` is under test - in particular that a
 //! git-less, arg-less build reports `0.0.0-unknown` instead of a silent,
 //! release-looking `0.0.0`.
 

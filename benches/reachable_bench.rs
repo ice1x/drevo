@@ -3,7 +3,7 @@
 //!
 //! The city is a square grid of junctions with a street between neighbours
 //! kept at random, so blocks have uneven shapes and some streets are dead
-//! ends. Streets are 10–40 m long (OpenStreetMap splits a street at every junction and bend) and walked at 1.4 m/s. One in fifty
+//! ends. Streets are 10-40 m long (OpenStreetMap splits a street at every junction and bend) and walked at 1.4 m/s. One in fifty
 //! junctions is also a `StopAccess`, the entrance to a transit stop. The
 //! sizes follow the Sofia OpenStreetMap road graph:
 //!
@@ -15,8 +15,8 @@
 //! Each query starts at a random junction with a street and walks for up to
 //! 15 minutes (`maxCost: 900`) in both directions along the streets:
 //!
-//! * `isochrone` — every junction within the budget;
-//! * `stops` — only the `StopAccess` junctions within it
+//! * `isochrone` - every junction within the budget;
+//! * `stops` - only the `StopAccess` junctions within it
 //!   (`targets: {label: 'StopAccess'}`), the walk to transit stops.
 //!
 //! # Running

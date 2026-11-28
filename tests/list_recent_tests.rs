@@ -110,7 +110,7 @@ fn list_recent_update_node_moves_to_top() {
 
     std::thread::sleep(std::time::Duration::from_millis(2));
 
-    // Update n1 — it should now be on top
+    // Update n1 - it should now be on top
     db.update_node(
         n1.id,
         NodePatch {
@@ -132,7 +132,7 @@ fn list_recent_multiple_updates_same_node() {
     std::thread::sleep(std::time::Duration::from_millis(2));
     let _n2 = db.create_node(make_node("Other")).unwrap();
 
-    // Update n1 multiple times — should have exactly one entry in index
+    // Update n1 multiple times - should have exactly one entry in index
     for i in 0..5 {
         std::thread::sleep(std::time::Duration::from_millis(2));
         db.update_node(
@@ -220,7 +220,7 @@ fn list_recent_cascade_delete_cleans_index() {
     })
     .unwrap();
 
-    // Delete parent — should cascade edges but only remove parent from recent
+    // Delete parent - should cascade edges but only remove parent from recent
     db.delete_node(n1.id).unwrap();
 
     let nodes = db.list_recent(10);
@@ -298,7 +298,7 @@ fn list_recent_task_manager_scenario() {
 
     std::thread::sleep(std::time::Duration::from_millis(2));
 
-    // Developer starts working on task1 — update its status
+    // Developer starts working on task1 - update its status
     db.update_node(
         task1.id,
         NodePatch {

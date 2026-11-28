@@ -1,4 +1,4 @@
-# Strategic-merge patch — prod overlay.
+# Strategic-merge patch - prod overlay.
 #
 # Phase 8 task 00050. Raises the base container resource budget so a
 # production deployment has head-room for FTS index rebuilds and
@@ -7,7 +7,7 @@
 # default `IfNotPresent` could keep a stale image around on nodes that
 # already cached the tag).
 #
-# The patch must NOT raise `replicas` above 1 — the single-writer redb
+# The patch must NOT raise `replicas` above 1 - the single-writer redb
 # invariant is enforced by `tests/k8s_overlays_tests.rs`. MVCC (Phase 13
 # task 00080) is the only path to multi-writer.
 apiVersion: apps/v1

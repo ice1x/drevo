@@ -4,10 +4,10 @@
 //! plus the id-allocation counters) in one serde-serializable value.
 //! [`GraphEngine::export_dump`](crate::engine::GraphEngine::export_dump)
 //! produces one and [`GraphEngine::apply_dump`](crate::engine::GraphEngine::apply_dump)
-//! loads one back, losslessly — for backups and for moving a graph between
+//! loads one back, losslessly - for backups and for moving a graph between
 //! stores.
 //!
-//! Only the **types** live here — [`crate::dump::Dump`],
+//! Only the **types** live here - [`crate::dump::Dump`],
 //! [`crate::dump::ImportReport`], [`crate::dump::DumpError`], and the
 //! [`crate::dump::FORMAT_V1`] identifier. Rendering and parsing *file* formats
 //! (pretty JSON, GraphML) is drevo's job, not this crate's.
@@ -25,14 +25,14 @@ pub const FORMAT_V1: &str = "drevo-json-v1";
 ///
 /// Public so external tooling (CLI dumpers, migration scripts) can parse a
 /// dump without re-deriving the schema. Field order is fixed for forward-
-/// compatibility — new fields will be added with serde defaults.
+/// compatibility - new fields will be added with serde defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dump {
     /// Schema identifier. MUST be [`FORMAT_V1`] on import.
     pub format: String,
     /// Producer's wall-clock at export time (Unix milliseconds). Informational.
     pub exported_at: i64,
-    /// Producer's `next_node_id` counter — the receiver clamps its counter
+    /// Producer's `next_node_id` counter - the receiver clamps its counter
     /// to be at least this value so freshly-allocated ids never collide with
     /// imported ones.
     pub next_node_id: u64,
@@ -70,14 +70,14 @@ pub struct ImportReport {
 /// Lifted to callers as a backend `Io` error via the `From` impls (this crate's
 /// [`CoreError`] and drevo's `DrevoError`) so the public error
 /// hierarchies stay at their well-known variants. The conversion preserves the
-/// human-readable message — `{err}` includes the original failure mode.
+/// human-readable message - `{err}` includes the original failure mode.
 #[derive(Debug, thiserror::Error)]
 pub enum DumpError {
     /// The JSON payload was malformed and `serde_json` could not parse it.
     #[error("malformed JSON dump: {0}")]
     Malformed(#[from] serde_json::Error),
     /// The `format` field is missing, empty, or names an unknown schema.
-    #[error("unsupported dump format: {0:?} — expected drevo-json-v1")]
+    #[error("unsupported dump format: {0:?} - expected drevo-json-v1")]
     UnsupportedFormat(String),
     /// An imported node / edge collides with an existing row that has the
     /// same id but different content.

@@ -1,7 +1,7 @@
 //! Exclusive-open protection for the durable `native` engine (#455).
 //!
 //! The KV/redb backend took an exclusive file lock, so opening the same store
-//! twice raised — protecting an embedded user (or agent) from accidentally
+//! twice raised - protecting an embedded user (or agent) from accidentally
 //! double-opening one store and corrupting it with interleaved writes. The
 //! native durable engine must restore that guarantee: a second
 //! [`NativeGraph::open_durable`] on a path already held by a live handle fails
@@ -9,7 +9,7 @@
 //! write-ahead log.
 //!
 //! The lock is an OS **advisory** lock tied to the open file description, so it
-//! is released when the owning handle drops (or the process dies) — a crash
+//! is released when the owning handle drops (or the process dies) - a crash
 //! never strands a stale lock that would block the prod watchdog's restart.
 //! These tests exercise the Rust [`drevo_core`] seam directly (no HTTP layer).
 
@@ -66,7 +66,7 @@ fn node(title: &str) -> NewNode {
 }
 
 /// A second `open_durable` on the same path, while the first handle is alive,
-/// is rejected with `Locked` — the core of the double-open protection.
+/// is rejected with `Locked` - the core of the double-open protection.
 #[test]
 fn second_open_on_same_path_is_rejected_while_first_is_held() {
     let tmp = TmpDir::new();
@@ -83,7 +83,7 @@ fn second_open_on_same_path_is_rejected_while_first_is_held() {
 }
 
 /// Dropping the first handle releases the advisory lock, so the store can be
-/// reopened — and the reopened handle recovers the acknowledged writes. This is
+/// reopened - and the reopened handle recovers the acknowledged writes. This is
 /// the crash-safety property: an advisory fd lock dies with its owner, unlike a
 /// content lockfile that would need manual cleanup after a crash.
 #[test]
@@ -99,11 +99,11 @@ fn reopen_succeeds_after_the_first_handle_is_dropped() {
     let reopened = NativeGraph::open_durable(&path).expect("reopen after release");
     assert_eq!(reopened.node_count(), 1, "recovered the acknowledged write");
 
-    // And it can be locked again — a third open while this one lives is rejected.
+    // And it can be locked again - a third open while this one lives is rejected.
     assert_locked(&path);
 }
 
-/// Two *different* paths lock independently — the guard is per-store, not global.
+/// Two *different* paths lock independently - the guard is per-store, not global.
 #[test]
 fn distinct_paths_do_not_contend() {
     let tmp = TmpDir::new();
@@ -111,7 +111,7 @@ fn distinct_paths_do_not_contend() {
     let b = tmp.0.join("b.wal");
 
     let da = NativeGraph::open_durable(&a).expect("open a");
-    let db = NativeGraph::open_durable(&b).expect("open b — different store");
+    let db = NativeGraph::open_durable(&b).expect("open b - different store");
     da.create_node(node("x")).expect("write a");
     db.create_node(node("y")).expect("write b");
 }

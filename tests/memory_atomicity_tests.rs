@@ -60,7 +60,7 @@ fn assert_failure_leaves_nothing(svc: &NativeService, q: &str, proc: &str) {
     let after = counts(svc);
     assert_eq!(
         after, before,
-        "#796: {proc} failed ({failed:?}) but its earlier writes stayed — \
+        "#796: {proc} failed ({failed:?}) but its earlier writes stayed - \
          (nodes, relationships) went from {before:?} to {after:?}; in plain auto-commit \
          the call is not one transaction"
     );
@@ -286,7 +286,7 @@ fn retract_fact_then_a_failing_call_changes_nothing() {
         ),
         1,
         "#796: the statement failed ({failed:?}) but the retractFact before the failure \
-         stayed — the fact is closed"
+         stayed - the fact is closed"
     );
 }
 

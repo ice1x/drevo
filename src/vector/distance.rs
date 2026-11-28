@@ -4,11 +4,11 @@
 //! pass a [`crate::vector::Vector`], a `Vec<f32>`, or any borrowed slice
 //! without an allocation:
 //!
-//! * [`dot_product`] — raw inner product `Σ aᵢ·bᵢ`.
-//! * [`cosine_similarity`] — dot product normalized by both magnitudes,
+//! * [`dot_product`] - raw inner product `Σ aᵢ·bᵢ`.
+//! * [`cosine_similarity`] - dot product normalized by both magnitudes,
 //!   i.e. `cos θ ∈ [-1, 1]`; the standard relevance score for
 //!   normalized embedding models.
-//! * [`euclidean_distance`] — L2 distance `√Σ (aᵢ−bᵢ)²`.
+//! * [`euclidean_distance`] - L2 distance `√Σ (aᵢ−bᵢ)²`.
 //!
 //! All three reject a dimension mismatch or an empty input with a
 //! [`crate::vector::VectorError`] rather than panicking, because the
@@ -32,7 +32,7 @@
 use super::VectorError;
 
 /// Lane count for the accumulator arrays. Eight `f32` lanes map onto a
-/// 256-bit AVX register (or two 128-bit NEON registers) — wide enough to
+/// 256-bit AVX register (or two 128-bit NEON registers) - wide enough to
 /// saturate common SIMD units without overflowing the register file when
 /// the optimizer keeps the whole array in vector registers.
 const LANES: usize = 8;
@@ -56,8 +56,8 @@ fn ensure_compatible(a: &[f32], b: &[f32]) -> Result<(), VectorError> {
 ///
 /// # Errors
 ///
-/// * [`VectorError::Empty`] — either input is empty.
-/// * [`VectorError::DimensionMismatch`] — the lengths differ.
+/// * [`VectorError::Empty`] - either input is empty.
+/// * [`VectorError::DimensionMismatch`] - the lengths differ.
 pub fn dot_product(a: &[f32], b: &[f32]) -> Result<f32, VectorError> {
     ensure_compatible(a, b)?;
     Ok(dot_unchecked(a, b))
@@ -67,9 +67,9 @@ pub fn dot_product(a: &[f32], b: &[f32]) -> Result<f32, VectorError> {
 ///
 /// # Errors
 ///
-/// * [`VectorError::Empty`] — either input is empty.
-/// * [`VectorError::DimensionMismatch`] — the lengths differ.
-/// * [`VectorError::ZeroVector`] — either input has zero magnitude, so
+/// * [`VectorError::Empty`] - either input is empty.
+/// * [`VectorError::DimensionMismatch`] - the lengths differ.
+/// * [`VectorError::ZeroVector`] - either input has zero magnitude, so
 ///   the angle is undefined (division by zero).
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32, VectorError> {
     ensure_compatible(a, b)?;
@@ -87,8 +87,8 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32, VectorError> {
 ///
 /// # Errors
 ///
-/// * [`VectorError::Empty`] — either input is empty.
-/// * [`VectorError::DimensionMismatch`] — the lengths differ.
+/// * [`VectorError::Empty`] - either input is empty.
+/// * [`VectorError::DimensionMismatch`] - the lengths differ.
 pub fn euclidean_distance(a: &[f32], b: &[f32]) -> Result<f32, VectorError> {
     ensure_compatible(a, b)?;
     let mut acc = [0.0f32; LANES];
@@ -108,7 +108,7 @@ pub fn euclidean_distance(a: &[f32], b: &[f32]) -> Result<f32, VectorError> {
     Ok(sum.sqrt())
 }
 
-/// Inner product without the compatibility check — callers must have
+/// Inner product without the compatibility check - callers must have
 /// already verified equal, non-zero length (or be passing the same slice
 /// twice, as the norm computations in [`cosine_similarity`] do).
 fn dot_unchecked(a: &[f32], b: &[f32]) -> f32 {

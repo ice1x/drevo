@@ -78,7 +78,7 @@ fn wasm_lifecycle_multiple_instances() {
 }
 
 // ---------------------------------------------------------------------------
-// Node CRUD — JSON roundtrip
+// Node CRUD - JSON roundtrip
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -166,7 +166,7 @@ fn wasm_node_delete() {
 }
 
 // ---------------------------------------------------------------------------
-// Edge CRUD — JSON roundtrip
+// Edge CRUD - JSON roundtrip
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -227,7 +227,7 @@ fn wasm_edge_cascading_delete() {
 }
 
 // ---------------------------------------------------------------------------
-// Traversal — JSON roundtrip
+// Traversal - JSON roundtrip
 // ---------------------------------------------------------------------------
 
 fn setup_chain(db: &NativeService) -> Vec<Node> {
@@ -332,7 +332,7 @@ fn wasm_subgraph_depth_2() {
 }
 
 // ---------------------------------------------------------------------------
-// Filtered traversal — audit 00111 (F1) parity with bfs / dfs / neighbors
+// Filtered traversal - audit 00111 (F1) parity with bfs / dfs / neighbors
 // ---------------------------------------------------------------------------
 
 /// Build a graph with parallel edges of different kinds between the same
@@ -432,7 +432,7 @@ fn wasm_subgraph_filtered_excludes_unreachable_nodes() {
 }
 
 // ---------------------------------------------------------------------------
-// Search — JSON roundtrip
+// Search - JSON roundtrip
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -618,7 +618,7 @@ fn wasm_direction_encoding() {
 }
 
 // ---------------------------------------------------------------------------
-// Unicode through the WASM boundary — audit 00111 (F14)
+// Unicode through the WASM boundary - audit 00111 (F14)
 // ---------------------------------------------------------------------------
 
 #[test]

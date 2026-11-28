@@ -1,11 +1,11 @@
 //! Durable-native serving layer (RFC `docs/rfc-native-core.md` #307,
-//! Phase 4/7 — the track toward retiring redb).
+//! Phase 4/7 - the track toward retiring redb).
 //!
 //! [`crate::native_service::NativeService`] IS the store of record: a
 //! WAL-backed [`crate::native::NativeGraph`]
-//! (crash-recovering, fsync-per-statement — see
+//! (crash-recovering, fsync-per-statement - see
 //! [`crate::native::NativeGraph::open_durable`]) plus the full native index
-//! stack — label, property, value cache, **and full-text** — kept current by
+//! stack - label, property, value cache, **and full-text** - kept current by
 //! tailing the engine's change-feed between statements.
 //!
 //! # Consistency model
@@ -14,7 +14,7 @@
 //! catches the indexes up to the change-feed head; within a statement that
 //! writes, the executor already distrusts index narrowing (the in-statement
 //! staleness gate), so a query always sees its own writes. A write committed
-//! by a *concurrent* statement mid-query may or may not be observed — the
+//! by a *concurrent* statement mid-query may or may not be observed - the
 //! same read-committed-style race the KV engine has today; snapshot-isolated
 //! serving is the MVCC phase's business (RFC Phase 3 knob), not this layer's.
 //!
@@ -60,14 +60,14 @@ struct ServiceIndexes {
     paths_version: u64,
     /// Executor `NodeValue` projection cache.
     values: NativeValueCache,
-    /// Trigram BM25 full-text index — `fts.search` served natively.
+    /// Trigram BM25 full-text index - `fts.search` served natively.
     fts: NativeFtsIndex,
-    /// Trigram BM25 relationship full-text index — `fts.searchRelationships`
+    /// Trigram BM25 relationship full-text index - `fts.searchRelationships`
     /// served natively.
     fts_rel: NativeFtsRelIndex,
     /// [`crate::native::NativeGraph::change_head`] at the last sync.
     synced_head: u64,
-    /// Whether the secondary indexes — `props`, `values`, `fts`, `fts_rel` —
+    /// Whether the secondary indexes - `props`, `values`, `fts`, `fts_rel` -
     /// are kept. Off, they stay empty and statements scan instead.
     secondary: bool,
 }
@@ -184,7 +184,7 @@ impl<'a> NodeTextFields<'a> {
 }
 
 /// The non-empty text a semantic target with `text_property` reads from a node:
-/// the string property of that name, else — for `title` / `body` — the node's
+/// the string property of that name, else - for `title` / `body` - the node's
 /// own field. A synthesised placeholder title is not text and reads as `None`.
 pub(crate) fn node_text<'a>(
     properties: &'a crate::model::Properties,
@@ -213,14 +213,14 @@ pub struct NativeService {
     graph: NativeGraph,
     /// Index stack; shared for reads, exclusive to re-sync after writes.
     indexes: RwLock<ServiceIndexes>,
-    /// Server-side text embedder, when the operator configured one —
+    /// Server-side text embedder, when the operator configured one -
     /// installed once at startup (mirroring the KV handle's embedder), read
     /// lock-free afterwards. Lets `drevo.semantic.embed` / `.query` run on
     /// the durable engine.
     #[cfg(feature = "http")]
     embedder: std::sync::OnceLock<std::sync::Arc<dyn crate::embeddings::TextEmbedder>>,
     /// Compact the WAL (and trim the change-feed) after this many appended
-    /// ops since the last compaction — the runtime bound on log growth
+    /// ops since the last compaction - the runtime bound on log growth
     /// (reopen-time compaction alone lets a long-running server's log grow
     /// with history, not state).
     compact_every_ops: u64,
@@ -237,14 +237,14 @@ pub struct NativeService {
     /// How many of the latest committed changes compaction keeps in the
     /// change feed for event subscribers to resume from (`GET /events`).
     event_history: AtomicU64,
-    /// Node-side auto-embedding registry — the native home of what the KV
+    /// Node-side auto-embedding registry - the native home of what the KV
     /// handle keeps in `Drevo::semantic` (issue #447). Authoritative
     /// control-plane state, persisted to the `semantic.json` sidecar.
     semantic: RwLock<crate::semantic_index::SemanticIndexRegistry>,
-    /// Relationship-side registry — the edge mirror of [`Self::semantic`],
+    /// Relationship-side registry - the edge mirror of [`Self::semantic`],
     /// the native home of `Drevo::rel_semantic`.
     rel_semantic: RwLock<crate::semantic_index::SemanticIndexRegistry>,
-    /// Named vector-index registry (issue #532) — binds a Neo4j-style index name
+    /// Named vector-index registry (issue #532) - binds a Neo4j-style index name
     /// to the `(label, property)` it targets, so `CREATE VECTOR INDEX` /
     /// `db.index.vector.queryNodes` round-trip. Persisted in the same sidecar.
     vector_indexes: RwLock<crate::vector_index_registry::VectorIndexRegistry>,
@@ -272,8 +272,8 @@ pub struct NativeService {
     semantic_sidecar: Option<std::path::PathBuf>,
     /// Cumulative auto-embed failures per target (issue #447; native mirror of
     /// `Drevo::embed_failures`), keyed by `(target_kind, name, embedding_property)`.
-    /// Auto-embed on write is fail-open — a transient embedder outage never
-    /// fails a write — so each swallowed failure is tallied here to feed
+    /// Auto-embed on write is fail-open - a transient embedder outage never
+    /// fails a write - so each swallowed failure is tallied here to feed
     /// `drevo.semantic.status`'s `failed_count` / `last_error`. Runtime-only
     /// (not persisted); `http`-gated like the embedder that produces it.
     #[cfg(feature = "http")]
@@ -442,7 +442,7 @@ pub(crate) fn write_sidecar(
     }
 }
 
-/// `bytes` as a sidecar stores them — for the files a backup carries.
+/// `bytes` as a sidecar stores them - for the files a backup carries.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn sidecar_bytes(context: &[u8], bytes: Vec<u8>) -> std::io::Result<Vec<u8>> {
     #[cfg(feature = "encryption")]
@@ -486,7 +486,7 @@ pub(crate) fn decode_sidecar(context: &[u8], bytes: Vec<u8>) -> std::io::Result<
 
 /// Load both registries from the sidecar, or empty ones if absent or
 /// unparseable (best-effort, mirroring the tombstone sidecar). A sidecar that
-/// cannot be read — or does not decrypt with the store's key — fails the
+/// cannot be read - or does not decrypt with the store's key - fails the
 /// open: starting with no index definitions would silently drop them.
 #[cfg(not(target_arch = "wasm32"))]
 fn load_semantic_sidecar(path: &std::path::Path) -> std::io::Result<SemanticSidecar> {
@@ -503,7 +503,7 @@ static ENCRYPTION_KEY: RwLock<Option<std::sync::Arc<drevo_core::encryption::Key>
 
 /// The write-ahead-log format stores are opened with, as
 /// [`WalFormat`](crate::wal_format::WalFormat) ⇄ `u8` (issue #582). Process-wide,
-/// so every store — the default database, the ones the registry opens, FFI —
+/// so every store - the default database, the ones the registry opens, FFI -
 /// follows the server's `DREVO_WAL_FORMAT` without threading it through each.
 #[cfg(not(target_arch = "wasm32"))]
 static DEFAULT_WAL_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -526,8 +526,8 @@ impl NativeService {
         DEFAULT_WAL_FORMAT.store(v, Ordering::SeqCst);
     }
 
-    /// Encrypt every store opened from now on with `key` — its log, its
-    /// engine sidecars and the service's own `semantic.json` — or none
+    /// Encrypt every store opened from now on with `key` - its log, its
+    /// engine sidecars and the service's own `semantic.json` - or none
     /// (`None`, the default). Process-wide, like the WAL format, so the
     /// databases the registry opens follow the server's key. A store must
     /// be opened with the key it was written with.
@@ -562,7 +562,7 @@ impl NativeService {
         }
     }
 
-    /// Open (or create) the durable store at `path` — the write-ahead log the
+    /// Open (or create) the durable store at `path` - the write-ahead log the
     /// graph recovers from and appends to. The log is compacted on open, so a
     /// long overwrite history costs restart time only once, and the indexes
     /// are built before the first query.
@@ -728,7 +728,7 @@ impl NativeService {
     }
 
     /// Install the server-side query embedder (once; later calls return
-    /// `false` and change nothing) — the durable-engine counterpart of
+    /// `false` and change nothing) - the durable-engine counterpart of
     /// `Drevo::set_embedder`.
     #[cfg(feature = "http")]
     pub fn set_embedder(
@@ -738,7 +738,7 @@ impl NativeService {
         self.embedder.set(embedder).is_ok()
     }
 
-    /// An ephemeral (non-durable) service — the same serving stack over an
+    /// An ephemeral (non-durable) service - the same serving stack over an
     /// in-memory graph, for tests and embedded use.
     pub fn in_memory() -> Self {
         let graph = NativeGraph::new();
@@ -788,7 +788,7 @@ impl NativeService {
         }
     }
 
-    /// This replica's stable [`OriginId`] (issue #389) — delegated to the store
+    /// This replica's stable [`OriginId`] (issue #389) - delegated to the store
     /// of record, which persists it next to the WAL.
     pub fn origin_id(&self) -> OriginId {
         self.graph.origin_id()
@@ -828,12 +828,12 @@ impl NativeService {
         Ok(self.graph.set_read_only(on)?)
     }
 
-    /// The underlying engine — read-side introspection (counts, status).
+    /// The underlying engine - read-side introspection (counts, status).
     pub fn graph(&self) -> &NativeGraph {
         &self.graph
     }
 
-    /// The storage-panel bloat report for the WAL store — the engine-agnostic
+    /// The storage-panel bloat report for the WAL store - the engine-agnostic
     /// counterpart of `Drevo::bloat_report`. `file_bytes` is the
     /// physical WAL size, `logical_bytes`/`stored_bytes` the size a compacted
     /// log would occupy (the append-only WAL accumulates superseded upserts,
@@ -860,7 +860,7 @@ impl NativeService {
         }
     }
 
-    /// Per-keyspace storage breakdown for the panel — the WAL engine's
+    /// Per-keyspace storage breakdown for the panel - the WAL engine's
     /// counterpart of `Drevo::keyspace_stats`. The durable WAL
     /// stores only records on disk; these rows are the live in-memory index
     /// structures (records, adjacency, title, kind), so the panel's Keyspaces
@@ -881,8 +881,8 @@ impl NativeService {
             .collect()
     }
 
-    /// Compact the WAL — rewrite it as the current state (atomic temp + fsync +
-    /// rename) — and report the reclaimed bytes: the engine-agnostic counterpart
+    /// Compact the WAL - rewrite it as the current state (atomic temp + fsync +
+    /// rename) - and report the reclaimed bytes: the engine-agnostic counterpart
     /// of `Drevo::shrink_online` (the storage panel's `shrink`).
     /// Writes are quiesced for the rewrite's duration.
     ///
@@ -1338,7 +1338,7 @@ impl NativeService {
     /// Phases 1 and 2 of an LLM `drevo.community.summarize`
     /// ([`crate::community::llm`]): run `query` read-only as a plan, under
     /// the statement timeout, then ask the model for every planned community
-    /// `answers` has no answer for — outside the writers' turn, any
+    /// `answers` has no answer for - outside the writers' turn, any
     /// transaction and the statement timeout. `false` when the call needs no
     /// model (extractive, `async: true`).
     ///
@@ -1465,7 +1465,7 @@ impl NativeService {
     }
 
     /// Compact the WAL and trim the consumed change-feed once enough ops
-    /// have accumulated since the last compaction — the runtime bound on
+    /// have accumulated since the last compaction - the runtime bound on
     /// disk (log rewrite as the state snapshot; a no-op for an in-memory
     /// engine) and memory (feed history behind every index's cursor is
     /// dropped). Runs inline on the statement that crosses the threshold:
@@ -1480,7 +1480,7 @@ impl NativeService {
         self.graph.compact_wal().is_ok()
     }
 
-    /// See the non-wasm variant — nothing on disk to rewrite here.
+    /// See the non-wasm variant - nothing on disk to rewrite here.
     #[cfg(target_arch = "wasm32")]
     fn compact_wal_ok(&self) -> bool {
         true
@@ -1502,7 +1502,7 @@ impl NativeService {
             // Every index re-syncs to the head before serving, so history at
             // or before the synced cursor is consumed; trim it to bound the
             // feed. (A cursor below the new floor would only mean a lagged
-            // rebuild — every index handles that — but by construction the
+            // rebuild - every index handles that - but by construction the
             // service's indexes never lag past their own synced head.)
             self.trim_feed();
         }
@@ -1568,9 +1568,9 @@ impl NativeService {
         self.secondary_wanted.load(Ordering::SeqCst)
     }
 
-    /// Keep (`true`) or drop (`false`) this database's secondary indexes —
+    /// Keep (`true`) or drop (`false`) this database's secondary indexes -
     /// the property-equality index, the value cache and the node and
-    /// relationship full-text indexes — and remember the choice across
+    /// relationship full-text indexes - and remember the choice across
     /// restarts. Off, their memory is freed before the next statement runs:
     /// lookups by property scan instead, and `fts.*` /
     /// `db.index.fulltext.*` are unavailable. Labels, adjacency, ids and the
@@ -1589,7 +1589,7 @@ impl NativeService {
         Ok(())
     }
 
-    /// Full-text search over the service's BM25 index — the engine of the
+    /// Full-text search over the service's BM25 index - the engine of the
     /// `POST /search/fts` route, matching the KV store's response shape.
     pub fn search_fts(&self, query: &str, limit: usize) -> Vec<crate::model::ScoredNode> {
         self.with_fresh_indexes(|idx| {
@@ -1608,7 +1608,7 @@ impl NativeService {
         })
     }
 
-    /// The graph as the `drevo-json-v1` dump document — the engine of
+    /// The graph as the `drevo-json-v1` dump document - the engine of
     /// `GET /export/json`, matching the KV route's body.
     ///
     /// # Errors
@@ -1757,7 +1757,7 @@ impl NativeService {
         let _ = tx;
     }
 
-    /// Begin a registered transaction on the durable store — the session
+    /// Begin a registered transaction on the durable store - the session
     /// keeps the returned id between statements. See
     /// [`crate::native::NativeGraph::tx_begin`].
     pub fn begin_tx(&self) -> crate::native::NativeTxId {
@@ -2227,12 +2227,12 @@ impl NativeService {
     }
 
     /// Commit a registered transaction (one fsynced WAL batch, atomic swap),
-    /// then apply the runtime compaction policy — a committed batch counts
+    /// then apply the runtime compaction policy - a committed batch counts
     /// toward the threshold like any other write.
     ///
     /// # Errors
     ///
-    /// [`crate::native::CommitError`] — `Conflict` when another writer
+    /// [`crate::native::CommitError`] - `Conflict` when another writer
     /// committed since the transaction began (retryable), `Constraint` on a
     /// schema violation, `Io` on a WAL failure or a closed transaction.
     pub fn commit_tx(
@@ -2274,7 +2274,7 @@ impl NativeService {
 
     /// Two-phase commit, phase one (#556): validate registered transaction
     /// `tx`, durably log its write set as prepared under `gid`, and raise the
-    /// write fence — see [`NativeGraph::tx_prepare`] and
+    /// write fence - see [`NativeGraph::tx_prepare`] and
     /// `docs/rfc-two-phase-commit.md`. The transaction is closed either way.
     ///
     /// # Errors
@@ -2353,7 +2353,7 @@ impl NativeService {
     }
 
     /// Two-phase commit (#556): roll back the transaction prepared under
-    /// `gid` **heuristically** — an operator or timeout decision rather than
+    /// `gid` **heuristically** - an operator or timeout decision rather than
     /// the coordinator's. A later `commit_prepared(gid)` then reports
     /// [`crate::native::ResolveError::HeuristicRollback`], so the coordinator
     /// learns its decision was overridden.
@@ -2379,7 +2379,7 @@ impl NativeService {
         self.graph.list_prepared()
     }
 
-    /// One node by storage id — the engine of `GET /nodes/{id}`.
+    /// One node by storage id - the engine of `GET /nodes/{id}`.
     ///
     /// # Errors
     ///
@@ -2392,7 +2392,7 @@ impl NativeService {
             .ok_or(crate::error::DrevoError::NodeNotFound(id))
     }
 
-    /// Look up a node by its globally-unique UUID — embedded-handle parity with
+    /// Look up a node by its globally-unique UUID - embedded-handle parity with
     /// `Drevo::get_node_by_uuid` (issue #445). `None` if no node carries it.
     pub fn get_node_by_uuid(&self, uuid: [u8; 16]) -> Option<crate::model::Node> {
         self.graph.get_node_by_uuid(uuid)
@@ -2409,13 +2409,13 @@ impl NativeService {
         self.graph.nodes_by_title(title)
     }
 
-    /// Most-recently-updated nodes first, capped at `limit` — parity with
+    /// Most-recently-updated nodes first, capped at `limit` - parity with
     /// `Drevo::list_recent` (`updated_at` desc, id desc).
     pub fn list_recent(&self, limit: usize) -> Vec<crate::model::Node> {
         self.graph.list_recent(limit)
     }
 
-    /// Edges of `kind`, id-ascending, paginated — parity with
+    /// Edges of `kind`, id-ascending, paginated - parity with
     /// `Drevo::list_edges_by_kind`.
     pub fn list_edges_by_kind(
         &self,
@@ -2426,7 +2426,7 @@ impl NativeService {
         self.graph.list_edges_by_kind(kind, limit, offset)
     }
 
-    /// Create a node — the engine of `POST /nodes`, embedded-handle parity with
+    /// Create a node - the engine of `POST /nodes`, embedded-handle parity with
     /// `Drevo::create_node`. Returns the stored node with generated id, uuid and
     /// timestamps.
     ///
@@ -2448,7 +2448,7 @@ impl NativeService {
         Ok(self.graph.create_node(new_node)?)
     }
 
-    /// Create many nodes in one durable batch — parity with
+    /// Create many nodes in one durable batch - parity with
     /// `Drevo::create_nodes`. Each node is passed through the server-side
     /// auto-embed step (#447) before the batch is written, so a registered
     /// label's text property is embedded on bulk ingest exactly as it is on the
@@ -2473,7 +2473,7 @@ impl NativeService {
         Ok(self.graph.create_nodes(new_nodes)?)
     }
 
-    /// Create an edge — the engine of `POST /edges`, parity with
+    /// Create an edge - the engine of `POST /edges`, parity with
     /// `Drevo::create_edge`. Returns the stored edge.
     ///
     /// # Errors
@@ -2489,7 +2489,7 @@ impl NativeService {
         Ok(self.graph.create_edge(new_edge)?)
     }
 
-    /// Apply a partial update to a node — embedded-handle parity with
+    /// Apply a partial update to a node - embedded-handle parity with
     /// `Drevo::update_node`. Returns the updated node.
     ///
     /// # Errors
@@ -2504,7 +2504,7 @@ impl NativeService {
         Ok(self.graph.update_node(id, patch)?)
     }
 
-    /// Delete a node (and its incident edges) — parity with `Drevo::delete_node`.
+    /// Delete a node (and its incident edges) - parity with `Drevo::delete_node`.
     ///
     /// # Errors
     /// [`DrevoError::NodeNotFound`] when the id does not exist; propagates a
@@ -2514,7 +2514,7 @@ impl NativeService {
         Ok(self.graph.delete_node(id)?)
     }
 
-    /// Fetch an edge by id — parity with `Drevo::get_edge`. `None` if absent.
+    /// Fetch an edge by id - parity with `Drevo::get_edge`. `None` if absent.
     ///
     /// # Errors
     /// Propagates a WAL/decode failure as [`DrevoError`].
@@ -2523,7 +2523,7 @@ impl NativeService {
         Ok(self.graph.get_edge(id)?)
     }
 
-    /// Apply a partial update to an edge — parity with `Drevo::update_edge`.
+    /// Apply a partial update to an edge - parity with `Drevo::update_edge`.
     /// Returns the updated edge.
     ///
     /// # Errors
@@ -2538,7 +2538,7 @@ impl NativeService {
         Ok(self.graph.update_edge(id, patch)?)
     }
 
-    /// Delete an edge — parity with `Drevo::delete_edge`.
+    /// Delete an edge - parity with `Drevo::delete_edge`.
     ///
     /// # Errors
     /// [`DrevoError::EdgeNotFound`] when the id does not exist; propagates a
@@ -2548,7 +2548,7 @@ impl NativeService {
         Ok(self.graph.delete_edge(id)?)
     }
 
-    /// Bounded subgraph around `root` within `depth` hops — parity with
+    /// Bounded subgraph around `root` within `depth` hops - parity with
     /// `Drevo::subgraph`. Convenience wrapper over
     /// [`subgraph_filtered`](Self::subgraph_filtered) with no edge-kind filter.
     ///
@@ -2558,7 +2558,7 @@ impl NativeService {
         self.subgraph_filtered(root, depth, None)
     }
 
-    /// Nodes of `kind`, id-ascending, paginated — parity with
+    /// Nodes of `kind`, id-ascending, paginated - parity with
     /// `Drevo::list_nodes_by_kind` (the engine of `GET /nodes?kind=`).
     pub fn list_nodes_by_kind(
         &self,
@@ -2575,7 +2575,7 @@ impl NativeService {
             .collect()
     }
 
-    /// Keyword facets over nodes of `kind` — the engine of `GET /facets` and the
+    /// Keyword facets over nodes of `kind` - the engine of `GET /facets` and the
     /// engine-agnostic counterpart of `Drevo::facets`. Keywords are
     /// scored with the native FTS corpus statistics (`doc_count` / `trigram_df`)
     /// rather than the KV backend, so the facet counts match what `fts.search`
@@ -2621,7 +2621,7 @@ impl NativeService {
     // is rebuilt on demand from that store via the shared, engine-agnostic
     // `vector_store::build_hnsw_from` (issue #446 S0).
 
-    /// Store (or replace) a node's embedding, durably — parity with
+    /// Store (or replace) a node's embedding, durably - parity with
     /// `Drevo::set_embedding`.
     ///
     /// # Errors
@@ -2631,7 +2631,7 @@ impl NativeService {
         Ok(self.graph.set_embedding(node_id, embedding)?)
     }
 
-    /// Store many embeddings in one durable batch (one fsync), all-or-nothing —
+    /// Store many embeddings in one durable batch (one fsync), all-or-nothing -
     /// parity with `Drevo::set_embeddings_batch`.
     ///
     /// # Errors
@@ -2641,12 +2641,12 @@ impl NativeService {
         Ok(self.graph.set_embeddings_batch(embeddings)?)
     }
 
-    /// Fetch a node's embedding, or `None` — parity with `Drevo::get_embedding`.
+    /// Fetch a node's embedding, or `None` - parity with `Drevo::get_embedding`.
     pub fn get_embedding(&self, node_id: u64) -> Option<Vec<f32>> {
         self.graph.get_embedding(node_id)
     }
 
-    /// Delete a node's embedding (idempotent), durably — parity with
+    /// Delete a node's embedding (idempotent), durably - parity with
     /// `Drevo::delete_embedding`.
     ///
     /// # Errors
@@ -2655,12 +2655,12 @@ impl NativeService {
         Ok(self.graph.delete_embedding(node_id)?)
     }
 
-    /// The number of stored embeddings — parity with `Drevo::embedding_count`.
+    /// The number of stored embeddings - parity with `Drevo::embedding_count`.
     pub fn embedding_count(&self) -> usize {
         self.graph.embedding_count()
     }
 
-    /// Liveness probe — parity with `Drevo::health_check`. Touches the store
+    /// Liveness probe - parity with `Drevo::health_check`. Touches the store
     /// (node/edge counts) to prove the engine is readable; the durable engine
     /// recovers on open, so there is no separate integrity/recover step.
     ///
@@ -2682,7 +2682,7 @@ impl NativeService {
     // native; these are the register/status control-plane methods the executor
     // will resolve native-first (a later slice), replacing the KV `secondary`.
 
-    /// Register (or re-enable) a node-side auto-embedding target — parity with
+    /// Register (or re-enable) a node-side auto-embedding target - parity with
     /// `Drevo::semantic_register`.
     ///
     /// # Errors
@@ -2704,7 +2704,7 @@ impl NativeService {
         Ok(target)
     }
 
-    /// Register (or re-enable) a relationship-side target — parity with
+    /// Register (or re-enable) a relationship-side target - parity with
     /// `Drevo::semantic_register_rel`.
     ///
     /// # Errors
@@ -2805,7 +2805,7 @@ impl NativeService {
         Ok(())
     }
 
-    /// The `(label, property)` a named vector index targets, if registered —
+    /// The `(label, property)` a named vector index targets, if registered -
     /// how `db.index.vector.queryNodes(<name>, …)` resolves its scan.
     #[must_use]
     pub fn vector_index_get(
@@ -3127,7 +3127,7 @@ impl NativeService {
             .to_vec()
     }
 
-    /// The registered node-side targets — parity with `Drevo::semantic_status`.
+    /// The registered node-side targets - parity with `Drevo::semantic_status`.
     pub fn semantic_status(&self) -> Vec<crate::semantic_index::SemanticIndex> {
         self.semantic
             .read()
@@ -3145,7 +3145,7 @@ impl NativeService {
             .to_vec()
     }
 
-    /// Detailed status for `drevo.semantic.status` — parity with
+    /// Detailed status for `drevo.semantic.status` - parity with
     /// `Drevo::semantic_status_detailed` (#263/#266, ported to native in #447).
     ///
     /// For each Auto target it scans the live backlog (`pending` = matching
@@ -3203,7 +3203,7 @@ impl NativeService {
     }
 
     /// Count nodes of `label` that carry a non-empty `text_property` but still
-    /// lack `embedding_property` — the live auto-embed backlog (#447; mirror of
+    /// lack `embedding_property` - the live auto-embed backlog (#447; mirror of
     /// `Drevo::semantic_pending_count`). Scans a consistent snapshot.
     fn semantic_pending_count(
         &self,
@@ -3279,7 +3279,7 @@ impl NativeService {
     }
 
     /// Read the cumulative failure count and most-recent error for a target
-    /// (#447). `(0, None)` when nothing has failed — and always so on a build
+    /// (#447). `(0, None)` when nothing has failed - and always so on a build
     /// without `http` (no embedder to fail).
     fn embed_failure_stat(
         &self,
@@ -3321,7 +3321,7 @@ impl NativeService {
     /// and when no Auto target matches. `old` is the pre-patch property map and
     /// text fields on update; a target whose source text is unchanged and whose
     /// embedding is already present is skipped. An upstream failure is logged,
-    /// tallied, and swallowed — a transient embedder outage must never fail a
+    /// tallied, and swallowed - a transient embedder outage must never fail a
     /// write.
     #[cfg(feature = "http")]
     pub fn apply_auto_embeddings(
@@ -3475,7 +3475,7 @@ impl NativeService {
         let _ = (rel_type, properties, old);
     }
 
-    /// Backfill embeddings for existing nodes of `label` — parity with
+    /// Backfill embeddings for existing nodes of `label` - parity with
     /// `Drevo::semantic_reindex` (#262). Scans the label's nodes, embeds
     /// `text_property` into `embedding_property` (a node property) for up to
     /// `batch_size` that still lack it, and returns resumable counts. Idempotent
@@ -3550,7 +3550,7 @@ impl NativeService {
         Ok(report)
     }
 
-    /// Backfill embeddings for existing **edges** of `rel_type` — the edge
+    /// Backfill embeddings for existing **edges** of `rel_type` - the edge
     /// mirror of [`Self::semantic_reindex`], parity with
     /// `Drevo::semantic_reindex_rel` (#266). Same idempotent / resumable /
     /// fail-open semantics.
@@ -3703,7 +3703,7 @@ impl NativeService {
         )
     }
 
-    /// Rebuild an in-memory HNSW index over every stored embedding — parity
+    /// Rebuild an in-memory HNSW index over every stored embedding - parity
     /// with `Drevo::build_vector_index`. The index is not persisted (the
     /// embeddings are); rebuild after reopen.
     ///
@@ -3723,7 +3723,7 @@ impl NativeService {
         )
     }
 
-    /// k-nearest embeddings to `query` by the default (cosine) metric —
+    /// k-nearest embeddings to `query` by the default (cosine) metric -
     /// `(node_id, distance)`, nearest first. Parity with the Python handle's
     /// `vector_search`: rebuilds the HNSW index, then searches.
     ///
@@ -3741,12 +3741,12 @@ impl NativeService {
     // ----- traversal (embedded parity with the KV `Drevo` handle, #445) ------
     //
     // These reuse the same engine-agnostic `crate::traversal` algorithms the KV
-    // handle does, driven by closures over the native graph — so BFS/DFS visit
+    // handle does, driven by closures over the native graph - so BFS/DFS visit
     // order, depth semantics (start node excluded), and Dijkstra weighting are
     // identical on both engines. Native reads are infallible, hence the `Ok(..)`
     // wrap into the traversal closures' `Result` contract.
 
-    /// Breadth-first search from `start_id` (start excluded), depth-capped —
+    /// Breadth-first search from `start_id` (start excluded), depth-capped -
     /// parity with `Drevo::bfs`.
     pub fn bfs(
         &self,
@@ -3766,7 +3766,7 @@ impl NativeService {
         )
     }
 
-    /// Depth-first search from `start_id` (start excluded), depth-capped —
+    /// Depth-first search from `start_id` (start excluded), depth-capped -
     /// parity with `Drevo::dfs`.
     pub fn dfs(
         &self,
@@ -3786,13 +3786,13 @@ impl NativeService {
         )
     }
 
-    /// Lowest-total-weight path `from → to` over outgoing edges (Dijkstra) —
+    /// Lowest-total-weight path `from → to` over outgoing edges (Dijkstra) -
     /// parity with `Drevo::shortest_path`. `None` if unreachable.
     pub fn shortest_path(&self, from: u64, to: u64) -> Result<Option<Vec<u64>>, DrevoError> {
         self.shortest_path_filtered(from, to, None)
     }
 
-    /// [`Self::shortest_path`] restricted to edges of `edge_kind` when `Some` —
+    /// [`Self::shortest_path`] restricted to edges of `edge_kind` when `Some` -
     /// parity with `Drevo::shortest_path_filtered`.
     pub fn shortest_path_filtered(
         &self,
@@ -3839,7 +3839,7 @@ impl NativeService {
     }
 
     /// Every node reachable from `from` within `options.max_cost` on the
-    /// current snapshot, cheapest first — see
+    /// current snapshot, cheapest first - see
     /// [`reachable`](crate::weighted_path::reachable()). With `label` only
     /// nodes carrying it are returned, though the search goes through every
     /// node. Empty when `from` does not exist.
@@ -3879,7 +3879,7 @@ impl NativeService {
         )
     }
 
-    /// The nodes with `label` nearest to `from` (`(lat, lon)` in degrees) —
+    /// The nodes with `label` nearest to `from` (`(lat, lon)` in degrees) -
     /// see [`crate::spatial`].
     ///
     /// # Errors
@@ -3923,7 +3923,7 @@ impl NativeService {
     }
 
     /// Public-transport journeys from any of `starts` to any of `ends` over
-    /// the timetable in the graph — see [`crate::timetable`].
+    /// the timetable in the graph - see [`crate::timetable`].
     pub fn timetable(
         &self,
         starts: &[crate::timetable::Endpoint],
@@ -3938,7 +3938,7 @@ impl NativeService {
     }
 
     /// Public-transport journeys from any of `starts` to any of `ends` that
-    /// are there by `arrive_by` and leave as late as possible — see
+    /// are there by `arrive_by` and leave as late as possible - see
     /// [`crate::timetable::latest_departures`].
     pub fn timetable_arrive_by(
         &self,
@@ -3954,7 +3954,7 @@ impl NativeService {
         })
     }
 
-    /// The connected subgraph within `depth` hops of `root` — parity with
+    /// The connected subgraph within `depth` hops of `root` - parity with
     /// `Drevo::subgraph_filtered`.
     pub fn subgraph_filtered(
         &self,
@@ -3972,7 +3972,7 @@ impl NativeService {
         )
     }
 
-    /// Immediate neighbours of `node_id` (BFS depth 1) — parity with
+    /// Immediate neighbours of `node_id` (BFS depth 1) - parity with
     /// `Drevo::neighbors`; served straight from the native adjacency index.
     pub fn neighbors(
         &self,
@@ -3983,9 +3983,9 @@ impl NativeService {
         self.graph.snapshot().neighbors(node_id, direction, kind)
     }
 
-    /// Edges incident to `node_id` in `direction` — the engine of
+    /// Edges incident to `node_id` in `direction` - the engine of
     /// `GET /nodes/{id}/edges`, parity with `Drevo::edges_of`. A missing node
-    /// yields an empty list (the KV route does the same — it does not 404).
+    /// yields an empty list (the KV route does the same - it does not 404).
     pub fn edges_of(
         &self,
         node_id: u64,
@@ -3994,7 +3994,7 @@ impl NativeService {
         self.graph.snapshot().edges_of(node_id, direction)
     }
 
-    /// Import a `drevo-json-v1` dump into the durable store — the engine of
+    /// Import a `drevo-json-v1` dump into the durable store - the engine of
     /// `POST /import/json`, parity with `Drevo::import_json`. Parses and
     /// validates the format header, then replays the records through the WAL
     /// (durable, idempotent for drevo's own exports).
@@ -4009,7 +4009,7 @@ impl NativeService {
             .map_err(|e| DrevoError::Io(std::io::Error::other(e.to_string())))?;
         if dump.format != crate::dump::FORMAT_V1 {
             return Err(DrevoError::Io(std::io::Error::other(format!(
-                "unsupported dump format: {:?} — expected {}",
+                "unsupported dump format: {:?} - expected {}",
                 dump.format,
                 crate::dump::FORMAT_V1
             ))));
@@ -4037,7 +4037,7 @@ impl NativeService {
             embedder: self.embedder.get(),
             #[cfg(not(feature = "http"))]
             embedder: None,
-            // The native semantic control plane — `semantic.register/status`
+            // The native semantic control plane - `semantic.register/status`
             // manage this service's registry instead of a KV secondary (#447).
             semantic: Some(self),
             in_transaction: false,
@@ -4048,7 +4048,7 @@ impl NativeService {
         };
         execute_on_engine_with_context(query, &self.graph, &ctx, params)
     }
-    /// Export the whole graph as a GraphML 1.0 document — the same wire
+    /// Export the whole graph as a GraphML 1.0 document - the same wire
     /// format (and renderer) as the KV server's `GET /export/graphml`, so a
     /// durable-native backup is interchangeable with a KV one.
     ///
@@ -4067,7 +4067,7 @@ impl NativeService {
     }
 
     /// Import a GraphML document (drevo's own export, or any GraphML
-    /// following the same conventions) into the durable graph — the
+    /// following the same conventions) into the durable graph - the
     /// engine-generic inverse of [`Self::export_graphml`]. Applied through
     /// the engine's dump cycle, so everything lands in the WAL as one
     /// fsynced atomic batch and the indexes catch up on the next statement.
@@ -4333,7 +4333,7 @@ mod traversal_parity_tests {
 mod crud_parity_tests {
     //! The inherent CRUD wrappers (`update_node`/`delete_node`/`get_edge`/
     //! `update_edge`/`delete_edge`/`subgraph`) added for embedded-handle parity
-    //! with `Drevo` (epic #444) — the surface the C-FFI and WASM bindings drive.
+    //! with `Drevo` (epic #444) - the surface the C-FFI and WASM bindings drive.
     use super::NativeService;
     use crate::error::DrevoError;
     use crate::model::{EdgePatch, NewEdge, NewNode, NodePatch, Properties};

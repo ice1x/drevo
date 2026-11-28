@@ -1,10 +1,10 @@
-# Benchmarks — drevo vs. competitors
+# Benchmarks - drevo vs. competitors
 
 > Phase 15 task `00101`. This guide pairs with the executable harness
 > [`benches/comparison_bench.rs`](https://github.com/ice1x/drevo/tree/main/benches/comparison_bench.rs). The whole point
 > is **reproducibility**: drevo's numbers are measured by the harness on *your*
 > machine, and the identical workload is specified below as runnable code against
-> each competitor, so a comparison is something you *run* — never a figure copied
+> each competitor, so a comparison is something you *run* - never a figure copied
 > from a vendor slide.
 
 ## Why this exists
@@ -12,7 +12,7 @@
 The README's positioning table carries **approximate** competitor figures
 derived from published benchmarks and vendor claims. Those are fine for a rough
 "where does drevo sit" sketch, but they are not measured, not version-pinned, and
-not run on the same hardware — so they cannot be trusted as a head-to-head. This
+not run on the same hardware - so they cannot be trusted as a head-to-head. This
 guide replaces "trust the slide" with "run the workload."
 
 A fair cross-engine benchmark must hold three things constant: **the same
@@ -21,7 +21,7 @@ first two precisely and tells you how to fix the third.
 
 ## The standard workload
 
-A sparse social graph — the shape KuzuDB, Memgraph, and Neo4j all publish numbers
+A sparse social graph - the shape KuzuDB, Memgraph, and Neo4j all publish numbers
 for:
 
 | Property | Value |
@@ -42,8 +42,8 @@ The operations measured, and what each is meant to expose:
 | **Lookup by indexed property** (`city = 'Berlin'`) | low-cardinality equality scan (≈1,250 rows) |
 | **1-hop neighbours** | single-hop expansion |
 | **2-hop BFS** | multi-hop traversal |
-| **FTS — selective** | full-text query returning one row |
-| **FTS — broad** | full-text query matching every node (worst case) |
+| **FTS - selective** | full-text query returning one row |
+| **FTS - broad** | full-text query matching every node (worst case) |
 
 ## Running drevo's side
 
@@ -54,8 +54,8 @@ The operations measured, and what each is meant to expose:
 > in-process KV bench.
 
 Criterion prints a confidence interval per operation and writes HTML reports to
-`target/criterion/`. This bench is **not** in the per-PR test path — criterion
-benches only run under `cargo bench`, never `cargo test` — so it never contends
+`target/criterion/`. This bench is **not** in the per-PR test path - criterion
+benches only run under `cargo bench`, never `cargo test` - so it never contends
 for the shared CI runner. The scheduled / manual
 [`benchmarks.yml`](https://github.com/ice1x/drevo/tree/main/.github/workflows/benchmarks.yml) workflow is the only place
 it runs in CI.
@@ -63,21 +63,21 @@ it runs in CI.
 ### Reference run (in-memory backend)
 
 Measured on the project's development machine (Apple Silicon, `--release`,
-`MemoryBackend`). **These are illustrative — re-run on your hardware before
+`MemoryBackend`). **These are illustrative - re-run on your hardware before
 quoting them.** The competitor columns are deliberately left blank: fill them by
 running the recipes below in the *same* environment rather than copying numbers
 here.
 
 | Operation | drevo (in-memory) | Neo4j | Memgraph | KuzuDB |
 |-----------|------------------:|:-----:|:--------:|:------:|
-| Bulk load (10k nodes + 40k edges) | ~700 ms | — | — | — |
-| Point lookup by id | ~0.8 µs | — | — | — |
-| Point lookup by indexed title | ~1.1 µs | — | — | — |
-| Lookup by property (`city`, ~1,250 rows) | ~1.3 ms | — | — | — |
-| 1-hop neighbours | ~5.8 µs | — | — | — |
-| 2-hop BFS | ~18 µs | — | — | — |
-| FTS — selective (top 10) | ~29 ms | — | — | — |
-| FTS — broad (top 10, all match) | ~135 ms | — | — | — |
+| Bulk load (10k nodes + 40k edges) | ~700 ms | - | - | - |
+| Point lookup by id | ~0.8 µs | - | - | - |
+| Point lookup by indexed title | ~1.1 µs | - | - | - |
+| Lookup by property (`city`, ~1,250 rows) | ~1.3 ms | - | - | - |
+| 1-hop neighbours | ~5.8 µs | - | - | - |
+| 2-hop BFS | ~18 µs | - | - | - |
+| FTS - selective (top 10) | ~29 ms | - | - | - |
+| FTS - broad (top 10, all match) | ~135 ms | - | - | - |
 
 > The broad-FTS cost reflects the known trigram-scan hotspot flagged in
 > [`audit/AUDIT-fts.md`](https://github.com/ice1x/drevo/tree/main/audit/AUDIT-fts.md) (Performance Watch List); the
@@ -115,8 +115,8 @@ if the costs differ. Map data © OpenStreetMap contributors, ODbL.
 
 Apple Silicon, `--release`, in-memory `NativeService`, OSM data of 2026-10-20:
 242,947 junctions, 396,551 relationships (143,781 junctions drivable), loaded
-in 2.8 s. Times are per route, the mean over 8 routes of 243–589 junctions.
-**Illustrative — re-run on your hardware before quoting them.**
+in 2.8 s. Times are per route, the mean over 8 routes of 243-589 junctions.
+**Illustrative - re-run on your hardware before quoting them.**
 
 | Workload | Time per route |
 |----------|---------------:|
@@ -134,7 +134,7 @@ in 2.8 s. Times are per route, the mean over 8 routes of 243–589 junctions.
 | Outgoing neighbour ids only (`neighbor_ids`) | ~21 ms |
 
 The search reads each relationship by reference instead of copying its
-record (#684): on the same data, per-route times dropped 11–23% (driving A*
+record (#684): on the same data, per-route times dropped 11-23% (driving A*
 90 → 80 ms, Dijkstra 53 → 46 ms; walking A* 51 → 42 ms, Dijkstra 137 →
 105 ms).
 
@@ -170,7 +170,7 @@ cargo bench --bench timetable_bench
 ### Reference run
 
 Apple M1 Max, `--release`, in-memory `NativeService`, on a shared machine
-under load. **Illustrative — re-run on your hardware before quoting them.**
+under load. **Illustrative - re-run on your hardware before quoting them.**
 
 | Workload | p50 | p95 | p99 | max |
 |----------|----:|----:|----:|----:|
@@ -180,10 +180,10 @@ under load. **Illustrative — re-run on your hardware before quoting them.**
 
 Run of 2026-11-25. 931 of the 1,000 queries find a journey within two hours;
 the fastest uses 0 / 1 / 2 / 3 / 4 transfers in 182 / 315 / 239 / 143 / 52
-of them. Asked the other way — be there by `departAt + 2 h`, leave as late as
-possible — the same 931 find one, at 1.1× the time of the forward search.
+of them. Asked the other way - be there by `departAt + 2 h`, leave as late as
+possible - the same 931 find one, at 1.1× the time of the forward search.
 Cypher and the native call return the same arrivals for every query. A query keeps only
-what it reads — the stops it reaches and their labels — and frees it when it
+what it reads - the stops it reaches and their labels - and frees it when it
 returns; nothing is kept between queries.
 
 ## Everything within a walk
@@ -192,7 +192,7 @@ returns; nothing is kept between queries.
 times [`drevo.path.reachable`](cypher-reference.md#reachable-nodes) on a
 synthetic road grid the size of Sofia's OpenStreetMap road graph: 243,049
 junctions and 281,257 `ROAD` relationships (a street between grid neighbours
-kept at random, 10–40 m long, walked at 1.4 m/s). One junction in fifty is
+kept at random, 10-40 m long, walked at 1.4 m/s). One junction in fifty is
 also a `StopAccess`. Each of 1,000 queries starts at a random junction with a
 street and walks for up to 15 minutes (`maxCost: 900`) in both directions,
 returning every junction (*isochrone*) or only the `StopAccess` ones
@@ -205,7 +205,7 @@ cargo bench --bench reachable_bench
 ### Reference run
 
 Apple M1 Max, `--release`, in-memory `NativeService`, on a shared machine
-under load. **Illustrative — re-run on your hardware before quoting them.**
+under load. **Illustrative - re-run on your hardware before quoting them.**
 
 | Workload | p50 | p95 | p99 | max |
 |----------|----:|----:|----:|----:|
@@ -240,7 +240,7 @@ cargo bench --bench spatial_nearest_bench
 ### Reference run
 
 Apple M1 Max, `--release`, in-memory `NativeService`, on a shared machine
-under load. **Illustrative — re-run on your hardware before quoting them.**
+under load. **Illustrative - re-run on your hardware before quoting them.**
 
 | Workload | p50 | p95 | p99 | max |
 |----------|----:|----:|----:|----:|
@@ -248,7 +248,7 @@ under load. **Illustrative — re-run on your hardware before quoting them.**
 | `CALL drevo.spatial.nearest`, junction | 6.1 µs | 22 µs | 24 µs | 15 ms |
 | `NativeService::nearest`, stops | 3.2 µs | 5.3 µs | 6.5 µs | 18 µs |
 | `CALL drevo.spatial.nearest`, stops | 8.8 µs | 11 µs | 12 µs | 30 µs |
-| `NativeService::nearest`, junction, no index | 121 ms | 128 ms | — | 830 ms |
+| `NativeService::nearest`, junction, no index | 121 ms | 128 ms | - | 830 ms |
 
 The first lookup after loading the city brings the point indexes up to date
 with every node and takes ~0.8 s; later lookups read a few grid cells.
@@ -266,7 +266,7 @@ work, not the embedding service's:
 
 | Case | What runs |
 |------|-----------|
-| `hybrid_seeds_k8` | `drevo.search.hybrid`, `k: 8`, `candidates: 20` — BM25 and a cosine scan of every embedding of the label, fused |
+| `hybrid_seeds_k8` | `drevo.search.hybrid`, `k: 8`, `candidates: 20` - BM25 and a cosine scan of every embedding of the label, fused |
 | `expand_2_hops` | `drevo.graph.expand` from those 8 seeds: 2 hops, `perNodeLimit: 25`, `maxNodes: 200` |
 | `ppr_over_expanded` | Personalized PageRank over the expanded nodes and the relationships between them |
 | `serialize_2000_tokens` | the ranked subgraph written as a 2000-token markdown context |
@@ -288,7 +288,7 @@ drevo knowledge-graph export: 4,357 nodes (each `Entity` with a 1536-dimension
 `embedding`) and 10,134 relationships, 77 MB of GraphML. The question `memory`
 found 8 seeds; the expansion reached 135 nodes with 243 relationships between
 them; the context held 19 of them in 1,993 tokens. The p50 and p95 are over
-criterion's 20 samples, each the mean of many runs. **Illustrative — re-run on
+criterion's 20 samples, each the mean of many runs. **Illustrative - re-run on
 your hardware before quoting them.**
 
 | Case | p50 | p95 |
@@ -310,15 +310,15 @@ contexts on your data, score the strategies with
 The BM25 leg of the seed search takes a node holding any word of the question
 (`ftsMode: 'any'`, the default of `drevo.rag.*`) or only a node holding all of
 it (`ftsMode: 'all'`). [`drevo.rag.evaluateSummary`](cypher-reference.md#evaluate-strategies)
-on a copy of a drevo knowledge-graph export — 4,568 nodes, 10,886
-relationships, no embedder, `tokenBudget: 2000`, release build, 2026-11-24 —
+on a copy of a drevo knowledge-graph export - 4,568 nodes, 10,886
+relationships, no embedder, `tokenBudget: 2000`, release build, 2026-11-24 -
 with a gold set made from the graph itself: every 18th of the 1,136 `Entity`
 nodes whose name has four or more words, 60 in all, each expected in the
 context of a query about it.
 
-- **keywords** — the words of the name that have three or more letters
+- **keywords** - the words of the name that have three or more letters
   (`send group message cmd`);
-- **question** — the same words inside a sentence (`what do we know about send
+- **question** - the same words inside a sentence (`what do we know about send
   group message cmd and why does it matter`).
 
 | Query | `ftsMode` | Strategy | hit rate | recall | MRR | p50 | p95 |
@@ -333,8 +333,8 @@ context of a query about it.
 
 `hybrid+expand` scores as `rag` does. Without an embedder `hybrid` is the BM25
 ranking alone, so it scores as `fts`. With every word required, a question
-finds no seed at all — no node holds "what", "know" and "matter" next to the
-name — and nothing downstream can make up for it. With any word enough, the
+finds no seed at all - no node holds "what", "know" and "matter" next to the
+name - and nothing downstream can make up for it. With any word enough, the
 node sharing the most, and the rarest, words comes first; on keywords alone
 `'all'` finds 58 of the 60 and `'any'` all of them.
 The gold set is generated, not written by people: it shows that a question
@@ -344,9 +344,9 @@ your own questions before relying on these numbers.**
 ## Write transactions
 
 A write transaction works on its own copy of the store. The copy shares
-everything with the committed store — node and relationship records, the
+everything with the committed store - node and relationship records, the
 adjacency lists (in chunks of 64 nodes), embeddings, and the kind and title
-indexes — and a write copies only what it touches, so a small transaction
+indexes - and a write copies only what it touches, so a small transaction
 costs the same on a large graph as on a small one.
 
 One `SET` on one node in an explicit transaction (`execute_write`), on
@@ -367,7 +367,7 @@ Each competitor runs the **same** graph and the **same** eight operations. Use a
 fresh, default-configured instance of a pinned version, on the same machine you
 ran drevo on, and warm the cache before timing.
 
-### Building the graph (Neo4j / Memgraph — Bolt + Cypher)
+### Building the graph (Neo4j / Memgraph - Bolt + Cypher)
 
 Both speak Bolt and openCypher, so the load is identical:
 
@@ -437,7 +437,7 @@ conn.execute('COPY KNOWS FROM "knows.csv"')
 ```
 
 KuzuDB has no built-in full-text index comparable to drevo's trigram FTS, so the
-two FTS rows are not directly comparable — note that asymmetry rather than forcing
+two FTS rows are not directly comparable - note that asymmetry rather than forcing
 a number.
 
 ## Honesty rules

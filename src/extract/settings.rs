@@ -53,7 +53,7 @@ impl ExtractConfig {
     /// | `DREVO_EXTRACT_UPSTREAM` | `DREVO_TEXT2CYPHER_UPSTREAM` | (unset) |
     /// | `DREVO_EXTRACT_API_KEY` | `DREVO_TEXT2CYPHER_API_KEY`, only while the upstream is the text-to-Cypher one | (unset) |
     /// | `DREVO_EXTRACT_MODEL` | `DREVO_TEXT2CYPHER_MODEL` | `gpt-4o-mini` |
-    /// | `DREVO_EXTRACT_TIMEOUT_MS` | — | `60000` |
+    /// | `DREVO_EXTRACT_TIMEOUT_MS` | - | `60000` |
     ///
     /// # Errors
     ///
@@ -110,7 +110,7 @@ impl ExtractConfig {
 }
 
 /// Validate and normalise an upstream URL: trimmed, non-empty, `http`/`https`
-/// only — an operator's choice, never a request's.
+/// only - an operator's choice, never a request's.
 fn validate_upstream(raw: &str) -> Result<String, ExtractError> {
     let upstream = raw.trim().to_string();
     if upstream.is_empty() {

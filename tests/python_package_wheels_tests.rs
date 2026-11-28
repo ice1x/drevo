@@ -1,36 +1,36 @@
-//! Phase 16 task `00116` — text-level scaffolding tests for the
+//! Phase 16 task `00116` - text-level scaffolding tests for the
 //! `drevo-py` Python package skeleton + wheel build configuration.
 //!
 //! Same pattern as `python_api_scaffolding_tests.rs` for `00115`: these
 //! tests do **not** invoke `maturin`, `pip`, `cibuildwheel`, or any
-//! Python interpreter (the existing CI runners do not provision Python —
+//! Python interpreter (the existing CI runners do not provision Python -
 //! the dedicated Python CI matrix is task `00122`). Instead they lock
 //! the *layout* and *contract* of every file the task ships by grepping
 //! the files on disk:
 //!
-//! 1. `drevo-py/pyproject.toml` — PEP 621 metadata, `maturin` build
+//! 1. `drevo-py/pyproject.toml` - PEP 621 metadata, `maturin` build
 //!    backend, project name `drevo-py`, ABI3 target ≥ 3.10, license,
 //!    classifiers, `[tool.maturin]` pointing at the right module name
 //!    and the `python/` source dir.
-//! 2. `drevo-py/python/drevo/__init__.py` — pure-Python shim that
+//! 2. `drevo-py/python/drevo/__init__.py` - pure-Python shim that
 //!    imports `_drevo`, re-exports the public surface, and wraps the
 //!    raw 16-byte `bytes` UUIDs returned by `_drevo` as `uuid.UUID`
 //!    (RFC §3.2 default + §12.2 amendment).
-//! 3. `drevo-py/python/drevo/errors.py` — `InvalidWeightError(ValueError)`
+//! 3. `drevo-py/python/drevo/errors.py` - `InvalidWeightError(ValueError)`
 //!    subclass so `except drevo.InvalidWeightError:` works after the
 //!    shim lands (RFC §5.3 + §12.3 amendment).
-//! 4. `drevo-py/python/drevo/__init__.pyi` — hand-authored type stubs
+//! 4. `drevo-py/python/drevo/__init__.pyi` - hand-authored type stubs
 //!    matching the RFC §3.3 `Drevo` surface, so `mypy --strict` sees
 //!    typed signatures.
-//! 5. `drevo-py/python/drevo/py.typed` — PEP 561 marker (empty file).
-//! 6. `drevo-py/LICENSE` — dual MIT / Apache-2.0 (matches the
+//! 5. `drevo-py/python/drevo/py.typed` - PEP 561 marker (empty file).
+//! 6. `drevo-py/LICENSE` - dual MIT / Apache-2.0 (matches the
 //!    `license = "MIT OR Apache-2.0"` in `drevo-py/Cargo.toml`).
-//! 7. `drevo-py/CHANGELOG.md` — Keep-a-Changelog format with the
+//! 7. `drevo-py/CHANGELOG.md` - Keep-a-Changelog format with the
 //!    initial `0.1.0` entry covering `00115` + `00116`.
-//! 8. `drevo-py/README.md` — already shipped by `00115`; this task
+//! 8. `drevo-py/README.md` - already shipped by `00115`; this task
 //!    extends it with `pip install drevo-py` quick-start once the
 //!    wheel build is in place.
-//! 9. `.github/workflows/python-wheels.yml` — `cibuildwheel` matrix
+//! 9. `.github/workflows/python-wheels.yml` - `cibuildwheel` matrix
 //!    for cp310/cp311/cp312/cp313 × {linux, macos, windows}, plus
 //!    `twine check dist/*`. Triggered manually + on every PR via
 //!    `workflow_dispatch` and the existing PR `pull_request` event,
@@ -55,12 +55,12 @@ fn pyproject_toml_declares_maturin_build_backend() {
     let toml = read(&repo_root().join("drevo-py").join("pyproject.toml"));
     assert!(
         toml.contains("[build-system]"),
-        "drevo-py/pyproject.toml must declare [build-system] — without it \
+        "drevo-py/pyproject.toml must declare [build-system] - without it \
          `pip install .` cannot select a backend"
     );
     assert!(
         toml.contains("build-backend = \"maturin\""),
-        "drevo-py/pyproject.toml must set build-backend = \"maturin\" — \
+        "drevo-py/pyproject.toml must set build-backend = \"maturin\" - \
          RFC §2 wheel layout requires the PyO3-aware build backend"
     );
     assert!(
@@ -80,7 +80,7 @@ fn pyproject_toml_declares_pep621_metadata() {
         toml.contains("name = \"drevo-py\""),
         "[project].name must be \"drevo-py\" (matches Cargo crate name)"
     );
-    // Version source: dynamic via maturin reading Cargo.toml — either a
+    // Version source: dynamic via maturin reading Cargo.toml - either a
     // literal `version = "0.1.0"` OR `dynamic = ["version"]` is acceptable.
     assert!(
         toml.contains("version = \"0.1.0\"") || toml.contains("dynamic"),
@@ -93,7 +93,7 @@ fn pyproject_toml_declares_pep621_metadata() {
     );
     assert!(
         toml.contains("requires-python") && toml.contains(">=3.10"),
-        "[project].requires-python must be \">=3.10\" — matches the \
+        "[project].requires-python must be \">=3.10\" - matches the \
          abi3-py310 feature in drevo-py/Cargo.toml"
     );
     assert!(
@@ -127,7 +127,7 @@ fn pyproject_toml_configures_maturin_python_layout() {
     // i.e. the directory under python/. Must match `import drevo`.
     assert!(
         toml.contains("module-name = \"drevo._drevo\""),
-        "[tool.maturin].module-name must be \"drevo._drevo\" — the dotted \
+        "[tool.maturin].module-name must be \"drevo._drevo\" - the dotted \
          path the cdylib is installed at inside the wheel. RFC §2: end \
          users `import drevo`; `_drevo` is the private extension module."
     );
@@ -156,10 +156,10 @@ fn drevo_package_init_imports_native_extension() {
     assert!(
         init.contains("from . import _drevo") || init.contains("from ._drevo import"),
         "drevo/__init__.py must import the `_drevo` native extension \
-         module (RFC §2 wheel layout — `_drevo` is the cdylib)"
+         module (RFC §2 wheel layout - `_drevo` is the cdylib)"
     );
-    // Re-exports: the user-facing import is `from drevo import Drevo`
-    // — so `Drevo` (and the headline classes) must appear in __all__
+    // Re-exports: the user-facing import is `from drevo import Drevo` -
+    // so `Drevo` (and the headline classes) must appear in __all__
     // or as a direct re-export.
     for symbol in [
         "Drevo",
@@ -235,13 +235,13 @@ fn drevo_package_init_wraps_uuid_bytes_as_uuid_uuid() {
          `bytes` UUIDs from `_drevo` into native `uuid.UUID` objects \
          (RFC §12.2 amendment)"
     );
-    // The wrapping has to actually use the imported module — accept
+    // The wrapping has to actually use the imported module - accept
     // either `uuid.UUID(bytes=...)` (canonical constructor) or
     // `uuid.UUID(int=...)` as evidence of an actual conversion.
     assert!(
         init.contains("uuid.UUID"),
         "drevo/__init__.py must actually construct `uuid.UUID(...)` \
-         instances — `import uuid` without usage is not enough"
+         instances - `import uuid` without usage is not enough"
     );
 }
 
@@ -282,8 +282,8 @@ fn errors_py_declares_invalid_weight_error_subclass_of_value_error() {
     // (which would couple the cdylib to the pure-Python module).
     assert!(
         errors.contains("class InvalidWeightError(ValueError)"),
-        "drevo/errors.py must declare `class InvalidWeightError(ValueError):` \
-         — RFC §5.3 + §12.3 amendment. The pure-Python subclass closes \
+        "drevo/errors.py must declare `class InvalidWeightError(ValueError):` - \
+         RFC §5.3 + §12.3 amendment. The pure-Python subclass closes \
          the gap left by `00115`."
     );
 }
@@ -372,11 +372,11 @@ fn type_stubs_declare_public_surface() {
     ] {
         assert!(
             stub.contains(method),
-            "drevo/__init__.pyi must declare `{method}...` on `Drevo` \
-             — RFC §3.3 type-stub block lists this method"
+            "drevo/__init__.pyi must declare `{method}...` on `Drevo` - \
+             RFC §3.3 type-stub block lists this method"
         );
     }
-    // Exception hierarchy — must be importable from `drevo` per shim
+    // Exception hierarchy - must be importable from `drevo` per shim
     // re-exports.
     for exc in [
         "class DrevoError",
@@ -422,7 +422,7 @@ fn pep561_marker_exists_and_is_empty() {
         .join("py.typed");
     assert!(
         marker.exists(),
-        "drevo-py/python/drevo/py.typed must exist — PEP 561 marker \
+        "drevo-py/python/drevo/py.typed must exist - PEP 561 marker \
          tells mypy / pyright to read the inline / .pyi type info"
     );
     // PEP 561 specifies the marker is an empty file. Some projects put
@@ -431,7 +431,7 @@ fn pep561_marker_exists_and_is_empty() {
     let body = fs::read(&marker).unwrap();
     assert!(
         body.len() <= 16,
-        "drevo-py/python/drevo/py.typed should be empty (PEP 561) — \
+        "drevo-py/python/drevo/py.typed should be empty (PEP 561) - \
          found {} bytes",
         body.len()
     );
@@ -442,13 +442,13 @@ fn pep561_marker_exists_and_is_empty() {
 #[test]
 fn license_file_documents_dual_mit_apache_license() {
     let license = read(&repo_root().join("drevo-py").join("LICENSE"));
-    // drevo-py/Cargo.toml declares `license = "MIT OR Apache-2.0"` —
+    // drevo-py/Cargo.toml declares `license = "MIT OR Apache-2.0"` -
     // the LICENSE file must surface both license names so a downstream
     // consumer scanning `pip show drevo-py` or `cargo about` resolves
     // the SPDX identifiers correctly.
     assert!(
         license.contains("MIT") && license.contains("Apache"),
-        "drevo-py/LICENSE must mention both MIT and Apache-2.0 — the \
+        "drevo-py/LICENSE must mention both MIT and Apache-2.0 - the \
          Cargo manifest declares `MIT OR Apache-2.0` and PyPI scrapes \
          the LICENSE file for the license text"
     );
@@ -470,12 +470,12 @@ fn changelog_documents_initial_release_and_tasks() {
     );
     assert!(
         changelog.contains("00115"),
-        "drevo-py/CHANGELOG.md must cite task 00115 — first release shipped \
+        "drevo-py/CHANGELOG.md must cite task 00115 - first release shipped \
          the PyO3 core surface"
     );
     assert!(
         changelog.contains("00116"),
-        "drevo-py/CHANGELOG.md must cite task 00116 — first release ships \
+        "drevo-py/CHANGELOG.md must cite task 00116 - first release ships \
          the package skeleton + wheel build"
     );
 }
@@ -493,7 +493,7 @@ fn drevo_py_readme_documents_pip_install() {
     );
     assert!(
         readme.contains("maturin"),
-        "drevo-py/README.md must mention maturin — RFC §2 build backend"
+        "drevo-py/README.md must mention maturin - RFC §2 build backend"
     );
 }
 
@@ -514,16 +514,16 @@ fn cibuildwheel_workflow_exists_with_full_matrix() {
         ".github/workflows/python-wheels.yml must invoke `cibuildwheel` \
          (RFC §2 / Phase 16 cross-cutting acceptance criteria)"
     );
-    // RFC §2 / README cross-cutting acceptance criteria — every minor
+    // RFC §2 / README cross-cutting acceptance criteria - every minor
     // version cp310..cp313 must build a wheel.
     for cpy in ["cp310", "cp311", "cp312", "cp313"] {
         assert!(
             wf.contains(cpy),
-            "python-wheels.yml CIBW_BUILD must enumerate `{cpy}` — RFC \
+            "python-wheels.yml CIBW_BUILD must enumerate `{cpy}` - RFC \
              §2 wheel matrix"
         );
     }
-    // Runner target — GitHub-hosted since the public-repo migration: macOS
+    // Runner target - GitHub-hosted since the public-repo migration: macOS
     // wheels build on `macos-latest` (free + unlimited on a public repo), the
     // sdist on `ubuntu-24.04`. The self-hosted runner is retired (a self-hosted
     // runner on a public repo is a security risk).
@@ -534,7 +534,7 @@ fn cibuildwheel_workflow_exists_with_full_matrix() {
     {
         assert!(
             !line.contains("self-hosted"),
-            "python-wheels.yml must NOT run on self-hosted (retired) — found `{line}`"
+            "python-wheels.yml must NOT run on self-hosted (retired) - found `{line}`"
         );
     }
     assert!(
@@ -542,7 +542,7 @@ fn cibuildwheel_workflow_exists_with_full_matrix() {
         "python-wheels.yml `build_wheels` must run on macos-latest"
     );
     // `twine check dist/*` validates wheel metadata before any future
-    // release task uploads — locks the contract today.
+    // release task uploads - locks the contract today.
     assert!(
         wf.contains("twine check"),
         "python-wheels.yml must run `twine check dist/*` so wheel \
@@ -555,7 +555,7 @@ fn cibuildwheel_runs_the_python_runtime_test_suite() {
     // The runtime tests in `drevo-py/tests/test_shim.py` MUST run
     // inside cibuildwheel's per-wheel test step so a broken UUID
     // wrap / missing __all__ entry / wrong InvalidWeightError
-    // parent class fails the matrix job at build time — not at
+    // parent class fails the matrix job at build time - not at
     // first user import.
     let wf = read(
         &repo_root()
@@ -571,7 +571,7 @@ fn cibuildwheel_runs_the_python_runtime_test_suite() {
     assert!(
         wf.contains("pytest"),
         "CIBW_TEST_COMMAND must invoke `pytest` against \
-         `drevo-py/tests/` — a `python -c \"import drevo\"` smoke is \
+         `drevo-py/tests/` - a `python -c \"import drevo\"` smoke is \
          not enough to lock the runtime contract for the shim layer \
          (UUID wrap, InvalidWeightError, __all__ re-exports)"
     );
@@ -585,7 +585,7 @@ fn cibuildwheel_runs_the_python_runtime_test_suite() {
 #[test]
 fn python_ci_workflow_runs_full_lint_and_test_gate() {
     // The lightweight Python CI workflow (`python-ci.yml`) is the
-    // fast-feedback gate on every PR — landed alongside 00116 so the
+    // fast-feedback gate on every PR - landed alongside 00116 so the
     // shim contract is enforced without waiting for the full
     // cibuildwheel matrix. Lock the four gates here so a future PR
     // cannot silently drop, say, mypy --strict (which is what catches
@@ -602,7 +602,7 @@ fn python_ci_workflow_runs_full_lint_and_test_gate() {
         "mypy --strict",
         "ruff check",
         "black --check",
-        // Runner target — GitHub-hosted since the public-repo migration. The
+        // Runner target - GitHub-hosted since the public-repo migration. The
         // repo-wide policy (locked by `tests/ci_self_hosted_runner_tests.rs`)
         // is now that every workflow runs on a GitHub-hosted runner; the
         // self-hosted runner is retired.
@@ -610,7 +610,7 @@ fn python_ci_workflow_runs_full_lint_and_test_gate() {
     ] {
         assert!(
             wf.contains(needle),
-            ".github/workflows/python-ci.yml must invoke `{needle}` — \
+            ".github/workflows/python-ci.yml must invoke `{needle}` - \
              the lightweight Python CI gate from this branch's 00116 \
              follow-up requires all four lint/test steps + the \
              self-hosted runner"
@@ -671,7 +671,7 @@ fn python_runtime_test_suite_exists() {
         .join("test_shim.py");
     assert!(
         suite.exists(),
-        "drevo-py/tests/test_shim.py must exist — runtime contract \
+        "drevo-py/tests/test_shim.py must exist - runtime contract \
          tests for the 00116 shim layer (UUID wrapping, \
          InvalidWeightError subclass, __all__ consistency)"
     );
@@ -688,7 +688,7 @@ fn python_runtime_test_suite_exists() {
     ] {
         assert!(
             body.contains(needle),
-            "drevo-py/tests/test_shim.py must reference `{needle}` — \
+            "drevo-py/tests/test_shim.py must reference `{needle}` - \
              RFC §3.2 / §5.3 / §12.2 runtime contract for the 00116 \
              shim is locked here"
         );
@@ -703,15 +703,15 @@ fn cibuildwheel_workflow_does_not_publish_to_pypi() {
             .join("workflows")
             .join("python-wheels.yml"),
     );
-    // Task 00116 acceptance criterion: "No publishing yet — the wheel
+    // Task 00116 acceptance criterion: "No publishing yet - the wheel
     // build is exercised in CI on every PR; publishing to PyPI lands
     // later as a separate release task." Catching `twine upload` or
     // `pypa/gh-action-pypi-publish` here prevents a future contributor
     // from accidentally turning the CI workflow into a publish workflow.
     assert!(
         !wf.contains("twine upload") && !wf.contains("pypi-publish"),
-        ".github/workflows/python-wheels.yml MUST NOT publish to PyPI \
-         — task 00116 builds wheels only; publishing is a separate \
+        ".github/workflows/python-wheels.yml MUST NOT publish to PyPI - \
+         task 00116 builds wheels only; publishing is a separate \
          release task"
     );
 }

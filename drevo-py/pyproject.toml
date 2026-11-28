@@ -1,4 +1,4 @@
-# Phase 16 task `00116` — Python package skeleton + wheel build config.
+# Phase 16 task `00116` - Python package skeleton + wheel build config.
 #
 # PEP 621 metadata + maturin build backend for `drevo-py`. The cdylib
 # produced by `drevo-py/Cargo.toml` is bundled into a wheel together
@@ -9,7 +9,7 @@
 #
 # Implements the contract in `audit/RFC-python-api.md` §2 ("Wheel layout")
 # plus the Phase 16 cross-cutting acceptance criteria in README.md
-# §"Phase 16 — Python Graph-RAG SDK".
+# §"Phase 16 - Python Graph-RAG SDK".
 
 [build-system]
 # `maturin >= 1.7` supports the `[tool.maturin].python-source` layout
@@ -23,7 +23,7 @@ build-backend = "maturin"
 [project]
 name = "drevo-py"
 version = "0.1.0"
-description = "Python bindings for drevo — embedded graph database (PyO3 + abi3-py310)"
+description = "Python bindings for drevo - embedded graph database (PyO3 + abi3-py310)"
 readme = "README.md"
 # `requires-python = ">=3.10"` matches the `abi3-py310` feature in
 # `drevo-py/Cargo.toml`. A single wheel runs on every CPython ≥ 3.10;
@@ -67,11 +67,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
-# Core install has zero pure-Python dependencies — `drevo.rag` (`00117`)
+# Core install has zero pure-Python dependencies - `drevo.rag` (`00117`)
 # adds optional extras (`pip install drevo-py[langchain]`) for adapters.
 dependencies = []
 
-# `drevo` console script — GraphML backup/restore + compact/shrink CLI.
+# `drevo` console script - GraphML backup/restore + compact/shrink CLI.
 # The command logic lives in `drevo/__main__.py` (stdlib argparse, no deps).
 [project.scripts]
 drevo = "drevo.__main__:main"
@@ -83,11 +83,11 @@ Issues = "https://github.com/ice1x/drevo/issues"
 Changelog = "https://github.com/ice1x/drevo/blob/main/drevo-py/CHANGELOG.md"
 
 [project.optional-dependencies]
-# Reserved namespaces for follow-on Phase 16 tasks — declared here so
+# Reserved namespaces for follow-on Phase 16 tasks - declared here so
 # they appear in `pip install drevo-py[<extra>]` autocomplete even
 # before the wrapper modules land.
-langchain = []   # task 00117 follow-up — LangChain Document adapter
-llamaindex = []  # task 00117 follow-up — LlamaIndex Document adapter
+langchain = []   # task 00117 follow-up - LangChain Document adapter
+llamaindex = []  # task 00117 follow-up - LlamaIndex Document adapter
 dev = [
     "maturin>=1.7,<2.0",
     "pytest>=7",
@@ -95,7 +95,7 @@ dev = [
     "ruff>=0.5",
     "black>=24",
     "twine>=5",
-    # Test-data generation — used across the pytest suites to round-trip
+    # Test-data generation - used across the pytest suites to round-trip
     # realistic values instead of hardcoded literals (see tests/conftest.py
     # `fake` fixture). Default-on per the project Python-testing policy.
     "faker>=24",
@@ -105,7 +105,7 @@ dev = [
     # far more of the input space than hand-picked examples.
     "hypothesis>=6",
     # NOTE: `mutmut` (mutation testing) was evaluated for the shim and
-    # deliberately NOT adopted — see the comment at the former
+    # deliberately NOT adopted - see the comment at the former
     # `[tool.mutmut]` site (removed). mutmut 3.5.0 has an upstream bug
     # that splits `tests_dir` character-by-character when handing it to
     # pytest, so no mutant can actually be executed under the maturin
@@ -167,7 +167,7 @@ mypy_path = "python"
 # (drevo-py/tests/test_shim.py). The conftest.py beside it provides
 # the `drevo_db` fixture used by the UUID + handle round-trip tests.
 testpaths = ["tests"]
-# Catch silent collection errors — without these flags a renamed test
+# Catch silent collection errors - without these flags a renamed test
 # fixture surfaces as "0 tests collected" instead of an error.
 addopts = "-ra --strict-markers --strict-config"
 
@@ -175,7 +175,7 @@ addopts = "-ra --strict-markers --strict-config"
 # shim (`python/drevo/__init__.py`) was evaluated and NOT adopted:
 # mutmut 3.5.0 has an upstream bug that hands `tests_dir` to pytest one
 # character at a time (`['t','e','s','t','s','/', ...]`), so under this
-# package's maturin `python-source` layout no mutant can be executed —
+# package's maturin `python-source` layout no mutant can be executed -
 # all 14 generated mutants report "not checked". With the shim only ~9
 # lines, the profit does not justify shipping a broken config. Revisit
 # if the upstream bug is fixed.

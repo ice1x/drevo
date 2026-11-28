@@ -1,4 +1,4 @@
-//! drevo — an embedded graph database for cross-platform knowledge
+//! drevo - an embedded graph database for cross-platform knowledge
 //! management.
 //!
 //! drevo is a lightweight, embeddable graph database written in Rust. It is
@@ -10,29 +10,29 @@
 //! The crate is organised into a small number of layered modules, each with
 //! its own audit report under `audit/AUDIT-<domain>.md`:
 //!
-//! - [`error`] — the crate-wide [`error::DrevoError`] hierarchy. Audited in
+//! - [`error`] - the crate-wide [`error::DrevoError`] hierarchy. Audited in
 //!   `audit/AUDIT-error.md` (task `00104`).
-//! - [`model`] — public data types ([`model::Node`], [`model::Edge`], …)
+//! - [`model`] - public data types ([`model::Node`], [`model::Edge`], …)
 //!   plus their `New*` / `*Patch` companions and the shared
 //!   [`model::Properties`] map. Audited in `audit/AUDIT-model.md` (task
 //!   `00105`).
-//! - `Drevo` — the `Drevo` handle: node / edge CRUD, kind index, FTS
+//! - `Drevo` - the `Drevo` handle: node / edge CRUD, kind index, FTS
 //!   index maintenance, transactional list operations. Audited in
 //!   `audit/AUDIT-db.md` (task `00106`).
-//! - [`traversal`] — BFS / DFS / shortest-path / weighted-shortest-path /
+//! - [`traversal`] - BFS / DFS / shortest-path / weighted-shortest-path /
 //!   subgraph extraction, with kind filters. Audited in
 //!   `audit/AUDIT-traversal.md` (task `00107`).
-//! - [`fts`] — trigram tokenizer + inverted index for full-text search.
+//! - [`fts`] - trigram tokenizer + inverted index for full-text search.
 //!   Audited in `audit/AUDIT-fts.md` (task `00108`).
-//! - `api` (cfg `http`) — axum router translating REST requests into
+//! - `api` (cfg `http`) - axum router translating REST requests into
 //!   `Drevo` calls. Audited in `audit/AUDIT-http-api.md` (task
 //!   `00109`).
-//! - `ffi` (non-WASM) — `extern "C"` surface for desktop / mobile
+//! - `ffi` (non-WASM) - `extern "C"` surface for desktop / mobile
 //!   embedders. Every entry is wrapped in [`std::panic::catch_unwind`].
 //!   Audited in `audit/AUDIT-ffi.md` (task `00110`).
-//! - `wasm` (cfg `wasm`) — `wasm-bindgen` exports for the browser /
+//! - `wasm` (cfg `wasm`) - `wasm-bindgen` exports for the browser /
 //!   Tauri-WASM build. Audited in `audit/AUDIT-wasm.md` (task `00111`).
-//! - `server` (cfg `http`) — extracted env-var parser, validator, and
+//! - `server` (cfg `http`) - extracted env-var parser, validator, and
 //!   bind/serve loop for the `drevo-server` binary. Audited in
 //!   `audit/AUDIT-server.md` (task `00112`).
 //!
@@ -45,7 +45,7 @@
 //! vector search (Phase 12).
 #![warn(missing_docs)]
 
-/// The version string the running server reports — from `GET /`, `GET /status`,
+/// The version string the running server reports - from `GET /`, `GET /status`,
 /// the Bolt `server` agent, and the metrics `version` label.
 ///
 /// Injected at build time by `build.rs` as the `DREVO_VERSION` env var, which
@@ -72,7 +72,7 @@ pub const BUILD_DATE: Option<&str> = option_env!("DREVO_BUILD_DATE");
 /// backwards-incompatible-to-assume capability. Surfaced by `CALL drevo.info()`.
 pub const INFO_PROTOCOL: i64 = 1;
 
-/// Built-in global graph algorithms — Phase 15 task `00098`. Adds the two
+/// Built-in global graph algorithms - Phase 15 task `00098`. Adds the two
 /// whole-graph analytics algorithms that complement the local traversals in
 /// [`traversal`]: [`algorithms::pagerank`] (weighted PageRank centrality via
 /// power iteration) and [`algorithms::louvain`] (Louvain community detection by
@@ -83,7 +83,7 @@ pub const INFO_PROTOCOL: i64 = 1;
 /// always compiled, and WASM-safe; keeps its own [`algorithms::AlgorithmError`]
 /// channel for config validation rather than widening `DrevoError`.
 pub mod algorithms;
-/// HTTP API surface — axum router translating JSON requests into
+/// HTTP API surface - axum router translating JSON requests into
 /// `Drevo` calls. Compiled only with the `http` feature.
 #[cfg(feature = "http")]
 pub mod api;
@@ -98,7 +98,7 @@ pub mod encryption_cmd;
 /// built-in roles and the per-session [`privileges::SecurityContext`] the
 /// server checks every statement against.
 pub use drevo_auth::privileges;
-/// Bolt wire protocol — Phase 11. Task `00070` ships the bytes-on-the-
+/// Bolt wire protocol - Phase 11. Task `00070` ships the bytes-on-the-
 /// wire layer (PackStream codec, chunked framing, handshake + async
 /// TCP listener). The session layer (HELLO / RUN / PULL / DISCARD /
 /// RESET / GOODBYE on top of `Drevo`) lands in task `00071`.
@@ -108,11 +108,11 @@ pub mod bolt;
 /// Community summaries: the graph cut into communities written back as
 /// `:Community` nodes with summaries (`drevo.community.*`).
 pub(crate) mod community;
-/// Cypher query language — Phase 10. Today only the lexer (task `00061`)
+/// Cypher query language - Phase 10. Today only the lexer (task `00061`)
 /// is implemented; the parser, executor, and downstream clause handlers
 /// will land in tasks `00062` onwards.
 pub mod cypher;
-/// In-process registry of named native databases — the multi-database catalog
+/// In-process registry of named native databases - the multi-database catalog
 /// (issue #523). Holds several isolated [`native_service::NativeService`]
 /// instances behind an always-present default, with a create / list / drop
 /// lifecycle served over `/databases`. Gated on `http`: its only consumer is
@@ -120,7 +120,7 @@ pub mod cypher;
 /// module's `DEFAULT_DB`.
 #[cfg(feature = "http")]
 pub mod database_registry;
-/// JSON import / export — Phase 9 task `00055`. Defines the schema-versioned
+/// JSON import / export - Phase 9 task `00055`. Defines the schema-versioned
 /// `drevo-json-v1` wire format plus the `Drevo::export_json` / `import_json`
 /// methods. Filesystem-bound `*_to_path` / `*_from_path` variants are gated
 /// off WASM.
@@ -130,7 +130,7 @@ pub mod dump;
 /// `reqwest`-backed proxy backend is further gated on `embeddings-proxy`.
 #[cfg(feature = "http")]
 pub mod embeddings;
-/// The `GraphEngine` seam (RFC `docs/rfc-native-core.md`, issue #307) — the
+/// The `GraphEngine` seam (RFC `docs/rfc-native-core.md`, issue #307) - the
 /// graph-level abstraction (nodes / edges / adjacency) the query layers will
 /// depend on instead of a concrete store's KV-encoded internals. Introduced
 /// additively: `Drevo` implements it by delegating to its inherent
@@ -169,12 +169,12 @@ pub mod migrate;
 /// An identity provider's signing keys over HTTPS, for bearer-token logins.
 #[cfg(feature = "oidc")]
 pub mod oidc;
-/// Graph-RAG retrieval: `drevo.rag.retrieve` / `drevo.rag.context` — seeds,
+/// Graph-RAG retrieval: `drevo.rag.retrieve` / `drevo.rag.context` - seeds,
 /// expansion, ranking and a token-budgeted serialiser for LLM prompts.
 pub mod rag;
 /// Engine-independent storage & semantic report DTOs (`CompactReport`,
 /// `BloatReport`, `KeyspaceStat`, `SemanticReindexReport`,
-/// `SemanticTargetStatus`) — relocated out of `db` so they outlive the KV
+/// `SemanticTargetStatus`) - relocated out of `db` so they outlive the KV
 /// engine's retirement (epic #444).
 pub mod report;
 /// The server's users: the Cypher user-management commands (`CREATE USER`,
@@ -190,31 +190,31 @@ pub mod text2cypher;
 /// `TERMINATE TRANSACTIONS`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transactions;
-/// Compressed-Sparse-Row adjacency snapshot ([`csr::CsrAdjacency`]) — the
+/// Compressed-Sparse-Row adjacency snapshot ([`csr::CsrAdjacency`]) - the
 /// cache-friendly, lock-free substrate for whole-graph parallel scans and
 /// algorithms (issue #382, Phase 8). Re-exported from [`drevo-core`](drevo_core).
 pub use drevo_core::csr;
-/// Version-vector delta exchange ([`delta::VersionVector`] / [`delta::Delta`])
-/// — minimal-diff state transfer between replicas (issue #389, primitive #4).
+/// Version-vector delta exchange ([`delta::VersionVector`] / [`delta::Delta`]) -
+/// minimal-diff state transfer between replicas (issue #389, primitive #4).
 /// Re-exported from [`drevo-core`](drevo_core).
 pub use drevo_core::delta;
-/// Hybrid Logical Clock ([`hlc::Hlc`] / [`hlc::HlcClock`]) — the causal
+/// Hybrid Logical Clock ([`hlc::Hlc`] / [`hlc::HlcClock`]) - the causal
 /// versioning primitive for multi-writer / P2P convergence (issue #389,
 /// primitive #1). Re-exported from [`drevo-core`](drevo_core).
 pub use drevo_core::hlc;
 /// Last-Writer-Wins register + map CRDTs ([`lww::LwwRegister`] /
-/// [`lww::LwwMap`]) — the convergence primitive built on the HLC (issue #389,
+/// [`lww::LwwMap`]) - the convergence primitive built on the HLC (issue #389,
 /// primitive #2). Re-exported from [`drevo-core`](drevo_core).
 pub use drevo_core::lww;
-/// Core domain types ([`model::Node`], [`model::Edge`], …) — re-exported from
+/// Core domain types ([`model::Node`], [`model::Edge`], …) - re-exported from
 /// the extracted [`drevo-core`](drevo_core) crate so `drevo::model::…` and
 /// in-crate `crate::model::…` paths keep resolving unchanged.
 pub use drevo_core::model;
-/// WAL-shipping read replica ([`replica::NativeReplica`]) — an in-memory mirror
+/// WAL-shipping read replica ([`replica::NativeReplica`]) - an in-memory mirror
 /// of a source native engine kept converged by tailing its change-feed
 /// (issue #383, Phase 9). Re-exported from [`drevo-core`](drevo_core).
 pub use drevo_core::replica;
-/// Multi-version concurrency control — Phase 13 task `00081`. The
+/// Multi-version concurrency control - Phase 13 task `00081`. The
 /// transaction-id allocator + commit log ([`mvcc::TransactionManager`]),
 /// snapshot capture ([`mvcc::Snapshot`]), `xmin`/`xmax` tuple versioning
 /// ([`mvcc::Version`]), and the snapshot-isolated [`mvcc::VersionedStore`]
@@ -224,7 +224,7 @@ pub mod mvcc;
 /// Levenshtein edit distance (issue #593), re-exported from `drevo-core`.
 pub use drevo_core::levenshtein;
 /// The native in-memory graph engine (RFC `docs/rfc-native-core.md`, #307,
-/// Phase 2) — an implementation of [`engine::GraphEngine`] that holds nodes and
+/// Phase 2) - an implementation of [`engine::GraphEngine`] that holds nodes and
 /// edges directly with maintained adjacency, instead of encoding them as
 /// byte-keyed rows over a pluggable storage backend. The sole engine since the
 /// KV store was removed (epic #444).
@@ -232,13 +232,13 @@ pub use drevo_core::levenshtein;
 /// re-exported so `crate::native::…` / `drevo::native::…` paths keep resolving.
 pub use drevo_core::native;
 /// In-memory full-text index that tails a [`native::NativeGraph`]'s change-feed
-/// (RFC `docs/rfc-native-core.md`, #307, Phase 6.3) — the first secondary index
+/// (RFC `docs/rfc-native-core.md`, #307, Phase 6.3) - the first secondary index
 /// kept current off the graph seam, matching the KV store's trigram BM25
 /// full-text semantics so `fts.search` can be served on the native engine.
 /// Extracted to `drevo-core` (Phase 7 slice 7) and re-exported.
 pub use drevo_core::native_fts;
 /// In-memory secondary-label index that tails a [`native::NativeGraph`]'s
-/// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.6) — indexes the
+/// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.6) - indexes the
 /// `_labels` Cypher labels the primary-kind index does not cover, so a native
 /// `MATCH (n:Label)` gathers candidates from an index union instead of a full
 /// node scan. Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
@@ -268,17 +268,17 @@ pub mod grpc;
 pub mod https;
 /// HTTP surface for the durable-native server mode
 /// (`DREVO_ENGINE=native-durable`, RFC `docs/rfc-native-core.md`, #307,
-/// Phase 4/7) — a minimal router over [`native_service::NativeService`]:
+/// Phase 4/7) - a minimal router over [`native_service::NativeService`]:
 /// liveness, identity, and Cypher. Compiled with the `http` feature.
 pub mod native_api;
-/// Native read mirror — the engine-flip execution router (RFC
+/// Native read mirror - the engine-flip execution router (RFC
 /// `docs/rfc-native-core.md`, #307, Phase 6 slice A). Serves fresh read-only
 /// Cypher from a [`native::NativeGraph`] snapshot with the native indexes and
 /// value cache synced; routes every write (and any stale or non-mirrorable
 /// read) to the durable KV engine, detecting staleness via
 /// `Drevo::mutation_epoch`.
 /// Durable-native serving layer (RFC `docs/rfc-native-core.md`, #307,
-/// Phase 4/7) — a WAL-backed [`native::NativeGraph`] as the store of
+/// Phase 4/7) - a WAL-backed [`native::NativeGraph`] as the store of
 /// record, serving Cypher with the full native index stack (label,
 /// property, value cache, full-text) tailed off the change-feed. The
 /// step past the read mirror on the track toward retiring redb.
@@ -298,7 +298,7 @@ pub mod rpc_tls;
 /// behind `format-cbor` / `format-msgpack`.
 pub mod wire_format;
 /// In-memory property-value index that tails a [`native::NativeGraph`]'s
-/// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) — the native
+/// change-feed (RFC `docs/rfc-native-core.md`, #307, Phase 6.7) - the native
 /// counterpart of the KV `property_index`, so a `MATCH (n {key: value})`
 /// equality pattern resolves through an index instead of a full node scan.
 /// Extracted to `drevo-core` (Phase 7 slice 6) and re-exported.
@@ -306,11 +306,11 @@ pub use drevo_core::native_property_index;
 /// Named UNIQUE constraint definitions (issue #604).
 pub mod constraint_registry;
 /// Change-feed-maintained memo of the executor's `NodeValue` projection
-/// ([`native_value_cache::NativeValueCache`]) — a hit is validated against the
+/// ([`native_value_cache::NativeValueCache`]) - a hit is validated against the
 /// live record with `Arc::ptr_eq`, so a stale cache costs speed, never answers
 /// (RFC `docs/rfc-native-core.md`, #307).
 pub mod native_value_cache;
-/// Observability — Phase 15 task `00130`. A dependency-free, lock-free
+/// Observability - Phase 15 task `00130`. A dependency-free, lock-free
 /// metrics registry ([`observability::Registry`] with
 /// [`observability::Counter`] / [`observability::Gauge`] /
 /// [`observability::Histogram`]) that renders the Prometheus text exposition
@@ -320,19 +320,19 @@ pub mod native_value_cache;
 /// `tracing` event. Always compiled and WASM-safe; the `/metrics` HTTP route
 /// and per-request instrumentation live in [`api`] behind the `http` feature.
 pub mod observability;
-/// Named nested-path index definitions (issue #578) — what `CREATE INDEX …
+/// Named nested-path index definitions (issue #578) - what `CREATE INDEX …
 /// ON (n.a.b)` registers and `DROP INDEX` removes. Persisted in the
 /// `semantic.json` sidecar beside the WAL (see [`native_service`]).
 pub mod path_index_registry;
 /// Extracted env-var parser, validator, and bind/serve loop for the
 /// `drevo-server` binary. Compiled only with the `http` feature.
-/// Phase 14 task `00085` — cost-based query planner foundation: graph
+/// Phase 14 task `00085` - cost-based query planner foundation: graph
 /// statistics ([`planner::GraphStatistics`]) + cardinality estimation
 /// ([`planner::CardinalityEstimator`]) + the annotated plan tree
 /// ([`planner::PlanNode`], with [`planner::PlanNode::explain`]) + a bounded
 /// plan cache ([`planner::PlanCache`]). Task `00089` adds the memory budget &
 /// backpressure submodule ([`planner::MemoryBudget`],
-/// [`planner::estimate_peak_memory`], [`planner::Backpressure`]) — the OOM
+/// [`planner::estimate_peak_memory`], [`planner::Backpressure`]) - the OOM
 /// guard for memory-limited query execution. Dependency-free, always compiled,
 /// WASM-safe; not yet wired into the executor.
 pub mod planner;
@@ -340,17 +340,17 @@ pub mod planner;
 /// problem reports (#552). Compiled with the `http` feature.
 #[cfg(feature = "http")]
 pub mod problems;
-/// Semantic-index state machine (Phase 21) — the pure, dependency-free control
+/// Semantic-index state machine (Phase 21) - the pure, dependency-free control
 /// plane that governs whether and how a `(label, property)` is auto-embedded
 /// for semantic search. Off by default; serialisable for redb persistence and
 /// the `drevo.embeddings.*` Cypher procedures. Performs no embedding itself.
 pub mod semantic_index;
 #[cfg(feature = "http")]
 pub mod server;
-/// Phase 15 task `00096` — streaming ingestion. A transport-agnostic engine
+/// Phase 15 task `00096` - streaming ingestion. A transport-agnostic engine
 /// that turns a broker firehose of change events into graph mutations: an
 /// [`streaming::IngestConsumer`] polls a [`streaming::StreamSource`] (Kafka /
-/// NATS / CDC — drevo ships the in-memory [`streaming::MemorySource`]), decodes
+/// NATS / CDC - drevo ships the in-memory [`streaming::MemorySource`]), decodes
 /// each message into a tagged-JSON [`streaming::IngestEvent`], and applies it to
 /// an [`streaming::IngestSink`] (the reference [`streaming::MemoryGraphSink`])
 /// under an [`streaming::ErrorPolicy`], tracking [`streaming::Offset`]s for
@@ -363,13 +363,13 @@ pub mod traversal;
 /// Triggers: Cypher statements a database runs when a transaction commits,
 /// installed with `apoc.trigger.*`.
 pub mod trigger;
-/// Phase 12 task `00075` — vector value type + similarity / distance
+/// Phase 12 task `00075` - vector value type + similarity / distance
 /// functions (cosine, euclidean, dot product) over `f32` embeddings.
 /// Dependency-free and always compiled; the building block the HNSW
 /// index (`00076`) and joint graph+vector Cypher queries (`00077`) sit
 /// on top of.
 pub mod vector;
-/// Issue #532 — named vector-index registry. Binds a Neo4j-style index name
+/// Issue #532 - named vector-index registry. Binds a Neo4j-style index name
 /// (`CREATE VECTOR INDEX <name>` / `db.index.vector.queryNodes(<name>, …)`) to
 /// the `(label, property)` whose embeddings it targets, so the Neo4j GenAI stack
 /// round-trips against drevo unmodified. Persisted in the `semantic.json` sidecar
@@ -379,7 +379,7 @@ pub mod vector_index_registry;
 /// only with the `wasm` feature.
 #[cfg(feature = "wasm")]
 pub mod wasm;
-/// Phase 15 task `00092` — embedded Web UI handlers (HTML / JS / CSS
+/// Phase 15 task `00092` - embedded Web UI handlers (HTML / JS / CSS
 /// shipped via `include_str!`). Cytoscape.js graph explorer served by
 /// the same `axum` router as the HTTP API. Compiled only with the
 /// `http` feature.

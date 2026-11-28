@@ -1,9 +1,9 @@
 ---
 name: drevo-architecture
-description: Software architecture patterns, SOLID principles, anti-patterns, algorithm design — for Rust graph database development
+description: Software architecture patterns, SOLID principles, anti-patterns, algorithm design - for Rust graph database development
 ---
 
-# drevo — Architecture & Design Patterns
+# drevo - Architecture & Design Patterns
 
 ## When to Use
 Always. This skill defines the architectural philosophy for all drevo code.
@@ -12,14 +12,14 @@ Always. This skill defines the architectural philosophy for all drevo code.
 
 ## SOLID Principles (Adapted for Rust)
 
-### S — Single Responsibility
+### S - Single Responsibility
 - Each module/file has ONE reason to change
 - `cypher/lexer.rs` → only tokenization
 - `cypher/parser.rs` → only AST construction
 - `executor/mod.rs` → only query execution (not parsing, not storage)
 - **Violation signal**: "I need to change this file for an unrelated reason"
 
-### O — Open/Closed (via Traits)
+### O - Open/Closed (via Traits)
 - Open for extension, closed for modification
 - Use traits to define behavior boundaries:
   ```rust
@@ -31,12 +31,12 @@ Always. This skill defines the architectural philosophy for all drevo code.
 - New backends (in-memory, redb, future RocksDB) implement the trait without changing existing code
 - **In drevo**: `Value` enum is closed (we control variants), but operations on it are extensible via match arms
 
-### L — Liskov Substitution
+### L - Liskov Substitution
 - Any implementation of a trait must be substitutable
 - If `RedbBackend: StorageBackend` works, swapping to `MemoryBackend: StorageBackend` must also work
 - Contracts defined by trait docs, not just type signatures
 
-### I — Interface Segregation
+### I - Interface Segregation
 - Small, focused traits over fat interfaces
 - Don't force implementors to provide methods they don't need:
   ```rust
@@ -48,7 +48,7 @@ Always. This skill defines the architectural philosophy for all drevo code.
   trait Storage { fn get_node(); fn get_edge(); fn create_index(); fn run_query(); }
   ```
 
-### D — Dependency Inversion
+### D - Dependency Inversion
 - High-level modules (executor) should NOT depend on low-level modules (redb)
 - Both depend on abstractions (traits)
 - **In drevo**: `Drevo` depends on `StorageBackend` (abstraction), not on `redb::Database` directly
@@ -121,7 +121,7 @@ enum UndoOp {
 - Clone is acceptable for: small values (u64, bool), rare paths (error messages)
 
 ### 5. Unwrap in Library Code
-- ❌ `map.get("key").unwrap()` — panics on missing key
+- ❌ `map.get("key").unwrap()` - panics on missing key
 - ✅ `map.get("key").ok_or(DrevoError::MissingKey("key".into()))?`
 - `.unwrap()` is allowed ONLY in tests and benchmarks
 
@@ -156,7 +156,7 @@ enum UndoOp {
 ### Time Complexity Awareness
 | Operation | Acceptable | Unacceptable |
 |-----------|-----------|--------------|
-| Point lookup by ID | O(1) | — |
+| Point lookup by ID | O(1) | - |
 | Lookup by indexed property | O(1) | O(N) full scan |
 | BFS/DFS traversal | O(V + E) for reachable | O(V × E) naive |
 | Shortest path | O(V + E) BFS for unweighted | O(V³) Floyd-Warshall for sparse |
@@ -164,23 +164,23 @@ enum UndoOp {
 | Set membership (kinds) | O(1) HashSet | O(N) linear scan |
 
 ### Space Complexity
-- Adjacency list (current): O(V + E) — optimal for sparse graphs
-- Adjacency matrix: O(V²) — only for dense graphs (NOT our use case)
+- Adjacency list (current): O(V + E) - optimal for sparse graphs
+- Adjacency matrix: O(V²) - only for dense graphs (NOT our use case)
 - Property storage: O(P) where P = total properties across all nodes/edges
 
 ### Graph Algorithm Patterns
-1. **BFS** — shortest path (unweighted), level-order traversal, connected components
-2. **DFS** — cycle detection, topological sort, path existence
-3. **Bidirectional BFS** — shortest path optimization (meet in the middle)
-4. **Priority Queue (Dijkstra)** — weighted shortest path (already implemented in `traversal.rs`)
-5. **Union-Find** — connected components, cycle detection in undirected
-6. **PageRank** — iterative until convergence, damping factor 0.85
+1. **BFS** - shortest path (unweighted), level-order traversal, connected components
+2. **DFS** - cycle detection, topological sort, path existence
+3. **Bidirectional BFS** - shortest path optimization (meet in the middle)
+4. **Priority Queue (Dijkstra)** - weighted shortest path (already implemented in `traversal.rs`)
+5. **Union-Find** - connected components, cycle detection in undirected
+6. **PageRank** - iterative until convergence, damping factor 0.85
 
 ### Index Design
-- **B+tree (redb)**: ordered range scans, prefix queries — used for `kind_index`, `title_index`
+- **B+tree (redb)**: ordered range scans, prefix queries - used for `kind_index`, `title_index`
 - **HashMap**: O(1) exact match, no ordering
 - **Bitmap index**: fast set operations (AND/OR) for kind filtering
-- **Inverted index**: trigram FTS over titles + bodies — already implemented in `fts/`
+- **Inverted index**: trigram FTS over titles + bodies - already implemented in `fts/`
 - Rule: index anything queried in WHERE more than once per session
 
 ---
@@ -201,7 +201,7 @@ struct Node<'a> { neighbors: Vec<&'a Node<'a>> }
 struct Node { id: u64, neighbor_ids: Vec<u64> }
 struct Graph { nodes: HashMap<u64, Node> }
 ```
-This is exactly what drevo does — nodes reference each other by ID via the `out_edges` / `in_edges` adjacency tables.
+This is exactly what drevo does - nodes reference each other by ID via the `out_edges` / `in_edges` adjacency tables.
 
 ### Error Propagation Architecture
 ```
@@ -237,7 +237,7 @@ Each layer wraps/converts errors from the layer below.
 - Readers see snapshot at transaction start time
 - Writers create new versions, don't block readers
 - Garbage collect old versions after all readers finish
-- Tracked as Phase 13 tasks `00080`–`00084`
+- Tracked as Phase 13 tasks `00080`-`00084`
 
 ### LSM vs B+tree Trade-offs
 | | B+tree (redb) | LSM (RocksDB) |
@@ -245,7 +245,7 @@ Each layer wraps/converts errors from the layer below.
 | Read | Fast (1 seek) | Slower (multi-level) |
 | Write | Moderate (in-place) | Fast (sequential append) |
 | Space | Compact | Write amplification |
-| **Our choice** | ✅ redb | — |
+| **Our choice** | ✅ redb | - |
 
 We chose B+tree (redb) because graph workloads are read-heavy (traversals).
 

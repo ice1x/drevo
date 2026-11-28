@@ -1,9 +1,9 @@
-// drevo browser — pure graph helpers (layout geometry, node labels, which
+// drevo browser - pure graph helpers (layout geometry, node labels, which
 // label chips to show, what nodes are coloured by, hubs and label sizes,
 // the relationship-type chips),
 // split out of app.js so they can be unit-tested under `node --test` with no
 // DOM and no Cytoscape (see graph_math.test.js). The geometry drives the
-// interactive layout, so a regression here is a visible UI bug — hence a
+// interactive layout, so a regression here is a visible UI bug - hence a
 // real, executable test.
 //
 // UMD: attaches to the global `DrevoGraphMath` in the browser (loaded before
@@ -47,7 +47,7 @@
   // This backs the live drag simulation's PER-EDGE spring rest-length: giving
   // cola each edge's *own* current length as its rest length means every spring
   // starts exactly at rest, so a drag perturbs only the dragged node's
-  // neighbourhood and the rest of the graph stays put — instead of a single
+  // neighbourhood and the rest of the graph stays put - instead of a single
   // mean rest-length springing every off-mean edge (the hub's long and short
   // edges) toward one value and jolting the whole graph on the first tick.
   function segmentLength(segment, fallback) {

@@ -18,11 +18,11 @@
 //! - the double no-op (no embedder, unregistered label, `Manual` mode, no text);
 //! - the reindex backfill drains a pre-existing un-embedded target;
 //! - `drevo.semantic.status` surfaces the real backlog: `pending_count`,
-//!   `failed_count`, `last_error`, and the derived `degraded` state — including
+//!   `failed_count`, `last_error`, and the derived `degraded` state - including
 //!   an upstream outage during ingest and a pre-existing un-embedded backlog.
 //!
 //! Gated on `embeddings-proxy` like the KV suites: it exercises the real
-//! [`drevo::embeddings::SyncEmbedder`] against a local in-process axum stub — no
+//! [`drevo::embeddings::SyncEmbedder`] against a local in-process axum stub - no
 //! external network, deterministic. Run with:
 //!
 //! ```text
@@ -221,7 +221,7 @@ fn auto_embed_on_create_then_semantic_query_finds_it() {
     svc.create_node(new_node("Doc", "d1", Some("hello world")))
         .expect("create");
 
-    // Embedded server-side on ingest — no client round-trip.
+    // Embedded server-side on ingest - no client round-trip.
     assert_eq!(embedding_of(&svc, "d1"), Some(json!([1.0, 0.0])));
 
     // Full loop: query text embedded server-side retrieves the node.
@@ -480,7 +480,7 @@ fn outage_during_ingest_is_surfaced_as_degraded() {
     svc.semantic_register("Doc", "text", "embedding", IndexMode::Auto, None)
         .expect("register");
 
-    // Upstream is down during the write — the write still succeeds (fail-open),
+    // Upstream is down during the write - the write still succeeds (fail-open),
     // but the node lands un-embedded and the failure is tallied.
     healthy.store(false, Ordering::SeqCst);
     svc.create_node(new_node("Doc", "d1", Some("during outage")))

@@ -1,7 +1,7 @@
 # RFC: Per-entity conflict detection for explicit transactions (#749)
 
 **Status:** accepted 2026-10-25. D1: snapshot isolation by default, serializable on request (decided
-for the maintainer, reasons in issue #749); D2–D4 as proposed. All four slices are implemented:
+for the maintainer, reasons in issue #749); D2-D4 as proposed. All four slices are implemented:
 conflict sets and their history, shared id counters, the merge commit with `DREVO_TX_ISOLATION` and
 the per-transaction `drevo.isolation`, and the per-record two-phase-commit fence (§3.5). A prepare
 still requires that nothing committed since the transaction began.
@@ -67,9 +67,9 @@ transaction.) The set is small: a `HashSet<Key>` with `Key = Node(u64) | Edge(u6
 
 Two transactions **conflict** when any of these intersect:
 
-- `writes(A) ∩ writes(B)` — both touched the same node or relationship;
-- `deps(A) ∩ deletes(B)` — A added or changed a relationship whose endpoint B deleted;
-- `deletes(A) ∩ deps(B)` — the mirror image, so the answer does not depend on commit order.
+- `writes(A) ∩ writes(B)` - both touched the same node or relationship;
+- `deps(A) ∩ deletes(B)` - A added or changed a relationship whose endpoint B deleted;
+- `deletes(A) ∩ deps(B)` - the mirror image, so the answer does not depend on commit order.
 
 A node deletion in A cascades to the relationships A could see; a relationship B attached to that
 node after A's snapshot is caught by the third rule. Nothing else can make the merged graph violate
@@ -92,7 +92,7 @@ At commit, with the write lock held:
 2. Otherwise, every ring entry with `seq > base.commit_seq` is compared against the transaction's
    set with the rules of 3.1. The first intersection is a `Conflict`.
 3. If the ring no longer reaches back to `base.commit_seq` (the transaction outlived the history),
-   the commit is a `Conflict` too — conservative, retryable, and counted separately so an operator
+   the commit is a `Conflict` too - conservative, retryable, and counted separately so an operator
    can raise the history.
 
 The change feed was considered instead of a ring: it has the same ops, but its entries are full
@@ -115,7 +115,7 @@ m.commit_seq += 1;  *live = merged;  ring.push(...);
 
 `apply_wal_op` is the function that rebuilds a graph from its log at open, so adjacency, title and
 kind indexes, embeddings and the unique-constraint index are maintained by construction, and a
-replayed `UpsertEdge` re-interns its kind *name* in the merged state — the `u32` a transaction's
+replayed `UpsertEdge` re-interns its kind *name* in the merged state - the `u32` a transaction's
 working copy assigned is never trusted. The copy-on-write costs what any write after a snapshot
 costs today (a clone of `Inner`'s maps of `Arc`s, not of the records); it is paid only by commits
 that actually overlapped with another one.
@@ -160,7 +160,7 @@ whole-graph fence. Every Cypher write runs as a transaction, so it gets the per-
 
 Write-set detection gives **snapshot isolation**: two transactions that each *read* both nodes and
 each *write* one of them both commit (write skew), which today's rule forbids. Reads are not
-tracked — a `MATCH` scan reads the whole graph, so a read set would bring the whole-graph rule back.
+tracked - a `MATCH` scan reads the whole graph, so a read set would bring the whole-graph rule back.
 
 - **D1 (maintainer):** which default?
   - *Proposed:* snapshot isolation by default. It is what the Neo4j drivers and their users expect
@@ -182,11 +182,11 @@ tracked — a `MATCH` scan reads the whole graph, so a read set would bring the 
 
 ## 4. Decisions
 
-- **D1** default isolation — see 3.6, the maintainer's call.
-- **D2** per-transaction override via `tx_metadata` and `DREVO_TX_ISOLATION` — proposed.
-- **D3** node-level granularity (no property-level keys) — proposed; property-level keys would
+- **D1** default isolation - see 3.6, the maintainer's call.
+- **D2** per-transaction override via `tx_metadata` and `DREVO_TX_ISOLATION` - proposed.
+- **D3** node-level granularity (no property-level keys) - proposed; property-level keys would
   need per-property ops in the WAL and are not worth it for the measured workloads.
-- **D4** a bounded ring of commit keys rather than the change feed — proposed (3.2).
+- **D4** a bounded ring of commit keys rather than the change feed - proposed (3.2).
 
 ## 5. Tests
 
@@ -199,7 +199,7 @@ tracked — a `MATCH` scan reads the whole graph, so a read set would bring the 
   history message; prepared: a non-intersecting write commits while a transaction is prepared, an
   intersecting one gets `PreparedPending`; `commit_prepared` after unrelated commits applies the
   prepared write set; serializable mode reproduces today's behaviour.
-- Server (`tests/`): the Bolt experiment from #749 as an integration test — cross-order writes end
+- Server (`tests/`): the Bolt experiment from #749 as an integration test - cross-order writes end
   with one `Transaction.Outdated`; disjoint writes **both commit**; 8 writers × 10 managed
   transactions on disjoint nodes finish with **zero retries** and within 2× of the sequential time;
   `tx_metadata` isolation override; drevo-py `isolation=`.
@@ -209,7 +209,7 @@ tracked — a `MATCH` scan reads the whole graph, so a read set would bring the 
 ## 6. Slices
 
 1. **Measure first, no behaviour change:** `commit_seq`, conflict-set extraction from `ops`, the
-   ring, and `drevo_tx_conflicts_total{reason}` — including a `reason="would_pass"` count for
+   ring, and `drevo_tx_conflicts_total{reason}` - including a `reason="would_pass"` count for
    commits today's rule rejects that 3.1 would accept. Ship, run on live, read the counter.
 2. Shared id allocation (3.4). Behaviour-neutral; unlocks 3.
 3. Merge commit (3.3) behind the isolation switch of 3.6, default per D1. The integration tests of

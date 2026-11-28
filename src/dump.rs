@@ -1,7 +1,7 @@
-//! JSON import / export — Phase 9 hardening task `00055`. Phase 9 task
+//! JSON import / export - Phase 9 hardening task `00055`. Phase 9 task
 //! `00056` extends this module with read-only GraphML export
-//! (`Drevo::export_graphml` / `Drevo::export_graphml_to_path`
-//! — the filesystem variant is gated off WASM).
+//! (`Drevo::export_graphml` / `Drevo::export_graphml_to_path` -
+//! the filesystem variant is gated off WASM).
 //!
 //! Provides a human-readable, schema-versioned dump format that captures the
 //! entire graph (every node and every edge) and can be reloaded into any
@@ -25,11 +25,11 @@
 //!
 //! * `format` is mandatory; mismatches are rejected as
 //!   [`crate::dump::DumpError::UnsupportedFormat`].
-//! * `exported_at` is the producer's [`crate::model::now_ms`] at export time —
+//! * `exported_at` is the producer's [`crate::model::now_ms`] at export time -
 //!   informational only.
 //! * `next_node_id` / `next_edge_id` capture the producer's auto-increment
 //!   counter so the receiver can resume allocating ids above the imported
-//!   range — protects against id reuse after backup-restore.
+//!   range - protects against id reuse after backup-restore.
 //! * `nodes` and `edges` carry the full struct payloads with every field
 //!   preserved (id, uuid, timestamps, kind, body, body_html, properties,
 //!   weight). The receiver uses these verbatim and rebuilds every secondary
@@ -55,7 +55,7 @@
 //! ## WASM
 //!
 //! `Drevo::export_json` and `Drevo::import_json` are
-//! available on every target — they operate on `String` only and do not
+//! available on every target - they operate on `String` only and do not
 //! touch the filesystem. `Drevo::export_json_to_path` /
 //! `Drevo::import_json_from_path` are gated behind
 //! `cfg(not(target_arch = "wasm32"))` because `std::fs` is not available in
@@ -64,7 +64,7 @@
 //! ## GraphML export / import (tasks `00056` / `00057`)
 //!
 //! `Drevo::export_graphml` emits the graph as a GraphML 1.0
-//! document — the ubiquitous XML interchange format consumed by yEd, Gephi,
+//! document - the ubiquitous XML interchange format consumed by yEd, Gephi,
 //! NetworkX, Cytoscape, igraph, and a long tail of network-analysis tooling.
 //! `Drevo::import_graphml` is its inverse: it parses a GraphML
 //! document (drevo's own output, or any GraphML that follows the same
@@ -131,8 +131,8 @@ use std::collections::HashMap;
 use crate::error::{DrevoError, Result};
 use crate::model::{new_uuid_v7, now_ms, Edge, NewEdge, Node, Properties};
 
-// The `drevo-json-v1` wire-format types — `FORMAT_V1`, `Dump`, `ImportReport`,
-// and `DumpError` — were extracted to the `drevo-core` crate (Phase 7 slice 4)
+// The `drevo-json-v1` wire-format types - `FORMAT_V1`, `Dump`, `ImportReport`,
+// and `DumpError` - were extracted to the `drevo-core` crate (Phase 7 slice 4)
 // so the native engine can produce and consume them directly. They are
 // re-exported here so existing `crate::dump::Dump` / `drevo::dump::Dump` paths
 // keep resolving unchanged; the KV-specific JSON/GraphML rendering + parsing
@@ -143,7 +143,7 @@ pub use drevo_core::dump::{Dump, DumpError, ImportReport, FORMAT_V1};
 ///
 /// Kept in this crate (alongside `DrevoError`) so the KV file-I/O methods below
 /// can `?`-lift a [`DumpError`] straight to [`DrevoError::Io`], preserving the
-/// human-readable message — `{err}` includes the original failure mode. (The
+/// human-readable message - `{err}` includes the original failure mode. (The
 /// core crate has its own `From<DumpError> for CoreError` for the native path.)
 impl From<DumpError> for DrevoError {
     fn from(err: DumpError) -> Self {
@@ -151,7 +151,7 @@ impl From<DumpError> for DrevoError {
     }
 }
 
-/// Parse a GraphML document into node/edge records — the engine-independent
+/// Parse a GraphML document into node/edge records - the engine-independent
 /// half of `Drevo::import_graphml`, shared with the
 /// durable-native import (`crate::native_service`). `db_max_node` /
 /// `db_max_edge` are the target store's current maximum ids, used to
@@ -366,7 +366,7 @@ pub(crate) fn render_graphml(nodes: &[Node], edges: &[Edge]) -> Result<String> {
          http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd\">\n",
     );
 
-    // Key declarations — fixed schema. `attr.type` matches the GraphML
+    // Key declarations - fixed schema. `attr.type` matches the GraphML
     // permitted-types vocabulary (`string` / `long` / `double`).
     for (id, name) in NODE_KEYS {
         out.push_str("  <key id=\"");
@@ -401,7 +401,7 @@ pub(crate) fn render_graphml(nodes: &[Node], edges: &[Edge]) -> Result<String> {
     Ok(out)
 }
 
-/// Fixed set of node `<key>` declarations — (key id, human-readable name).
+/// Fixed set of node `<key>` declarations - (key id, human-readable name).
 /// Edge-key ids are prefixed `d_e_` so they never collide with node-key ids.
 const NODE_KEYS: &[(&str, &str)] = &[
     ("d_uuid", "uuid"),
@@ -414,7 +414,7 @@ const NODE_KEYS: &[(&str, &str)] = &[
     ("d_props", "properties"),
 ];
 
-/// Fixed set of edge `<key>` declarations — (key id, human-readable name).
+/// Fixed set of edge `<key>` declarations - (key id, human-readable name).
 const EDGE_KEYS: &[(&str, &str)] = &[
     ("d_e_uuid", "uuid"),
     ("d_e_kind", "kind"),
@@ -502,7 +502,7 @@ fn uuid_to_hyphenated(bytes: &[u8; 16]) -> String {
 
 /// Format an edge weight for GraphML `attr.type="double"` element text.
 ///
-/// Non-finite values are not representable by GraphML's `double` schema —
+/// Non-finite values are not representable by GraphML's `double` schema -
 /// emit them as their JSON-compatible string ("NaN" / "Infinity" / "-Infinity")
 /// so downstream tools can detect the anomaly instead of receiving an empty
 /// or malformed `<data>` value.
@@ -544,14 +544,14 @@ fn push_escaped(out: &mut String, s: &str) {
 }
 
 // ---------------------------------------------------------------------
-// GraphML parsing (task 00057) — a small, dependency-free XML reader
+// GraphML parsing (task 00057) - a small, dependency-free XML reader
 // tailored to the GraphML the exporter emits. The workspace deliberately
 // avoids a general XML crate ("embeddable, no external system deps"), and the
 // exporter escapes every `<`/`>`/`&` in element text, so a structural
 // scanner is safe: the only real tags inside the body are the GraphML ones.
 // ---------------------------------------------------------------------
 
-/// A minimal parsed XML element — just enough tree for the GraphML importer.
+/// A minimal parsed XML element - just enough tree for the GraphML importer.
 struct XmlElement {
     name: String,
     attrs: Vec<(String, String)>,
@@ -870,7 +870,7 @@ fn fold_unknown_property(properties: &mut Properties, name: &str, value: &str) {
 }
 
 /// Helper used by `NewEdge::from(&Edge)` round-trips in tests / external
-/// tooling — exposed to keep the wire format documentation grounded in real
+/// tooling - exposed to keep the wire format documentation grounded in real
 /// code paths.
 #[allow(dead_code)]
 fn edge_to_new_edge(edge: &Edge) -> NewEdge {
@@ -904,12 +904,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // GraphML export (task 00056) — unit tests
+    // GraphML export (task 00056) - unit tests
     // -----------------------------------------------------------------
 
     #[test]
     fn graphml_weight_handles_nonfinite_values() {
-        // Direct test of the format helper — we cannot create_edge with NaN
+        // Direct test of the format helper - we cannot create_edge with NaN
         // (the DB rejects it via InvalidWeight), but render_graphml may be
         // called from external pipelines or after future migrations.
         assert_eq!(format_weight(1.5_f32), "1.5");
@@ -946,7 +946,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // GraphML import (task 00057) — unit tests
+    // GraphML import (task 00057) - unit tests
     // -----------------------------------------------------------------
 
     #[test]
@@ -959,7 +959,7 @@ mod tests {
         assert_eq!(xml_unescape("{&quot;k&quot;:1}").unwrap(), "{\"k\":1}");
         // Numeric character references (decimal + hex).
         assert_eq!(xml_unescape("&#65;&#x42;&#x1F333;").unwrap(), "AB🌳");
-        // No ampersand — identity fast path.
+        // No ampersand - identity fast path.
         assert_eq!(xml_unescape("plain text").unwrap(), "plain text");
     }
 

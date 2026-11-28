@@ -1,4 +1,4 @@
-"""Unit tests for `drevo.dbapi` — the PEP 249 (DB-API 2.0) module (#555).
+"""Unit tests for `drevo.dbapi` - the PEP 249 (DB-API 2.0) module (#555).
 
 The query language is Cypher. Parameters are named and written in Cypher's
 own `$name` syntax (PEP 249's `:name` would collide with `:Label`). A

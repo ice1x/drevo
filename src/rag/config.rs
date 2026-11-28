@@ -51,7 +51,7 @@ pub const CONFIG_KEYS: &str =
      globalThreshold, globalHint, communityLayer, session, trace";
 
 /// The labels left out of the expansion unless `excludeLabels` says
-/// otherwise: conversation and bookkeeping nodes, not knowledge — and
+/// otherwise: conversation and bookkeeping nodes, not knowledge - and
 /// community summaries, which the global scope reads on its own.
 pub(crate) const DEFAULT_EXCLUDE_LABELS: [&str; 6] = [
     "Message",
@@ -66,7 +66,7 @@ pub(crate) const DEFAULT_EXCLUDE_LABELS: [&str; 6] = [
 /// context trace repeats the question it answered and a queued ingest item
 /// holds the text it is about to turn into knowledge, so indexed they would
 /// be hits for that same text. `Message` and `ReasoningTrace` stay
-/// searchable — `drevo.memory.recall` is built on them.
+/// searchable - `drevo.memory.recall` is built on them.
 pub(crate) const FULL_TEXT_SKIPPED_LABELS: [&str; 3] = ["ContextTrace", "IngestJob", "IngestItem"];
 
 /// The smallest `tokenBudget` accepted.
@@ -172,7 +172,7 @@ pub enum Scope {
     /// The best-matching community summaries and their best-ranked members.
     Global,
     /// Global for a question that finds no seed, matches the global hint,
-    /// or — when both search legs ran — whose best seed scores below the
+    /// or - when both search legs ran - whose best seed scores below the
     /// global threshold; else local.
     Auto,
 }
@@ -461,7 +461,7 @@ impl RagConfig {
     /// The effective config as a JSON object: every key of
     /// [`CONFIG_KEYS`] but `session` and `trace`, with its value or default.
     /// Read back with [`from_value`](Self::from_value) it gives the same
-    /// config without a session or trace — what a context trace stores to
+    /// config without a session or trace - what a context trace stores to
     /// replay the call.
     ///
     /// ```

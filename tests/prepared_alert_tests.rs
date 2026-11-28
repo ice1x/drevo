@@ -1,4 +1,4 @@
-//! Alerting on abandoned prepared transactions — #556 slice 2 (RFC §2.4, D2).
+//! Alerting on abandoned prepared transactions - #556 slice 2 (RFC §2.4, D2).
 //!
 //! A prepared transaction is never resolved automatically, but while it
 //! exists every write is refused, so an abandoned one must be loud: once it

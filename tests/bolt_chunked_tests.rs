@@ -1,11 +1,11 @@
-//! Integration tests for Bolt chunked message framing — Phase 11
+//! Integration tests for Bolt chunked message framing - Phase 11
 //! task `00070`.
 //!
 //! On the wire every Bolt message is split into one or more *chunks*,
 //! each prefixed by a 16-bit big-endian length. The end of a logical
 //! message is signalled by a zero-length chunk (the two bytes `0x00
 //! 0x00`). The same chunked stream carries handshake-completion HELLO,
-//! RUN, PULL, etc. — so the codec must work on any reader / writer.
+//! RUN, PULL, etc. - so the codec must work on any reader / writer.
 
 #![cfg(not(target_arch = "wasm32"))]
 

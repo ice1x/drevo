@@ -1,4 +1,4 @@
-# AUDIT-fts — Phase 8.5 task `00108`
+# AUDIT-fts - Phase 8.5 task `00108`
 
 **Scope.** `src/fts/*` (~540 LOC across `tokenizer.rs`, `index.rs`,
 `mod.rs`) plus the FTS-touching paths in `src/db.rs`:
@@ -8,27 +8,27 @@
 - `index::index_node`, `index::deindex_node`,
   `index::node_ids_for_trigram`, `index::posting_list_len`,
   `index::intersect_trigrams`.
-- `db.rs` — `Drevo::create_node` / `update_node` / `delete_node` FTS
+- `db.rs` - `Drevo::create_node` / `update_node` / `delete_node` FTS
   hooks, `fts_node_ids_for_trigram`, `fts_intersect_trigrams`,
   `search_fts`, `list_recent` + `updated_idx` maintenance.
 
 **Rules verified against.**
 
-- `drevo-database` §"FTS index" — trigram inverted index;
+- `drevo-database` §"FTS index" - trigram inverted index;
   `lowercase + strip punctuation; CJK → bigrams`;
   *intersect posting lists, rank by TF-IDF*.
-- `drevo-database` §"updated_idx" — every node mutation updates the
+- `drevo-database` §"updated_idx" - every node mutation updates the
   inverted-timestamp index.
-- `drevo-database` §"Performance Watch List" — `search_fts` on broad
+- `drevo-database` §"Performance Watch List" - `search_fts` on broad
   queries ~800 ms vs 50 ms target; documents the gap and the
   candidate mitigations.
 - `drevo-database` §"Invariants" #2 (cascading delete must remove
   FTS entries) and #3 (FTS reindex on update).
-- `drevo-tdd` §"Property-based tests for invariants" — algorithmic
+- `drevo-tdd` §"Property-based tests for invariants" - algorithmic
   code (tokenizer) gets property-style coverage.
-- `drevo-tdd` §"Edge cases mandatory" — Unicode (CJK, emoji,
+- `drevo-tdd` §"Edge cases mandatory" - Unicode (CJK, emoji,
   Cyrillic).
-- `drevo-rust` §"Error Handling" — no `unwrap()` / `expect()` in
+- `drevo-rust` §"Error Handling" - no `unwrap()` / `expect()` in
   library code (`#[cfg(test)]` exempt); `Result<T, DrevoError>`
   through every fallible path.
 - `drevo-rust` common pitfalls #1 (cascade-delete must visit
@@ -42,7 +42,7 @@ all features).
 
 **Cross-links closed.**
 
-- `00106` invariant #4 (`updated_idx` parity) — extended here with
+- `00106` invariant #4 (`updated_idx` parity) - extended here with
   a *FTS-adjacent* mutation stream that specifically exercises
   title / body updates, the same call sites that touch
   `fts_index::deindex_node` / `index_node`.
@@ -51,7 +51,7 @@ all features).
 
 ## Findings
 
-### F1 — `search_fts` rustdoc disagrees with the implementation   ❌ → ✅ fixed in this PR
+### F1 - `search_fts` rustdoc disagrees with the implementation   ❌ → ✅ fixed in this PR
 
 `Drevo::search_fts` rustdoc described the IDF as:
 
@@ -67,7 +67,7 @@ The code computes:
 let idf = if df > 0.0 { (1.0 + total_nodes / df).ln() } else { 0.0 };
 ```
 
-That is `ln(1 + N/df)` — a smoothed variant that keeps the IDF
+That is `ln(1 + N/df)` - a smoothed variant that keeps the IDF
 strictly positive when every node contains the trigram (`df == N`).
 The plain `ln(N/df)` would collapse to `ln(1) = 0` in that case and
 silently drop *every* result, breaking the principle of least
@@ -76,23 +76,23 @@ astonishment for narrow corpora.
 **Action.** Rustdoc rewritten to describe the *implemented* formula
 ([src/db.rs:621-655](src/db.rs:621)), include the smoothing
 rationale (`df == N` case), and forward-link to the audit's
-performance section. Behaviour is unchanged — this is a documentation
+performance section. Behaviour is unchanged - this is a documentation
 fix, not a ranking change.
 
 **Pinned by test.**
 
-- `search_fts_smoothed_idf_is_positive_when_df_equals_n` —
+- `search_fts_smoothed_idf_is_positive_when_df_equals_n` -
   3 nodes that all contain "rust", search for "rust", expect 3
   positive-score results. The naive-IDF semantics would silently
   return zero results; the smoothed semantics return 3.
 
 A follow-up refactor (`#follow-up-bm25`) is recorded for swapping in
-BM25 — that change SHOULD update this test as part of the deliberate
+BM25 - that change SHOULD update this test as part of the deliberate
 ranking-formula migration.
 
 ---
 
-### F2 — Tokenizer is NFC-naive on combining diacritics   ❌ → 📝 pinned + flagged for follow-up
+### F2 - Tokenizer is NFC-naive on combining diacritics   ❌ → 📝 pinned + flagged for follow-up
 
 The `drevo-database` skill specifies *"lowercase, strip punctuation;
 CJK characters become bigrams"* but does not require Unicode
@@ -117,9 +117,9 @@ assert_ne!(precomposed, decomposed,
 
 A future tokenizer refactor that adopts NFC will flip the assertion,
 which is the correct signal: ranking-correctness changes should be
-visible, deliberate code diffs — never silent.
+visible, deliberate code diffs - never silent.
 
-**No-refactor — reason.** NFC normalisation requires an additional
+**No-refactor - reason.** NFC normalisation requires an additional
 ~150 KB of Unicode tables (via `unicode-normalization`) and a per-token
 allocation. Both costs are acceptable in principle but materially
 larger than the audit task's scope. The `00108` task spec calls out
@@ -128,36 +128,36 @@ Phase 9 task `00058` fuzz target). Logging here, not landing.
 
 ---
 
-### F3 — `search_fts` performance gap on broad queries   ⏸ documented, deferred per task scope
+### F3 - `search_fts` performance gap on broad queries   ⏸ documented, deferred per task scope
 
 `drevo-database` §"Performance Watch List" cites the measured 800 ms
 vs 50 ms target on broad single-token queries against ~10k nodes and
 identifies the bottleneck as `scan_prefix` on large posting lists.
 The `00108` task spec explicitly states: *"landing the fix is out of
-scope for the audit task — flag for a separate refactor."*
+scope for the audit task - flag for a separate refactor."*
 
 **Bottleneck breakdown** (verified by reading
 [src/db.rs:637-712](src/db.rs:637)):
 
-1. **`scan_prefix(PREFIX_NODE)` per query** to compute `total_nodes`
-   — O(N) on a B-tree scan of every node bytes payload, just to get
+1. **`scan_prefix(PREFIX_NODE)` per query** to compute `total_nodes` -
+   O(N) on a B-tree scan of every node bytes payload, just to get
    a count. For 10k nodes with ~1 KB Markdown bodies this is the
    dominant cost on a cold cache.
 2. **`extract_trigrams(&node.title, &node.body)` per candidate** to
-   compute TF — runs the full normalise → trigram pipeline twice
+   compute TF - runs the full normalise → trigram pipeline twice
    per node (once at index time, again at score time).
-3. **`fts_index::posting_list_len` per query trigram** — re-issues
+3. **`fts_index::posting_list_len` per query trigram** - re-issues
    `scan_prefix(fts:{trigram}:)` even though the same prefix was
    already walked during `intersect_trigrams`.
 4. **`ids.contains(id)` in `intersect_trigrams`** is O(|ids|) per
-   element — overall O(k · |posting|²) intersection. A `HashSet`
+   element - overall O(k · |posting|²) intersection. A `HashSet`
    over the smallest list would be O(k · |posting|).
 
 **Mitigations (recorded as `#follow-up-fts-perf`):**
 
 | Mitigation | Expected gain | Risk |
 |------------|---------------|------|
-| Persisted `meta:node_count` updated on create / delete | Replaces O(N) `scan_prefix` with O(1) `get` | Must be transactional with the `nodes` write — crash-safety story to design |
+| Persisted `meta:node_count` updated on create / delete | Replaces O(N) `scan_prefix` with O(1) `get` | Must be transactional with the `nodes` write - crash-safety story to design |
 | Cached node-trigram set on the `Node` struct (or separate `node_trigrams:{id}` value) | Skips second `extract_trigrams` per candidate; ~2× speedup | +O(node_size) storage per node |
 | `intersect_trigrams` via smallest-list-first + `HashSet` | Reduces intersection from O(k · M²) to O(k · M) | Pure code change |
 | Cached `posting_list_len` per trigram in a meta column | Removes per-query DF scan | Must invalidate on every index_node / deindex_node |
@@ -170,10 +170,10 @@ crash-safety stories change under MVCC.
 
 ---
 
-### F4 — Posting-list intersection AND semantics are uncovered by direct tests   ❌ → ✅ fixed in this PR
+### F4 - Posting-list intersection AND semantics are uncovered by direct tests   ❌ → ✅ fixed in this PR
 
 `drevo-database` §"FTS index" specifies *"intersect posting lists,
-rank by TF-IDF"* — i.e., **AND** semantics across query trigrams.
+rank by TF-IDF"* - i.e., **AND** semantics across query trigrams.
 The intersection lives in `fts_index::intersect_trigrams` and is
 correct, but the existing test suite only exercised it through
 `search_fts` end-to-end; the AND-semantics, idempotence, and
@@ -192,7 +192,7 @@ swap (`#follow-up-bm25`) is a visible diff, not silent.
 
 ---
 
-### F5 — Tokenizer Unicode-class property coverage was incomplete   ❌ → ✅ fixed in this PR
+### F5 - Tokenizer Unicode-class property coverage was incomplete   ❌ → ✅ fixed in this PR
 
 The `00108` task spec calls for *"property-test on Unicode classes
 (CJK / Cyrillic / emoji / combining diacritics / RTL)"*.
@@ -201,16 +201,16 @@ The `00108` task spec calls for *"property-test on Unicode classes
 
 | Class | Covered before audit |
 |-------|----------------------|
-| Latin (mixed case, punctuation, digits) | ✅ — `fts_tokenizer_tests.rs` |
-| CJK (Han / Hiragana / Katakana / Hangul) | ✅ — `fts_tokenizer_tests.rs` + `fts_recall_tests.rs` |
-| Arabic | ✅ — `fts_recall_tests.rs::search_fts_arabic_text` |
-| Korean (Hangul) | ✅ — `fts_recall_tests.rs::search_fts_korean_query` |
-| Combining diacritics | partial (no-crash only) — `fts_recall_tests.rs` |
-| ZWJ / ZWNJ | partial (no-crash only) — `fts_recall_tests.rs` |
-| Emoji | partial (emoji-only query) — `fts_recall_tests.rs` |
-| **Cyrillic** | ❌ — none |
-| **Hebrew (RTL)** | ❌ — none |
-| **Tokenizer determinism property** | ❌ — none |
+| Latin (mixed case, punctuation, digits) | ✅ - `fts_tokenizer_tests.rs` |
+| CJK (Han / Hiragana / Katakana / Hangul) | ✅ - `fts_tokenizer_tests.rs` + `fts_recall_tests.rs` |
+| Arabic | ✅ - `fts_recall_tests.rs::search_fts_arabic_text` |
+| Korean (Hangul) | ✅ - `fts_recall_tests.rs::search_fts_korean_query` |
+| Combining diacritics | partial (no-crash only) - `fts_recall_tests.rs` |
+| ZWJ / ZWNJ | partial (no-crash only) - `fts_recall_tests.rs` |
+| Emoji | partial (emoji-only query) - `fts_recall_tests.rs` |
+| **Cyrillic** | ❌ - none |
+| **Hebrew (RTL)** | ❌ - none |
+| **Tokenizer determinism property** | ❌ - none |
 
 **Action.** Six new Unicode-class tests in `tests/fts_audit_tests.rs`:
 
@@ -222,15 +222,15 @@ The `00108` task spec calls for *"property-test on Unicode classes
 | `tokenizer_emoji_are_stripped` | Emoji become spaces; emoji-only input → zero trigrams |
 | `tokenizer_zero_width_chars_become_word_breaks` | ZWJ / ZWNJ act as word boundaries (not preserved) |
 | `tokenizer_cjk_bigrams_only_between_consecutive_cjk` | Bigrams only fire for CJK + CJK pairs, not at Latin/CJK boundaries |
-| `tokenizer_extract_trigrams_is_deterministic_on_random_unicode` | Four `xorshift32` seeds × 200-char strings — `extract_trigrams` is a pure function; all outputs are length 2 (CJK bigram) or 3 |
+| `tokenizer_extract_trigrams_is_deterministic_on_random_unicode` | Four `xorshift32` seeds × 200-char strings - `extract_trigrams` is a pure function; all outputs are length 2 (CJK bigram) or 3 |
 
 ---
 
-### F6 — FTS reindex invariant had no property-style fuzzer   ❌ → ✅ fixed in this PR
+### F6 - FTS reindex invariant had no property-style fuzzer   ❌ → ✅ fixed in this PR
 
-`drevo-database` invariant #3 — *"FTS reindex on update: changing
+`drevo-database` invariant #3 - *"FTS reindex on update: changing
 `title` or `body` requires deindexing the old text and indexing the
-new"* — and `drevo-rust` common pitfall #2 *"forgetting to reindex
+new"* - and `drevo-rust` common pitfall #2 *"forgetting to reindex
 on update"* are tested at fixed points (single update, then read)
 but never under a *random mutation stream*. A regression that
 leaked stale trigrams from a deleted node, or missed an entry after
@@ -256,7 +256,7 @@ update reindexing only one half of the title-body pair).
 
 ---
 
-### F7 — `updated_idx` parity under FTS-touching mutations   ❌ → ✅ fixed in this PR
+### F7 - `updated_idx` parity under FTS-touching mutations   ❌ → ✅ fixed in this PR
 
 `00106` introduced `Drevo::verify_invariants()` which already checks
 the four storage-layer invariants including `updated_idx` parity.
@@ -283,22 +283,22 @@ would not catch.
 
 ---
 
-### F8 — `search_fts` ordering determinism + tie-break stability   ❌ → ✅ fixed in this PR
+### F8 - `search_fts` ordering determinism + tie-break stability   ❌ → ✅ fixed in this PR
 
 The existing search tests assert membership (`results.len() == N`,
 `results.contains(...)`) but do not lock the *exact* ordering of
 the result vector. The implementation has a documented tie-break
-(`score desc, then id asc`) — a future change to that tie-break,
+(`score desc, then id asc`) - a future change to that tie-break,
 say `id desc` for "most recently inserted wins", would slip past
 the current suite.
 
 **Action.** Two new tests in `tests/fts_audit_tests.rs`:
 
-- `search_fts_results_are_deterministic_across_runs` — same corpus +
+- `search_fts_results_are_deterministic_across_runs` - same corpus +
   same query produces byte-identical `ScoredNode` vectors across
   repeated calls, including bit-identical `f32` scores
   (`score.to_bits() == score.to_bits()`).
-- `search_fts_ordering_stable_on_tied_scores` — two nodes with
+- `search_fts_ordering_stable_on_tied_scores` - two nodes with
   identical TF-IDF scores resolve to ascending node id, in
   insertion order.
 
@@ -311,21 +311,21 @@ task verifies six universal rules. Status for the FTS module:
 
 | Rule | Source | Status |
 |------|--------|--------|
-| No `unwrap()` / `expect()` in library code | `drevo-rust` §"Error Handling" | ✅ — only `#[cfg(test)]` blocks use `unwrap()` (notably `tests/fts_audit_tests.rs` per the same exemption) |
-| No `unsafe` without justification | `drevo-rust` §"Code Style" | ✅ — zero `unsafe` in `src/fts/*` |
-| Every `pub` item documented | `drevo-rust` §"Code Style" | ✅ — `tokenizer.rs` and `index.rs` document every `pub` / `pub(crate)` item; `search_fts` rustdoc rewritten in F1 |
-| Max 3 levels of indentation per fn | `drevo-rust` §"Code Style" | ✅ — deepest function is `intersect_trigrams` at 3 levels |
-| Every fallible `pub fn` returns `Result<T, DrevoError>` | `drevo-rust` §"Error Handling" | ✅ — all FTS-index functions return `Result<_, DrevoError>` |
-| Test data in English (or documented Unicode test case) | `drevo-tdd` §"Conventions"; `CLAUDE.md` | ✅ — non-English data is confined to Unicode-class tests with a `// Unicode test case` comment per call site |
+| No `unwrap()` / `expect()` in library code | `drevo-rust` §"Error Handling" | ✅ - only `#[cfg(test)]` blocks use `unwrap()` (notably `tests/fts_audit_tests.rs` per the same exemption) |
+| No `unsafe` without justification | `drevo-rust` §"Code Style" | ✅ - zero `unsafe` in `src/fts/*` |
+| Every `pub` item documented | `drevo-rust` §"Code Style" | ✅ - `tokenizer.rs` and `index.rs` document every `pub` / `pub(crate)` item; `search_fts` rustdoc rewritten in F1 |
+| Max 3 levels of indentation per fn | `drevo-rust` §"Code Style" | ✅ - deepest function is `intersect_trigrams` at 3 levels |
+| Every fallible `pub fn` returns `Result<T, DrevoError>` | `drevo-rust` §"Error Handling" | ✅ - all FTS-index functions return `Result<_, DrevoError>` |
+| Test data in English (or documented Unicode test case) | `drevo-tdd` §"Conventions"; `CLAUDE.md` | ✅ - non-English data is confined to Unicode-class tests with a `// Unicode test case` comment per call site |
 
 ---
 
 ## Refactor follow-ups not landed in this PR
 
-These are NOT failures of the audit — they are deliberate deferrals
+These are NOT failures of the audit - they are deliberate deferrals
 per the `00108` task spec.
 
-### `#follow-up-bm25` — strategy trait for ranking
+### `#follow-up-bm25` - strategy trait for ranking
 
 Task spec: *"extract scoring into a strategy trait so BM25 (`drevo-database`
 'Optional Phase 2') can swap in"*.
@@ -357,29 +357,29 @@ would need a `TfIdfSmoothed` parameterisation.
    F1 / F8. The cost of introducing the trait without a second
    scorer is YAGNI per `drevo-architecture` anti-pattern #2.
 
-### `#follow-up-fts-perf` — broad-query latency
+### `#follow-up-fts-perf` - broad-query latency
 
 Task spec: *"document the gap and propose mitigation [...]; landing
 the fix is out of scope for the audit task"*. Captured in F3 above
 with a five-row mitigation table.
 
-### `#follow-up-tokenizer-fuzz` — fuzz target
+### `#follow-up-tokenizer-fuzz` - fuzz target
 
 Task spec: *"tokenizer fuzz target (overlaps with Phase 9 task
-`00058` — clarify division of labour)"*.
+`00058` - clarify division of labour)"*.
 
 **Division of labour clarified.** `00058` owns the `cargo fuzz`
 harness (afl-style coverage-guided fuzzer with `libFuzzer`). The
 property-style fuzzer added by `00108` in
 `tests/fts_audit_tests.rs::tokenizer_extract_trigrams_is_deterministic_on_random_unicode`
-uses an `xorshift32` seed — same precedent as `00106` (DB invariant
+uses an `xorshift32` seed - same precedent as `00106` (DB invariant
 fuzzer) and `00107` (traversal cross-algorithm fuzzer). `00058` will
 upgrade these to coverage-guided fuzzing without changing the
 existing property assertions.
 
 **Landed (2026-05-20, task `00058`).** ✅ The `fuzz/` sub-crate ships
-three `cargo-fuzz` + `libFuzzer` targets — `fuzz_normalize`,
-`fuzz_trigrams`, `fuzz_extract_trigrams` — each carrying a UTF-8
+three `cargo-fuzz` + `libFuzzer` targets - `fuzz_normalize`,
+`fuzz_trigrams`, `fuzz_extract_trigrams` - each carrying a UTF-8
 seed corpus that exercises the same input classes as the `00108`
 property-style fuzzer (ASCII, CJK, Cyrillic, Latin-1, Turkish
 dotless I, emoji, combining diacritics, digits, control chars,
@@ -388,15 +388,15 @@ punctuation runs). The assertion bodies are mirrored in
 test` matrix replays the same invariants on every PR; the
 nightly-only `fuzz` CI job extends coverage via libFuzzer's
 branch-feedback mutator. Existing `00108` property assertions are
-unchanged — the new harness adds a fourth random-input strategy
+unchanged - the new harness adds a fourth random-input strategy
 (coverage-guided), not a replacement. See `fuzz/README.md` for
 run instructions and `README.md` task `00058` for the progress
 note. Baseline 1312 → 1318 tests (stable harness only).
 
-### `#follow-up-nfc` — Unicode normalization
+### `#follow-up-nfc` - Unicode normalization
 
 Pinned by F2's `assert_ne!` test. The `unicode-normalization` crate
-would be the natural dependency; +150 KB compiled. Not landed —
+would be the natural dependency; +150 KB compiled. Not landed -
 flagged in F2.
 
 ---
@@ -425,7 +425,7 @@ flagged in F2.
 
 ---
 
-## Definition of done — `00108`
+## Definition of done - `00108`
 
 | Acceptance criterion | Status |
 |----------------------|--------|
@@ -435,4 +435,4 @@ flagged in F2.
 | `cargo clippy --all-targets --all-features -- -D warnings` clean | ✅ verified |
 | `cargo clippy --target wasm32-unknown-unknown --no-default-features --features wasm -- -D warnings` clean | ✅ verified |
 | `cargo fmt --check` clean | ✅ verified |
-| No public API breakage without `BREAKING:` | ✅ — rustdoc-only edit in F1; no signature change |
+| No public API breakage without `BREAKING:` | ✅ - rustdoc-only edit in F1; no signature change |

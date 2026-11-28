@@ -1,27 +1,27 @@
-//! Phase 9 task `00057` — GraphML import integration tests.
+//! Phase 9 task `00057` - GraphML import integration tests.
 //!
 //! Cover the native engine's `import_graphml` surface (the string codec on
-//! `NativeService`) — the inverse of the task `00056` GraphML exporter. The
+//! `NativeService`) - the inverse of the task `00056` GraphML exporter. The
 //! filesystem round-trip is exercised with `std::fs` over that codec. The
 //! assertions focus on:
 //!
-//! 1. **Round-trip fidelity** — a graph exported with `export_graphml` and
+//! 1. **Round-trip fidelity** - a graph exported with `export_graphml` and
 //!    re-imported into a fresh database reproduces every node/edge verbatim
 //!    (ids, uuids, timestamps, kinds, titles, bodies, properties, weights),
 //!    and re-exporting the destination yields byte-identical GraphML.
-//! 2. **Idempotence** — re-importing the same document a second time inserts
+//! 2. **Idempotence** - re-importing the same document a second time inserts
 //!    nothing and reports every row as skipped, exactly like JSON import.
-//! 3. **Merge into a populated database** — importing a disjoint graph adds
+//! 3. **Merge into a populated database** - importing a disjoint graph adds
 //!    to an existing database without disturbing what is already there.
-//! 4. **Interop** — a foreign GraphML document (arbitrary string ids, keys
+//! 4. **Interop** - a foreign GraphML document (arbitrary string ids, keys
 //!    referenced by `attr.name`, no uuids/timestamps) imports by allocating
 //!    fresh ids, remapping edge endpoints, and folding unknown attributes
 //!    into the property map.
-//! 5. **Escaping / Unicode** — XML entity references and multi-byte content
+//! 5. **Escaping / Unicode** - XML entity references and multi-byte content
 //!    survive the parse.
-//! 6. **Error handling** — malformed XML, a missing `<graphml>`/`<graph>`
+//! 6. **Error handling** - malformed XML, a missing `<graphml>`/`<graph>`
 //!    element, and edges referencing undeclared nodes are rejected.
-//! 7. **Filesystem round-trip** — a document written to a `tempfile::TempDir`
+//! 7. **Filesystem round-trip** - a document written to a `tempfile::TempDir`
 //!    path with `std::fs` is read back and loaded via `import_graphml`.
 
 use drevo::dump::Dump;
@@ -89,7 +89,7 @@ fn populate_sample_graph(db: &NativeService) -> (Vec<u64>, Vec<u64>) {
     )
 }
 
-/// Deserialize a database's full contents via its deterministic JSON dump —
+/// Deserialize a database's full contents via its deterministic JSON dump -
 /// the only public surface that enumerates every node and edge. `collect_all_*`
 /// is crate-private, so integration tests read the graph through `export_json`.
 fn dump_of(db: &NativeService) -> Dump {
@@ -105,7 +105,7 @@ fn all_edges(db: &NativeService) -> Vec<Edge> {
 }
 
 /// Assert that two databases hold the same set of nodes and edges (by id and
-/// full content) — the strong notion of a lossless import. Compares the
+/// full content) - the strong notion of a lossless import. Compares the
 /// deterministic JSON dumps with the volatile `exported_at` timestamp zeroed.
 fn assert_same_graph(a: &NativeService, b: &NativeService) {
     let mut da = dump_of(a);
@@ -246,7 +246,7 @@ fn import_graphml_decodes_entities_and_unicode() {
     src.create_node(NewNode {
         kind: "заметка".into(),
         title: "a < b & c > d \" ' 知识 🌳".into(),
-        body: "<tag> & more — Привет".into(),
+        body: "<tag> & more - Привет".into(),
         body_html: String::new(),
         properties: props_with(&[("标签", json!("中文 & <x>")), ("emoji_🔑", json!("🌈"))]),
     })
@@ -258,7 +258,7 @@ fn import_graphml_decodes_entities_and_unicode() {
     let node = dst.get_node(1).unwrap();
     assert_eq!(node.kind, "заметка");
     assert_eq!(node.title, "a < b & c > d \" ' 知识 🌳");
-    assert_eq!(node.body, "<tag> & more — Привет");
+    assert_eq!(node.body, "<tag> & more - Привет");
     assert_eq!(node.properties.get("标签"), Some(&json!("中文 & <x>")));
     assert_eq!(node.properties.get("emoji_🔑"), Some(&json!("🌈")));
 }
@@ -295,7 +295,7 @@ fn import_graphml_rejects_edge_referencing_undeclared_node() {
          </graph></graphml>";
     assert!(db.import_graphml(xml).is_err());
     // The undeclared-endpoint check runs while building records, before
-    // `apply_dump` inserts anything — so neither the node nor the edge lands.
+    // `apply_dump` inserts anything - so neither the node nor the edge lands.
     assert_eq!(all_nodes(&db).len(), 0);
     assert_eq!(all_edges(&db).len(), 0);
 }

@@ -1,11 +1,11 @@
 //! Coverage-guided fuzz target for [`drevo::cypher::parser::parse`].
 //!
-//! Phase 15 task `00099`. The parser must be **total** — it never panics on
+//! Phase 15 task `00099`. The parser must be **total** - it never panics on
 //! any `&str`, returning either an [`ast::Query`] or a recoverable
 //! `ParseError`. Two further invariants are asserted on success:
 //!
 //! - **Non-empty query.** A successfully-parsed [`ast::Query`] always has at
-//!   least one UNION part, and each part has at least one clause — the
+//!   least one UNION part, and each part has at least one clause - the
 //!   parser never returns a structurally empty tree.
 //! - **Lex-then-parse agreement.** If `parse` succeeds, `tokenize` on the
 //!   same source must also succeed (the parser consumes the lexer, so it

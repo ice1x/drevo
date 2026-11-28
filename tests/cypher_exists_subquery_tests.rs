@@ -1,10 +1,10 @@
-//! End-to-end Cypher `EXISTS { ... }` existential-subquery tests — Phase 10
+//! End-to-end Cypher `EXISTS { ... }` existential-subquery tests - Phase 10
 //! follow-up task `00152`.
 //!
 //! An existential subquery `EXISTS { [MATCH] pattern [WHERE predicate] }` used in
 //! a boolean position (a `WHERE` filter, or anywhere an expression is expected)
 //! tests whether **at least one** match of the enclosed pattern exists relative
-//! to the current row — anchored on any variables the surrounding query has
+//! to the current row - anchored on any variables the surrounding query has
 //! already bound. It is the brace-delimited, richer sibling of the bare pattern
 //! predicate (`00151`): where a pattern predicate is a single path in expression
 //! position, `EXISTS { ... }` wraps the pattern in braces (so a bare node is
@@ -16,7 +16,7 @@
 //! * `EXISTS { (a)-[:R]->(b) }` is an existence test, evaluating to a boolean,
 //! * a leading `MATCH` keyword is accepted and equivalent,
 //! * a bare node `EXISTS { (n) }` is legal (the braces disambiguate from a
-//!   grouped expression) — it is `true` when the anchored node matches,
+//!   grouped expression) - it is `true` when the anchored node matches,
 //! * an inner `WHERE` filters the matches before the existence test,
 //! * the pattern is anchored on already-bound variables (each row only sees its
 //!   own matches); new variables in the subquery are subquery-scoped,
@@ -145,7 +145,7 @@ fn bare_node_subquery_tests_anchored_node_match() {
         &d,
     );
     // `EXISTS { (p {active: true}) }` re-tests the anchored node against the
-    // inline property filter — true only for Ann.
+    // inline property filter - true only for Ann.
     let rows = run(
         "MATCH (p:Person) WHERE EXISTS { (p {active: true}) } RETURN p.name",
         &d,

@@ -1,4 +1,4 @@
-//! Documentation verification — Phase 15 task `00102`.
+//! Documentation verification - Phase 15 task `00102`.
 //!
 //! The comprehensive docs under [`docs/`](../docs) are only trustworthy if they
 //! cannot drift from the code. This suite enforces two contracts:
@@ -7,7 +7,7 @@
 //!    actually runs.** Each block is extracted, `parse`d, and `execute`d against a
 //!    fresh in-memory database with a standard parameter map; a parse error or an
 //!    [`ExecError`](drevo::cypher::executor::ExecError) fails the test. If drevo ever
-//!    stops supporting a documented construct, CI goes red — the Cypher reference is
+//!    stops supporting a documented construct, CI goes red - the Cypher reference is
 //!    executable specification, not prose.
 //!
 //! 2. **The docs tree is structurally whole.** Every guide promised by the index
@@ -115,7 +115,7 @@ fn every_cypher_block_in_the_reference_parses_and_executes() {
         // in-memory database cannot provide (e.g. `drevo.semantic.query` embeds
         // its query text through the server's configured embeddings upstream,
         // which is unset here). Their syntax is still validated by `parse`
-        // above; only the execute step is skipped, with an explicit reason —
+        // above; only the execute step is skipped, with an explicit reason -
         // they are exercised end-to-end in their own feature-gated integration
         // tests instead.
         if needs_runtime_config(source) {
@@ -153,7 +153,7 @@ fn needs_runtime_config(source: &str) -> bool {
     //
     // `drevo.engine.status` is KV-only: it reports the (now-removed) KV read
     // mirror's routing counters and errors with `EngineCapability` on the
-    // native engine — which is the engine this harness (and the shipping
+    // native engine - which is the engine this harness (and the shipping
     // server) runs. The construct still parses and stays documented, but it
     // cannot execute against the native in-memory database, so it is skipped
     // exactly like the config-dependent semantic procedures above.
@@ -191,7 +191,7 @@ fn needs_runtime_config(source: &str) -> bool {
         // Covered end to end in `tests/sequence_tests.rs`.
         || source.contains("drevo.sequence.next")
         // `drevo.text.fuzzy` (#593) resolves a *named* text index from a prior
-        // `CREATE TEXT INDEX`, which a pristine doc database lacks — the same
+        // `CREATE TEXT INDEX`, which a pristine doc database lacks - the same
         // situation as `db.index.vector.queryNodes`. Covered end to end in
         // `tests/cypher_levenshtein_tests.rs`.
         || source.contains("drevo.text.fuzzy")

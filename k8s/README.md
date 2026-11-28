@@ -1,4 +1,4 @@
-# drevo — Kubernetes manifests
+# drevo - Kubernetes manifests
 
 Phase 8 task `00049` (base) + `00050` (overlays). Plain
 `kubectl`-applyable manifests that deploy
@@ -25,7 +25,7 @@ kubectl apply -f k8s/base/pvc.yaml
 kubectl apply -f k8s/base/deployment.yaml
 kubectl apply -f k8s/base/service.yaml
 
-# Or with kustomize (bundled in modern kubectl) — wrapper forwards to ./base/
+# Or with kustomize (bundled in modern kubectl) - wrapper forwards to ./base/
 kubectl apply -k k8s/
 # Equivalent direct form
 kubectl apply -k k8s/base/
@@ -46,13 +46,13 @@ curl -sf http://127.0.0.1:8080/status
 ## Design notes
 
 * **Single replica.** drevo is a single-writer redb store. Two writers
-  would corrupt the database file — MVCC arrives in Phase 13
+  would corrupt the database file - MVCC arrives in Phase 13
   (task `00080`). The Deployment locks `replicas: 1` and
   `strategy.type: Recreate` so the new pod waits for the old one to
   release the RWO PVC before it starts.
 * **Probes mirror the HTTP API contract.** `livenessProbe` hits
-  `/health` (cheap, DB-independent — task `00042`); `readinessProbe`
-  hits `/ready` (probes redb — task `00048`). Both flip to 503 during
+  `/health` (cheap, DB-independent - task `00042`); `readinessProbe`
+  hits `/ready` (probes redb - task `00048`). Both flip to 503 during
   SIGTERM drain so the Kubernetes Endpoints controller withdraws
   traffic from the pod before `SIGKILL`.
 * **Non-root pod.** The container image already drops to the `drevo`
@@ -65,7 +65,7 @@ curl -sf http://127.0.0.1:8080/status
   drain loop in `src/server.rs` completes inside the new budget.
 * **ClusterIP only.** drevo is a backing store, not a public-facing
   service. Front it with an Ingress / Gateway you control (nginx,
-  traefik, ALB, GKE Gateway, …) — that decision is cluster-specific
+  traefik, ALB, GKE Gateway, …) - that decision is cluster-specific
   and intentionally not baked into this base.
 
 ## Storage sizing
@@ -88,7 +88,7 @@ environment-specific patches. Each overlay:
 * sets a distinct `namespace:` (`drevo-dev`, `drevo-prod`) so the same
   cluster can host both side by side;
 * overrides the image tag via the kustomize `images:` block (dev →
-  `v0.1.0-dev`, prod → `v0.1.0`) — the base image name stays unchanged
+  `v0.1.0-dev`, prod → `v0.1.0`) - the base image name stays unchanged
   so the rewrite is a one-line bump per release;
 * ships strategic-merge patches that **only** touch container resources
   and PVC storage size. The single-writer redb invariants
@@ -113,7 +113,7 @@ broken `../../` base reference fails the build.
 
 ## What this does not include
 
-* **Ingress / Gateway.** See above — pick the controller that matches
+* **Ingress / Gateway.** See above - pick the controller that matches
   your cluster.
 * **Helm chart.** The kustomize overlays above cover the per-env
   patching that a Helm chart would otherwise wrap; a chart can be
@@ -127,14 +127,14 @@ broken `../../` base reference fails the build.
 
 ## Related contracts
 
-* `Dockerfile` — exposes 8080, defaults `DREVO_DATA_DIR=/data`, runs
+* `Dockerfile` - exposes 8080, defaults `DREVO_DATA_DIR=/data`, runs
   as the `drevo` user (UID 999).
-* `docker-compose.yml` — the same shape for local development.
-* `tests/k8s_manifests_tests.rs` — verifies the base manifests under
+* `docker-compose.yml` - the same shape for local development.
+* `tests/k8s_manifests_tests.rs` - verifies the base manifests under
   `k8s/base/` keep the contracts above (probe paths, env vars, RWO
   PVC, ClusterIP port, image reference) and that the top-level
   `k8s/kustomization.yaml` wrapper forwards to `./base/`.
-* `tests/k8s_overlays_tests.rs` — verifies each overlay under
+* `tests/k8s_overlays_tests.rs` - verifies each overlay under
   `k8s/overlays/<env>/` carries the env-specific kustomization,
   deployment patch, and PVC patch; locks the namespace + image tag +
   resource ordering invariants (prod ≥ dev) and forbids overlays from

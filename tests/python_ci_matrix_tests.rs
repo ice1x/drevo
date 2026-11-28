@@ -1,4 +1,4 @@
-//! Phase 16 task `00122` — text-level scaffolding tests for the
+//! Phase 16 task `00122` - text-level scaffolding tests for the
 //! cibuildwheel-driven Python CI matrix.
 //!
 //! Same pattern as `python_package_wheels_tests.rs` (`00116`) and
@@ -17,7 +17,7 @@
 //! **Why cibuildwheel and not GHA `container:`?** An earlier iteration
 //! tried `container: python:3.13-bookworm` to route the ubuntu cell
 //! to the self-hosted macOS runner. The runner-agent refused with
-//! "Container operations are only supported on Linux runners" — GHA's
+//! "Container operations are only supported on Linux runners" - GHA's
 //! `container:` directive is implemented only in the Linux runner
 //! agent. cibuildwheel sidesteps that by managing `docker run` itself,
 //! the same pattern `python-wheels.yml` already uses.
@@ -59,7 +59,7 @@ fn read_workflow() -> String {
     let p = workflow_path();
     assert!(
         p.exists(),
-        ".github/workflows/python.yml must exist — task 00122 deliverable",
+        ".github/workflows/python.yml must exist - task 00122 deliverable",
     );
     read(&p)
 }
@@ -72,7 +72,7 @@ fn python_ci_matrix_workflow_exists() {
     assert!(
         wf.lines()
             .any(|line| line.starts_with("name:") && line.to_lowercase().contains("python")),
-        "python.yml `name:` must include `Python` — distinguishes \
+        "python.yml `name:` must include `Python` - distinguishes \
          it from non-Python workflows in the Actions UI",
     );
 }
@@ -95,7 +95,7 @@ fn python_ci_matrix_does_not_run_on_pull_request() {
     let wf = read_workflow();
     assert!(
         !wf.contains("pull_request:"),
-        "python.yml must NOT include a `pull_request:` trigger — the heavy \
+        "python.yml must NOT include a `pull_request:` trigger - the heavy \
          cibuildwheel matrix is gated off the PR path to keep the single \
          self-hosted runner free; the lighter `python-ci.yml` is the PR gate",
     );
@@ -140,7 +140,7 @@ fn python_ci_matrix_uses_cibuildwheel_not_gha_container_directive() {
     // operations are only supported on Linux runners" wall.
     assert!(
         wf.contains("cibuildwheel"),
-        "python.yml must invoke cibuildwheel — the GHA `container:` \
+        "python.yml must invoke cibuildwheel - the GHA `container:` \
          directive is rejected by the macOS runner agent",
     );
     // Negative: no GHA `container:` directive. A bare top-level
@@ -148,7 +148,7 @@ fn python_ci_matrix_uses_cibuildwheel_not_gha_container_directive() {
     let has_gha_container_directive = wf.lines().any(|line| {
         let t = line.trim_start();
         // Matches `container:` at job/workflow level (4 or fewer
-        // leading spaces of indent — strategy.matrix is deeper).
+        // leading spaces of indent - strategy.matrix is deeper).
         // We accept `container: ${{ ... }}` or `container: image`
         // forms; rule it out entirely.
         let indent = line.len() - t.len();
@@ -156,7 +156,7 @@ fn python_ci_matrix_uses_cibuildwheel_not_gha_container_directive() {
     });
     assert!(
         !has_gha_container_directive,
-        "python.yml must NOT use the GHA `container:` directive — \
+        "python.yml must NOT use the GHA `container:` directive - \
          it fails on macOS runners with 'Container operations are \
          only supported on Linux runners'. Use cibuildwheel + \
          CIBW_PLATFORM instead.",
@@ -166,20 +166,20 @@ fn python_ci_matrix_uses_cibuildwheel_not_gha_container_directive() {
 #[test]
 fn python_ci_matrix_pins_python_to_latest_under_abi3() {
     let wf = read_workflow();
-    // CIBW_BUILD restricted to cp313 only — abi3-py310 wheel works
+    // CIBW_BUILD restricted to cp313 only - abi3-py310 wheel works
     // on every CPython 3.10+, so the latest minor covers the
     // supported range. KG: `decision_python_ci_matrix_pin_to_latest_only`.
     assert!(
         wf.contains("CIBW_BUILD: \"cp313-*\"") || wf.contains("CIBW_BUILD: 'cp313-*'"),
-        "python.yml must declare `CIBW_BUILD: \"cp313-*\"` — pinning \
+        "python.yml must declare `CIBW_BUILD: \"cp313-*\"` - pinning \
          to the latest CPython under abi3-py310",
     );
     // Negative: no other cp31X-* in the build list.
     for forbidden in ["cp310-*", "cp311-*", "cp312-*"] {
         assert!(
             !wf.contains(forbidden),
-            "python.yml must NOT include `{forbidden}` in CIBW_BUILD \
-             — abi3-py310 makes multi-minor builds redundant. If you \
+            "python.yml must NOT include `{forbidden}` in CIBW_BUILD - \
+             abi3-py310 makes multi-minor builds redundant. If you \
              genuinely need another minor, relax this test and the \
              pin-to-latest decision in the same PR.",
         );
@@ -194,7 +194,7 @@ fn python_ci_matrix_declares_platform_axis() {
         "python.yml must declare a `strategy: matrix:` block",
     );
     // The platform axis drives CIBW_PLATFORM. Two cells: macos +
-    // linux. Windows excluded — cibuildwheel can't cross-build it
+    // linux. Windows excluded - cibuildwheel can't cross-build it
     // on a macOS host.
     assert!(
         wf.contains("platform: [macos, linux]")
@@ -206,7 +206,7 @@ fn python_ci_matrix_declares_platform_axis() {
     assert!(
         wf.contains("CIBW_PLATFORM: ${{ matrix.platform }}"),
         "python.yml must thread `matrix.platform` into \
-         `CIBW_PLATFORM` — without it cibuildwheel only builds the \
+         `CIBW_PLATFORM` - without it cibuildwheel only builds the \
          host's native platform",
     );
 }
@@ -216,7 +216,7 @@ fn python_ci_matrix_cells_run_on_native_github_hosted() {
     let wf = read_workflow();
     // Each cell runs on its NATIVE GitHub-hosted runner (macOS wheels on
     // macos-latest, Linux on ubuntu-24.04) via `runs-on: ${{ matrix.os }}`
-    // with a `matrix.include` map. The self-hosted runner is retired — a
+    // with a `matrix.include` map. The self-hosted runner is retired - a
     // self-hosted runner on a public repo is a security risk, and public-repo
     // GitHub-hosted minutes are free, so the old "zero billed minutes"
     // rationale for collapsing onto a self-hosted Mac no longer applies.
@@ -227,7 +227,7 @@ fn python_ci_matrix_cells_run_on_native_github_hosted() {
     {
         assert!(
             !line.contains("self-hosted"),
-            "python.yml must NOT use a self-hosted runner (retired) — found `{line}`",
+            "python.yml must NOT use a self-hosted runner (retired) - found `{line}`",
         );
     }
     assert!(
@@ -250,7 +250,7 @@ fn python_ci_matrix_test_command_runs_three_pytest_layers() {
         assert!(
             wf.contains(layer),
             "python.yml CIBW_TEST_COMMAND must invoke pytest against \
-             `{layer}/` — task 00122 runs the three layers \
+             `{layer}/` - task 00122 runs the three layers \
              independently so a failure surfaces in the log without \
              re-reading the bulk pytest output",
         );
@@ -262,7 +262,7 @@ fn python_ci_matrix_test_command_runs_mypy_ruff_black() {
     let wf = read_workflow();
     assert!(
         wf.contains("mypy --strict"),
-        "python.yml CIBW_TEST_COMMAND must invoke `mypy --strict` — \
+        "python.yml CIBW_TEST_COMMAND must invoke `mypy --strict` - \
          guards .pyi stub drift against the runtime shim",
     );
     assert!(
@@ -318,7 +318,7 @@ fn python_ci_matrix_does_not_publish_to_pypi() {
     // python-wheels.yml is the release-staging workflow.
     assert!(
         !wf.contains("twine upload") && !wf.contains("pypi-publish"),
-        "python.yml MUST NOT publish to PyPI — it is a PR gate; \
+        "python.yml MUST NOT publish to PyPI - it is a PR gate; \
          release flow stays in python-wheels.yml",
     );
 }

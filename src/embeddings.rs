@@ -2,8 +2,8 @@
 //!
 //! drevo is a graph **+ vector store**: it persists `Value::Vector` nodes,
 //! builds an HNSW index, and searches them. It deliberately does not *host* an
-//! embedder — turning text into vectors is the caller's job. That makes a
-//! drevo deployment non–self-contained for RAG: you always need a second
+//! embedder - turning text into vectors is the caller's job. That makes a
+//! drevo deployment non-self-contained for RAG: you always need a second
 //! service just to embed text.
 //!
 //! This module closes that gap by exposing an OpenAI-shaped endpoint so a
@@ -22,11 +22,11 @@
 //! works with every OpenAI-shaped provider even though their optional fields
 //! differ:
 //!
-//! - **Request** — `model` + `input` are recognised (and validated), but every
+//! - **Request** - `model` + `input` are recognised (and validated), but every
 //!   other field the client sends (`dimensions`, `encoding_format`, `user` for
 //!   OpenAI; `input_type`, `output_dimension` for Voyage / Anthropic-recommended;
 //!   anything future) is **forwarded verbatim** to the upstream.
-//! - **Response** — the upstream body is returned **verbatim** as JSON, so
+//! - **Response** - the upstream body is returned **verbatim** as JSON, so
 //!   base64-encoded embeddings (`encoding_format: "base64"`) and any extra
 //!   fields survive unchanged.
 //!
@@ -37,7 +37,7 @@
 //! # Backends
 //!
 //! The endpoint itself (validation, routing) is always compiled with the
-//! `http` feature and adds **no** dependencies — the default binary stays lean.
+//! `http` feature and adds **no** dependencies - the default binary stays lean.
 //! Until a backend is configured it answers `503 Service Unavailable`
 //! ("embeddings backend not configured"), exactly as the semantic-facet path
 //! answers `400` when no embedder is present.
@@ -50,11 +50,11 @@
 //!   dependency-free by default while making one instance the whole RAG backend
 //!   when enabled.
 //!
-//! # Security — SSRF (OWASP A10)
+//! # Security - SSRF (OWASP A10)
 //!
 //! The outbound destination is taken **only** from server configuration
 //! ([`EmbeddingsConfig::from_env`](crate::embeddings::EmbeddingsConfig::from_env),
-//! `DREVO_EMBEDDINGS_UPSTREAM`) — **never** from the request. A request field
+//! `DREVO_EMBEDDINGS_UPSTREAM`) - **never** from the request. A request field
 //! is forwarded *to that fixed upstream* but can never change **where** drevo
 //! connects, so a caller cannot redirect the outbound call at an internal
 //! address (e.g. the cloud metadata endpoint). Even a body carrying a `url` /
@@ -104,7 +104,7 @@ impl EmbeddingInput {
 /// captured in [`extra`](Self::extra) and forwarded verbatim** to the upstream
 /// (`dimensions`, `encoding_format`, `user`, `input_type`, …). There is no URL
 /// field, and `extra` cannot change the outbound destination (see the
-/// module-level SSRF note) — it only rides along to the configured upstream.
+/// module-level SSRF note) - it only rides along to the configured upstream.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EmbeddingsRequest {
     /// Requested model name. Forwarded to the upstream; when empty, the
@@ -126,14 +126,14 @@ pub enum EmbeddingsError {
     #[error("embeddings backend not configured")]
     NotConfigured,
     /// The request was well-formed JSON but semantically invalid (e.g. empty
-    /// input) — a `400`.
+    /// input) - a `400`.
     #[error("invalid embeddings request: {0}")]
     InvalidInput(String),
-    /// The configured upstream URL is malformed or uses an unsupported scheme
-    /// — a server-configuration fault.
+    /// The configured upstream URL is malformed or uses an unsupported scheme -
+    /// a server-configuration fault.
     #[error("invalid embeddings upstream: {0}")]
     InvalidUpstream(String),
-    /// The upstream call failed or returned an unexpected response — a bad
+    /// The upstream call failed or returned an unexpected response - a bad
     /// gateway (`502`).
     #[error("embeddings upstream error: {0}")]
     Upstream(String),
@@ -159,7 +159,7 @@ impl EmbeddingsConfig {
     /// Read the embeddings configuration from a getter mimicking
     /// [`std::env::var`].
     ///
-    /// Returns `Ok(None)` when `DREVO_EMBEDDINGS_UPSTREAM` is unset — the
+    /// Returns `Ok(None)` when `DREVO_EMBEDDINGS_UPSTREAM` is unset - the
     /// endpoint then reports "not configured". Recognised variables:
     ///
     /// | Variable                    | Meaning                              |
@@ -196,7 +196,7 @@ impl EmbeddingsConfig {
 }
 
 /// Validate and normalise an upstream URL: trimmed, non-empty, `http`/`https`
-/// only (the SSRF boundary — an operator choice, never a request's).
+/// only (the SSRF boundary - an operator choice, never a request's).
 fn validate_upstream(raw: &str) -> Result<String, EmbeddingsError> {
     let upstream = raw.trim().to_string();
     if upstream.is_empty() {
@@ -217,10 +217,10 @@ fn validate_upstream(raw: &str) -> Result<String, EmbeddingsError> {
 ///
 /// Merge semantics (a form always sends `upstream`, and leaves the key field
 /// blank to keep the existing secret):
-/// * `upstream` — required and validated (`http`/`https`).
-/// * `api_key` — `None` or empty **keeps** the current key (so the model can be
+/// * `upstream` - required and validated (`http`/`https`).
+/// * `api_key` - `None` or empty **keeps** the current key (so the model can be
 ///   changed without re-entering the secret); a non-empty value replaces it.
-/// * `model` — `None` or empty clears the default model; a value sets it.
+/// * `model` - `None` or empty clears the default model; a value sets it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddingsConfigUpdate {
     /// New upstream URL (required, validated).
@@ -234,8 +234,8 @@ pub struct EmbeddingsConfigUpdate {
 }
 
 /// A **secret-free** view of the embeddings configuration, returned by
-/// `GET /config/embeddings`. The API key itself is never included — only
-/// whether one is set — so the endpoint (and the Web UI) can display the
+/// `GET /config/embeddings`. The API key itself is never included - only
+/// whether one is set - so the endpoint (and the Web UI) can display the
 /// configuration without ever echoing the token back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EmbeddingsStatus {
@@ -440,7 +440,7 @@ fn effective_model(req: &EmbeddingsRequest, config: &EmbeddingsConfig) -> String
 /// fields (so provider-specific parameters survive), then sets `model` (from
 /// the request or the configured default) and `input` (normalised to an array,
 /// which every OpenAI-compatible upstream accepts). `model` / `input` always
-/// win over any collision — though `extra` can never contain them, since they
+/// win over any collision - though `extra` can never contain them, since they
 /// are consumed by the named fields during deserialization.
 #[must_use]
 pub fn build_upstream_body(req: &EmbeddingsRequest, config: &EmbeddingsConfig) -> Value {
@@ -460,7 +460,7 @@ pub fn build_upstream_body(req: &EmbeddingsRequest, config: &EmbeddingsConfig) -
 ///
 /// This is an enum rather than a trait object so the crate stays free of an
 /// async-trait dependency. When no backend feature is enabled it is an
-/// uninhabited type, and the HTTP state simply holds `None` — the
+/// uninhabited type, and the HTTP state simply holds `None` - the
 /// endpoint answers `503`.
 pub enum EmbeddingBackend {
     /// Forward requests to a configured OpenAI-compatible upstream.
@@ -571,7 +571,7 @@ impl ProxyBackend {
 ///
 /// - A **base64 string** embedding (`encoding_format: "base64"`, which the
 ///   passthrough proxy forwards verbatim) is **rejected** with a clear error
-///   rather than silently mis-read — `drevo.semantic.query` needs the raw
+///   rather than silently mis-read - `drevo.semantic.query` needs the raw
 ///   floats to run a cosine scan, so the caller must not request base64.
 /// - A missing/empty `data` array, a missing `embedding` field, or a
 ///   non-numeric element are all reported as upstream faults.
@@ -620,9 +620,9 @@ pub fn embedding_vec_from_response(resp: &Value) -> Result<Vec<f32>, EmbeddingsE
 ///
 /// The Cypher / Bolt executor is **synchronous** and runs *on a tokio worker
 /// thread*, so it cannot `block_on` an async embedder (that panics with a
-/// "runtime within a runtime" error). Implementors bridge that gap — see
+/// "runtime within a runtime" error). Implementors bridge that gap - see
 /// [`SyncEmbedder`], which owns a dedicated OS thread with its own
-/// current-thread runtime — and expose a plain blocking `embed_query`.
+/// current-thread runtime - and expose a plain blocking `embed_query`.
 ///
 /// Installed on a `Drevo` handle via
 /// `set_embedder`; the `drevo.semantic.query` procedure calls `embed_text`,
@@ -643,7 +643,7 @@ pub trait TextEmbedder: Send + Sync {
         None
     }
 
-    /// The configured upstream endpoint URL, if known (#267). Never a secret —
+    /// The configured upstream endpoint URL, if known (#267). Never a secret -
     /// the bearer token is not part of it. `None` by default.
     fn upstream(&self) -> Option<String> {
         None
@@ -656,7 +656,7 @@ pub trait TextEmbedder: Send + Sync {
 /// It owns a **dedicated OS thread** running a private current-thread tokio
 /// runtime and receives jobs over an mpsc channel. `embed_query` posts the
 /// text and blocks on a reply channel, so the *caller's* thread (a worker of
-/// the server's multi-threaded runtime) never runs `block_on` — sidestepping
+/// the server's multi-threaded runtime) never runs `block_on` - sidestepping
 /// the runtime-in-runtime panic that a direct `Handle::block_on` or
 /// `reqwest::blocking` would hit. Enabled by `embeddings-proxy` (which pulls
 /// in the HTTP client and, transitively, tokio).
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn request_captures_extra_fields_for_passthrough() {
         // Provider-specific params (and even a stray `url`) land in `extra`,
-        // ready to be forwarded verbatim — never dropped, never a destination.
+        // ready to be forwarded verbatim - never dropped, never a destination.
         let req: EmbeddingsRequest = serde_json::from_str(
             r#"{"model":"m","input":"hi","dimensions":256,"input_type":"query","url":"http://169.254.169.254"}"#,
         )

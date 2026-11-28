@@ -1,7 +1,7 @@
-//! Count pushdown (RFC `docs/rfc-native-core.md`, #307 — the last
+//! Count pushdown (RFC `docs/rfc-native-core.md`, #307 - the last
 //! Memgraph-scoreboard gap from baseline run 6): a bare
-//! `MATCH (n[:Label]) RETURN count(*)` must be answered from cardinalities —
-//! [`GraphEngine::count_nodes`] / the kind bucket + label index — instead of
+//! `MATCH (n[:Label]) RETURN count(*)` must be answered from cardinalities -
+//! [`GraphEngine::count_nodes`] / the kind bucket + label index - instead of
 //! enumerating, projecting, and aggregating every node.
 //!
 //! Like the `id()`-seek tests, "the scan was skipped" is an assertion
@@ -214,7 +214,7 @@ fn bare_count_star_skips_the_scan_on_any_engine() {
 fn count_star_columns_and_rows_match_the_ordinary_path() {
     let engine = seeded();
     let pushed = run_plain(&engine, "MATCH (n) RETURN count(*)");
-    // `WHERE 1 = 1` defeats the detector but not the semantics — this is
+    // `WHERE 1 = 1` defeats the detector but not the semantics - this is
     // the ordinary enumerate + aggregate path.
     let ordinary = run_plain(&engine, "MATCH (n) WHERE 1 = 1 RETURN count(*)");
     assert!(engine.full_scans() >= 1, "the WHERE variant must scan");
@@ -302,7 +302,7 @@ fn empty_graph_counts_zero_without_scanning() {
 #[test]
 fn non_pushdown_shapes_take_the_ordinary_path_with_correct_rows() {
     let engine = seeded();
-    // (source, expected count) — every one of these must scan.
+    // (source, expected count) - every one of these must scan.
     for (source, expected) in [
         ("MATCH (n) WHERE n.title = 'ada' RETURN count(*)", 1),
         ("MATCH (n {title: 'ada'}) RETURN count(*)", 1),
@@ -317,7 +317,7 @@ fn non_pushdown_shapes_take_the_ordinary_path_with_correct_rows() {
         assert!(engine.full_scans() >= 1, "{source} must take the scan path");
     }
 
-    // Two projections — not a bare count.
+    // Two projections - not a bare count.
     engine.reset();
     let two = run_plain(&engine, "MATCH (n) RETURN count(*), 1");
     assert_eq!(two.rows, vec![vec![Value::Integer(5), Value::Integer(1)]]);

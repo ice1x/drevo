@@ -45,12 +45,12 @@ __pycache__/
 .venv*/
 
 # Self-hosted GitHub Actions runner: on the CI machine this lives inside the
-# repo. Never track or sweep it — doing so has killed the runner before. It is
+# repo. Never track or sweep it - doing so has killed the runner before. It is
 # already excluded from the Docker build context via .dockerignore.
 actions-runner/
 
 # Scratch / temporary migration workspace
 migr_tmp/
 
-# mdBook build output (docs site) — built in CI by .github/workflows/docs.yml
+# mdBook build output (docs site) - built in CI by .github/workflows/docs.yml
 /book

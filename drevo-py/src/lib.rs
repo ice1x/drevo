@@ -3,26 +3,26 @@
 //! Phase 16 task `00115`. The contract this crate implements lives in
 //! `audit/RFC-python-api.md`; see in particular:
 //!
-//! * §3 — naming and type system (`snake_case` methods, frozen `pyclass`
+//! * §3 - naming and type system (`snake_case` methods, frozen `pyclass`
 //!   dataclass-like wrappers, `uuid::Uuid` ↔ Python `uuid.UUID`),
-//! * §4 — sync-only surface with GIL released on every storage I/O via
+//! * §4 - sync-only surface with GIL released on every storage I/O via
 //!   [`pyo3::Python::allow_threads`],
-//! * §5 — typed exception hierarchy rooted at `drevo.DrevoError` plus
+//! * §5 - typed exception hierarchy rooted at `drevo.DrevoError` plus
 //!   the variant-by-variant `DrevoError → PyErr` mapping in
 //!   [`errors::map_err`],
-//! * §6 — list-returning surface (iterators land alongside the pure-Python
+//! * §6 - list-returning surface (iterators land alongside the pure-Python
 //!   `drevo.rag` layer in task `00117`),
-//! * §7 — batch APIs (`create_nodes` / `create_edges`) are deferred —
+//! * §7 - batch APIs (`create_nodes` / `create_edges`) are deferred -
 //!   they require a transactional batch entry on the Rust side and are
 //!   tracked as a separate follow-up under Phase 16.
 //!
 //! Module layout:
 //!
-//! * [`errors`] — `create_exception!` hierarchy + `map_err`.
-//! * [`types`] — frozen `#[pyclass]` wrappers for `Node`, `Edge`,
+//! * [`errors`] - `create_exception!` hierarchy + `map_err`.
+//! * [`types`] - frozen `#[pyclass]` wrappers for `Node`, `Edge`,
 //!   `NewNode`, `NewEdge`, `NodePatch`, `EdgePatch`, `ScoredNode`,
 //!   `SubGraph`, `CompactReport`, plus the `Direction` `IntEnum`.
-//! * [`handle`] — the `Drevo` handle (`open`, `close`, CRUD, traversal,
+//! * [`handle`] - the `Drevo` handle (`open`, `close`, CRUD, traversal,
 //!   FTS), every storage method wrapped in `py.allow_threads(...)`.
 
 #![warn(missing_docs)]
@@ -76,7 +76,7 @@ fn _drevo(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The handle.
     m.add_class::<handle::Drevo>()?;
 
-    // Version string — surfaced to Python as `drevo.__version__`
+    // Version string - surfaced to Python as `drevo.__version__`
     // (re-exported by `drevo/__init__.py` in task `00116`).
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 

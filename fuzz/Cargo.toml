@@ -1,10 +1,10 @@
-# Phase 9 task `00058` — coverage-guided fuzz harness for the FTS tokenizer.
+# Phase 9 task `00058` - coverage-guided fuzz harness for the FTS tokenizer.
 #
 # This is a SEPARATE workspace from the parent crate (`drevo`). It depends on
 # `libfuzzer-sys`, which requires the `-Zsanitizer=address` flag and therefore
 # needs `cargo +nightly` plus `cargo install cargo-fuzz`. Keeping it
 # out-of-tree means stable `cargo test` / `cargo clippy` on the main crate
-# never tries to compile this directory — the `[workspace]` block below
+# never tries to compile this directory - the `[workspace]` block below
 # explicitly tells Cargo not to merge it into any parent workspace.
 #
 # Run with:
@@ -73,7 +73,7 @@ test = false
 doc = false
 bench = false
 
-# Phase 15 task `00099` — grammar-aware Cypher fuzzing. Three targets share
+# Phase 15 task `00099` - grammar-aware Cypher fuzzing. Three targets share
 # the `cypher_grammar.rs` generator (the grammar target `include!`s it) and
 # their invariants are replayed on every PR by the stable harness
 # `tests/cypher_fuzz_harness_tests.rs`.

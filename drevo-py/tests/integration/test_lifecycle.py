@@ -23,7 +23,7 @@ def test_second_open_on_same_path_raises_drevo_error(tmp_db_path: str) -> None:
     interleave appends and corrupt the log, so it fails fast with
     `LockedError` (a `DrevoError` subclass). Because the lock is advisory and
     tied to the open file description, it is released when the owning process
-    dies — unlike a content lock file, a crash cannot strand a stale lock that
+    dies - unlike a content lock file, a crash cannot strand a stale lock that
     would block the prod watchdog's restart.
     """
     with drevo.Drevo.open(tmp_db_path):
@@ -57,7 +57,7 @@ def test_health_check_succeeds_on_disk_backend(disk_db: drevo.Drevo) -> None:
     """The probe returns None on a freshly-opened disk-backed handle.
 
     `health_check()` returns ``None`` on success and raises
-    `StorageError` otherwise — a successful return is the assertion.
+    `StorageError` otherwise - a successful return is the assertion.
     """
     disk_db.health_check()
 

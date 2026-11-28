@@ -372,7 +372,7 @@ impl Security {
     }
 
     /// The privileges `user` runs a statement with (#636), with `home` as the
-    /// user's home database: `None` when nothing is checked — the server needs
+    /// user's home database: `None` when nothing is checked - the server needs
     /// no login, or has no user management. A signed-in user's context is
     /// compiled once and reused until the users, roles or privileges change.
     #[must_use]
@@ -617,8 +617,8 @@ impl Security {
         }
     }
 
-    /// [`execute`](Self::execute), recording what it changed — or why it was
-    /// refused — in the audit log (#637). The command's text is never
+    /// [`execute`](Self::execute), recording what it changed - or why it was
+    /// refused - in the audit log (#637). The command's text is never
     /// recorded: it can carry passwords.
     ///
     /// # Errors

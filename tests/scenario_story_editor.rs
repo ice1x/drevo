@@ -73,7 +73,7 @@ fn make_weighted_edge(from_id: u64, to_id: u64, kind: &str, weight: f32) -> NewE
 }
 
 // =========================================================================
-// Domain builder — a small novel structure
+// Domain builder - a small novel structure
 // =========================================================================
 
 /// A complete story structure for testing.
@@ -367,7 +367,7 @@ fn build_story(db: &NativeService) -> StoryData {
 }
 
 // =========================================================================
-// Tests — run against both backends via macro
+// Tests - run against both backends via macro
 // =========================================================================
 
 macro_rules! story_tests {
@@ -376,7 +376,7 @@ macro_rules! story_tests {
             use super::*;
 
             // -----------------------------------------------------------------
-            // 1. Basic graph construction — all story nodes and edges exist
+            // 1. Basic graph construction - all story nodes and edges exist
             // -----------------------------------------------------------------
 
             #[test]
@@ -418,7 +418,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 2. Tree structure — book → chapter → scene
+            // 2. Tree structure - book → chapter → scene
             // -----------------------------------------------------------------
 
             #[test]
@@ -472,7 +472,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 3. Narrative ordering — follows edges
+            // 3. Narrative ordering - follows edges
             // -----------------------------------------------------------------
 
             #[test]
@@ -509,7 +509,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                // scene2 is last in chapter1 — no follows edge
+                // scene2 is last in chapter1 - no follows edge
                 let next = db
                     .neighbors(s.scene2, Direction::Outgoing, Some("follows"));
                 assert!(next.is_empty());
@@ -521,7 +521,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 4. Scene details — characters, locations, plot points
+            // 4. Scene details - characters, locations, plot points
             // -----------------------------------------------------------------
 
             #[test]
@@ -585,7 +585,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 5. Character graph — relationships between characters
+            // 5. Character graph - relationships between characters
             // -----------------------------------------------------------------
 
             #[test]
@@ -644,7 +644,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 6. BFS — navigating the narrative tree
+            // 6. BFS - navigating the narrative tree
             // -----------------------------------------------------------------
 
             #[test]
@@ -695,7 +695,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 7. Subgraph — AI context extraction for co-authoring
+            // 7. Subgraph - AI context extraction for co-authoring
             // -----------------------------------------------------------------
 
             #[test]
@@ -748,7 +748,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 8. Kind index — board views
+            // 8. Kind index - board views
             // -----------------------------------------------------------------
 
             #[test]
@@ -813,7 +813,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 9. FTS — searching narrative content
+            // 9. FTS - searching narrative content
             // -----------------------------------------------------------------
 
             #[test]
@@ -857,7 +857,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 10. Properties — character metadata
+            // 10. Properties - character metadata
             // -----------------------------------------------------------------
 
             #[test]
@@ -875,7 +875,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 11. Shortest path — narrative connections
+            // 11. Shortest path - narrative connections
             // -----------------------------------------------------------------
 
             #[test]
@@ -915,7 +915,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 12. DFS — deep narrative exploration
+            // 12. DFS - deep narrative exploration
             // -----------------------------------------------------------------
 
             #[test]
@@ -952,7 +952,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 13. Update workflow — editing narrative elements
+            // 13. Update workflow - editing narrative elements
             // -----------------------------------------------------------------
 
             #[test]
@@ -1000,7 +1000,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 14. Delete workflow — removing a scene
+            // 14. Delete workflow - removing a scene
             // -----------------------------------------------------------------
 
             #[test]
@@ -1008,7 +1008,7 @@ macro_rules! story_tests {
                 let db = $db_expr;
                 let s = build_story(&db);
 
-                // Delete scene1 — edges to chapter1, elena, forest_path, plot_find_map removed
+                // Delete scene1 - edges to chapter1, elena, forest_path, plot_find_map removed
                 db.delete_node(s.scene1).unwrap();
 
                 assert!(db.get_node(s.scene1).is_err());
@@ -1029,7 +1029,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 15. Adding new chapter — extending the narrative
+            // 15. Adding new chapter - extending the narrative
             // -----------------------------------------------------------------
 
             #[test]
@@ -1062,7 +1062,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 16. List recent — timeline of edits
+            // 16. List recent - timeline of edits
             // -----------------------------------------------------------------
 
             #[test]
@@ -1085,7 +1085,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 17. Multi-location usage — shared locations across scenes
+            // 17. Multi-location usage - shared locations across scenes
             // -----------------------------------------------------------------
 
             #[test]
@@ -1105,7 +1105,7 @@ macro_rules! story_tests {
             }
 
             // -----------------------------------------------------------------
-            // 18. Edge weights — scene ordering validation
+            // 18. Edge weights - scene ordering validation
             // -----------------------------------------------------------------
 
             #[test]

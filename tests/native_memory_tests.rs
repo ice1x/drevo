@@ -8,7 +8,7 @@
 //!
 //! Writes: `CALL drevo.memory.addMessage(session, role, text)` and
 //! `CALL drevo.memory.recordReasoning(session, step, tool, outcome)` build the
-//! same graph the agent-memory MCP (drevo-mcp #15/#16) writes with Cypher — a
+//! same graph the agent-memory MCP (drevo-mcp #15/#16) writes with Cypher - a
 //! `:Message { id, session, seq, role, text, body, created_at }` chain linked by
 //! `:NEXT`, and `:ReasoningTrace` nodes `:INITIATED_BY` the latest message.
 //!
@@ -54,7 +54,7 @@ fn recall_returns_only_this_sessions_matches() {
     let svc = NativeService::in_memory();
     add(&svc, "s1", 1, "user", "the zqxalpha deploy note");
     add(&svc, "s1", 2, "assistant", "some unrelated chatter");
-    // Same distinctive token, different session — must NOT be recalled for s1.
+    // Same distinctive token, different session - must NOT be recalled for s1.
     add(&svc, "s2", 1, "user", "another zqxalpha thing entirely");
 
     let res = run_ok(
@@ -142,7 +142,7 @@ fn recall_vector_ranks_this_sessions_messages_by_cosine() {
     add_embedded(&svc, "s1", 1, "orthogonal", "embedding", [0.0, 1.0]);
     add_embedded(&svc, "s1", 2, "exact", "embedding", [1.0, 0.0]);
     add_embedded(&svc, "s1", 3, "close", "embedding", [0.8, 0.6]);
-    // Identical to the query, but another session — must NOT be recalled.
+    // Identical to the query, but another session - must NOT be recalled.
     add_embedded(&svc, "s2", 1, "foreign", "embedding", [1.0, 0.0]);
 
     let res = run_ok(
@@ -164,7 +164,7 @@ fn recall_vector_respects_k_and_skips_unembedded_messages() {
     add_embedded(&svc, "s", 1, "a", "embedding", [1.0, 0.0]);
     add_embedded(&svc, "s", 2, "b", "embedding", [0.8, 0.6]);
     add_embedded(&svc, "s", 3, "c", "embedding", [0.0, 1.0]);
-    // No embedding at all — skipped, never an error.
+    // No embedding at all - skipped, never an error.
     add(&svc, "s", 4, "user", "plain");
 
     let res = run_ok(

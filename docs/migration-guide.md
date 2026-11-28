@@ -4,8 +4,8 @@ How to move an existing **Neo4j** database into drevo, and what to expect from d
 Neo4j-compatibility surface afterwards.
 
 drevo is deliberately ignorant of Neo4j: the database and its Python bindings know nothing
-about it. Migration is handled by a **standalone tool** — [`tools/neo4j-to-drevo`](https://github.com/ice1x/drevo/tree/main/tools/neo4j-to-drevo)
-— that depends on `drevo`, never the reverse. It is a pure database → database data move,
+about it. Migration is handled by a **standalone tool** - [`tools/neo4j-to-drevo`](https://github.com/ice1x/drevo/tree/main/tools/neo4j-to-drevo) -
+that depends on `drevo`, never the reverse. It is a pure database → database data move,
 independent of how you later query drevo (HTTP, Bolt, MCP, or embedded).
 
 ---
@@ -16,7 +16,7 @@ independent of how you later query drevo (HTTP, Bolt, MCP, or embedded).
 pip install "neo4j-to-drevo[live]"   # the [live] extra pulls the official neo4j driver
 ```
 
-### Phase 1 — Dump
+### Phase 1 - Dump
 
 Stream a live Neo4j over Bolt to a local JSON-Lines file:
 
@@ -28,11 +28,11 @@ python -m neo4j_to_drevo dump \
     --out graph.json
 ```
 
-(You can skip this and use an APOC export instead — see [source options](#source-options).)
+(You can skip this and use an APOC export instead - see [source options](#source-options).)
 
-### Phase 2 — Dry run
+### Phase 2 - Dry run
 
-Read, map, and validate everything, writing **nothing** — the dry run uses a throwaway
+Read, map, and validate everything, writing **nothing** - the dry run uses a throwaway
 in-memory drevo to exercise the *full* mapping, including dangling-edge detection, so it
 surfaces every conflict you'd hit for real:
 
@@ -43,7 +43,7 @@ python -m neo4j_to_drevo import --apoc-json graph.json --drevo-path graph.redb -
 
 Combine with `--on-error skip` to preview which edges reference unmigrated endpoints.
 
-### Phase 3 — Import
+### Phase 3 - Import
 
 Run it for real:
 
@@ -58,11 +58,11 @@ python -m neo4j_to_drevo import --apoc-json graph.json --drevo-path graph.redb
 
 ### Source options
 
-- `--apoc-json <file>` — an **offline dump**. Either the file from phase 1, or one exported
+- `--apoc-json <file>` - an **offline dump**. Either the file from phase 1, or one exported
   inside Neo4j with APOC:
   `CALL apoc.export.json.all('graph.json', {useTypes:true})`. Pure stdlib, no driver, no live
-  connection — a graph can migrate long after the source Neo4j is gone.
-- `--neo4j-uri … --neo4j-user … --neo4j-password …` — stream straight from a running Neo4j,
+  connection - a graph can migrate long after the source Neo4j is gone.
+- `--neo4j-uri … --neo4j-user … --neo4j-password …` - stream straight from a running Neo4j,
   skipping the dump file (needs the `[live]` extra). The password can also come from
   `DREVO_NEO4J_PASSWORD`.
 
@@ -70,8 +70,8 @@ Both sources feed the same transport-agnostic `migrate()` engine.
 
 ### Target options
 
-- `--drevo-path <file>` — the destination redb file (created if missing).
-- `--in-memory` — an ephemeral target for smoke tests.
+- `--drevo-path <file>` - the destination redb file (created if missing).
+- `--in-memory` - an ephemeral target for smoke tests.
 
 ### Programmatic use
 
@@ -116,8 +116,8 @@ ISO-8601 strings, spatials → arrays); everything else round-trips as JSON.
 
 A relationship whose endpoint wasn't migrated is handled per `--on-error`:
 
-- `raise` (default) — fail the migration.
-- `skip` — record it in the report and continue.
+- `raise` (default) - fail the migration.
+- `skip` - record it in the report and continue.
 
 ---
 
@@ -125,13 +125,13 @@ A relationship whose endpoint wasn't migrated is handled per `--on-error`:
 
 Once your data is in drevo you keep much of the Neo4j developer experience:
 
-- **Bolt protocol** — drevo speaks Bolt on port `7687`, so the official Neo4j drivers (Python,
+- **Bolt protocol** - drevo speaks Bolt on port `7687`, so the official Neo4j drivers (Python,
   JavaScript, Go, Java) connect unchanged. See
   [SDK Reference → Bolt](sdk-reference.md#bolt-protocol).
-- **Cypher** — drevo implements a growing subset of openCypher: `MATCH` / `OPTIONAL MATCH` /
+- **Cypher** - drevo implements a growing subset of openCypher: `MATCH` / `OPTIONAL MATCH` /
   `CREATE` / `MERGE` / `SET` / `REMOVE` / `DELETE`, `WHERE`, `WITH`, aggregation, variable-length
   paths, and parameters. Unimplemented constructs return a deterministic, named error rather
-  than a wrong answer — see the [Cypher Reference](cypher-reference.md) and its
+  than a wrong answer - see the [Cypher Reference](cypher-reference.md) and its
   [Not yet supported](cypher-reference.md#not-yet-supported) table.
 
 ### What to check before you switch a workload over
@@ -147,14 +147,14 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Scalar functions (`toLower`, `size`, `coalesce`, `range`, `keys`, …) | ✅ Supported (string / numeric / list library; see reference). |
 | Trigonometric & logarithmic functions (`sin`, `cos`, `tan`, `atan2`, `exp`, `log`, `log10`, `pi`, `e`, `degrees`, `radians`, `haversin`, …) | ✅ Supported (always return a `Float`; NULL-propagating; out-of-domain inputs yield `NaN` / `Infinity` per IEEE-754, matching Neo4j). |
 | List conversion functions (`toIntegerList`, `toFloatList`, `toBooleanList`, `toStringList`) | ✅ Supported (element-wise conversion; an unconvertible or `NULL` element becomes a `NULL` slot, preserving list length; a non-list argument errors). |
-| Lenient conversion functions (`toIntegerOrNull`, `toFloatOrNull`, `toBooleanOrNull`, `toStringOrNull`) | ✅ Supported (fully lenient; any unconvertible value yields `NULL` instead of erroring — including the List/Map inputs the strict `toString` rejects). |
+| Lenient conversion functions (`toIntegerOrNull`, `toFloatOrNull`, `toBooleanOrNull`, `toStringOrNull`) | ✅ Supported (fully lenient; any unconvertible value yields `NULL` instead of erroring - including the List/Map inputs the strict `toString` rejects). |
 | Statistical aggregations (`stDev`, `stDevP`, `percentileCont`, `percentileDisc`) | ✅ Supported (alongside `count` / `sum` / `avg` / `min` / `max` / `collect`; null-skipping; percentile fraction in `[0, 1]`). |
-| Container predicate (`isEmpty(x)`) | ✅ Supported (empty-test over a String / List / Map; NULL-propagating; a non-container argument errors). Fills the gap `size` leaves — `size` rejects a Map, so `size(m) = 0` cannot express it. |
+| Container predicate (`isEmpty(x)`) | ✅ Supported (empty-test over a String / List / Map; NULL-propagating; a non-container argument errors). Fills the gap `size` leaves - `size` rejects a Map, so `size(m) = 0` cannot express it. |
 | `round(value[, precision[, mode]])` | ✅ Supported (all three overloads; `mode` is one of `UP` / `DOWN` / `CEILING` / `FLOOR` / `HALF_UP` / `HALF_DOWN` / `HALF_EVEN`, case-insensitive). Rounds on decimal digits, so `round(1.255, 2) = 1.26` matches Neo4j's `BigDecimal` rather than a binary-scaling `1.25`. Negative `precision` rounds left of the point; NULL-propagating; non-finite values pass through. |
 | Non-deterministic functions (`rand()`, `randomUUID()`) | ✅ Supported (both zero-argument; re-draw per row). `rand()` returns a uniform `Float` in `[0,1)`; `randomUUID()` returns a version-4 UUID string. Passing any argument errors. |
-| Numeric predicate (`isNaN(n)`) | ✅ Supported (`true` for the IEEE-754 NaN value, `false` for any other number — an `Integer` is never NaN and `±Infinity` are numbers, not NaN; NULL-propagating; a non-numeric argument errors). The only NaN test, since `NaN = NaN` is false. |
+| Numeric predicate (`isNaN(n)`) | ✅ Supported (`true` for the IEEE-754 NaN value, `false` for any other number - an `Integer` is never NaN and `±Infinity` are numbers, not NaN; NULL-propagating; a non-numeric argument errors). The only NaN test, since `NaN = NaN` is false. |
 | Relationship endpoint functions (`startNode(r)`, `endNode(r)`) | ✅ Supported (the source / target node of a relationship; NULL-propagating; a non-relationship argument errors; a dangling endpoint yields `NULL`). The direct companion to `fts.searchRelationships` for projecting a `YIELD rel`'s endpoints without a re-`MATCH`. |
-| `CALL` / `YIELD` — built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
+| `CALL` / `YIELD` - built-in `db.*` introspection (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`) | ✅ Supported (standalone or `YIELD … WHERE`). |
 | User-defined / `apoc.*` / `gds.*` procedures | ⛔ Only the built-in `db.*` procedures exist. |
 | Regex `=~` | ✅ Supported (full-string match; common Java/Neo4j subset incl. `(?i)`). |
 | List / map indexing & slicing (`xs[0]`, `xs[1..3]`, `m['k']`) | ✅ Supported. |
@@ -165,7 +165,7 @@ Once your data is in drevo you keep much of the Neo4j developer experience:
 | Pattern predicate (`WHERE (a)-[:R]->(b)`, `NOT (a)-[:R]->()`) | ✅ Supported (existence test; anchored on bound vars; `null` anchor → `null`). |
 | `WHERE` inside a pattern (`(n:L WHERE n.x > 1)`, `-[r:T WHERE r.y > 1]->`) | ✅ Supported in `MATCH` (not in `CREATE` / `MERGE`, not on a variable-length relationship). |
 | `EXPLAIN` / `PROFILE` | ✅ The plan is returned as rows (`step`, `operator`, `details`; `PROFILE` adds `rows`, `ms` and returns them in place of the statement's rows), not in the result summary. |
-| Existential subquery (`EXISTS { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (optional `MATCH` keyword + inner `WHERE`; bare node legal; `null` anchor → `null`). The deprecated `exists(n.prop)` function form is not — use `n.prop IS NOT NULL`. |
+| Existential subquery (`EXISTS { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (optional `MATCH` keyword + inner `WHERE`; bare node legal; `null` anchor → `null`). The deprecated `exists(n.prop)` function form is not - use `n.prop IS NOT NULL`. |
 | Counting subquery (`COUNT { [MATCH] pattern [WHERE pred] }`) | ✅ Supported (integer match count; same surface as `EXISTS { … }`; `null` anchor → `null`; distinct from the `count(*)` aggregation). |
 | `COLLECT { MATCH ... RETURN expr }`, `exists(pattern)`, `\|\|`, `nullIf`, `valueType`, `char_length`, `btrim`, `normalize` | ✅ Supported (`COLLECT` returns one column, without `DISTINCT` / `ORDER BY` / `LIMIT`). |
 | `CALL { ... }` subquery (`CALL (a, b) { ... }`, importing `WITH`, `UNION` inside) | ✅ Supported (runs once per incoming row; `IN TRANSACTIONS` is not). |
@@ -188,6 +188,6 @@ drevo bundles no Neo4j dependency by design: an adapter for an external system l
 package that depends on the core, never inside it. This keeps the database embeddable and
 WASM-safe, and lets the migration tool evolve (new source formats, new drivers) without
 touching the database. The same principle governs drevo's PostgreSQL CDC support
-(see the [Admin Guide](admin-guide.md#cdc-from-postgresql)) — a *decoder* compatible with an
+(see the [Admin Guide](admin-guide.md#cdc-from-postgresql)) - a *decoder* compatible with an
 external format is a core feature, but an *importer* that talks to a live external system is a
 separate tool.

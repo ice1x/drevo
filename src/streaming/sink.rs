@@ -1,9 +1,9 @@
-//! The sink abstraction — where decoded events land.
+//! The sink abstraction - where decoded events land.
 //!
 //! The consumer decodes broker messages into [`IngestEvent`]s and hands each to
 //! a [`IngestSink`]. The trait is the seam between the transport-agnostic engine
 //! and whatever actually mutates state: a live `Drevo` handle, a
-//! staging buffer, a metrics tap, or — in tests and lightweight embedders — the
+//! staging buffer, a metrics tap, or - in tests and lightweight embedders - the
 //! reference [`MemoryGraphSink`] in this module.
 //!
 //! Keeping the sink behind a trait is what lets the engine stay dependency-free

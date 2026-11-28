@@ -203,7 +203,7 @@ fn build_cbt_entry(db: &NativeService) -> CbtEntry {
 }
 
 // =========================================================================
-// Tests — run against both backends via macro
+// Tests - run against both backends via macro
 // =========================================================================
 
 macro_rules! cbt_tests {
@@ -212,7 +212,7 @@ macro_rules! cbt_tests {
             use super::*;
 
             // -----------------------------------------------------------------
-            // 1. Basic graph construction — all CBT nodes and edges are created
+            // 1. Basic graph construction - all CBT nodes and edges are created
             // -----------------------------------------------------------------
 
             #[test]
@@ -250,7 +250,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 2. Thought chains — tracing from situation to consequences
+            // 2. Thought chains - tracing from situation to consequences
             // -----------------------------------------------------------------
 
             #[test]
@@ -316,7 +316,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 3. Reverse traversal — from emotion back to cause
+            // 3. Reverse traversal - from emotion back to cause
             // -----------------------------------------------------------------
 
             #[test]
@@ -341,7 +341,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 4. BFS — full chain traversal from situation
+            // 4. BFS - full chain traversal from situation
             // -----------------------------------------------------------------
 
             #[test]
@@ -402,7 +402,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 5. Shortest path — finding connections between concepts
+            // 5. Shortest path - finding connections between concepts
             // -----------------------------------------------------------------
 
             #[test]
@@ -444,7 +444,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 6. Subgraph — extracting full CBT entry context
+            // 6. Subgraph - extracting full CBT entry context
             // -----------------------------------------------------------------
 
             #[test]
@@ -478,7 +478,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 7. Kind index — board views by node type
+            // 7. Kind index - board views by node type
             // -----------------------------------------------------------------
 
             #[test]
@@ -517,7 +517,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 8. FTS — searching for distortion patterns
+            // 8. FTS - searching for distortion patterns
             // -----------------------------------------------------------------
 
             #[test]
@@ -566,7 +566,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 9. Properties — emotion intensity tracking
+            // 9. Properties - emotion intensity tracking
             // -----------------------------------------------------------------
 
             #[test]
@@ -584,7 +584,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 10. Multi-entry journal — recurring distortion patterns
+            // 10. Multi-entry journal - recurring distortion patterns
             // -----------------------------------------------------------------
 
             #[test]
@@ -670,7 +670,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 11. Update workflow — adjusting emotions after therapy
+            // 11. Update workflow - adjusting emotions after therapy
             // -----------------------------------------------------------------
 
             #[test]
@@ -704,7 +704,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 12. Delete workflow — removing a thought chain
+            // 12. Delete workflow - removing a thought chain
             // -----------------------------------------------------------------
 
             #[test]
@@ -712,7 +712,7 @@ macro_rules! cbt_tests {
                 let db = $db_expr;
                 let entry = build_cbt_entry(&db);
 
-                // Delete the thought node — should cascade delete its edges
+                // Delete the thought node - should cascade delete its edges
                 db.delete_node(entry.thought).unwrap();
 
                 // Thought should be gone
@@ -729,7 +729,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 13. Edge weight — severity scoring for distortion links
+            // 13. Edge weight - severity scoring for distortion links
             // -----------------------------------------------------------------
 
             #[test]
@@ -780,7 +780,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 14. DFS — deep exploration of thought chains
+            // 14. DFS - deep exploration of thought chains
             // -----------------------------------------------------------------
 
             #[test]
@@ -800,7 +800,7 @@ macro_rules! cbt_tests {
             }
 
             // -----------------------------------------------------------------
-            // 15. List recent — journal timeline
+            // 15. List recent - journal timeline
             // -----------------------------------------------------------------
 
             #[test]

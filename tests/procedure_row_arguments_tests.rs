@@ -1,9 +1,9 @@
 //! Procedure arguments that use the row's variables (#818).
 //!
 //! `drevo.community.query`, `drevo.events.post` and `drevo.extract.ingest`
-//! evaluate their arguments against the current row; the search family —
+//! evaluate their arguments against the current row; the search family -
 //! `fts.search`, `drevo.rag.context`, `drevo.rag.retrieve`,
-//! `drevo.memory.recall` — evaluates them with no row and fails with
+//! `drevo.memory.recall` - evaluates them with no row and fails with
 //! `UnboundVariable`, so none of them can be called once per row.
 
 use std::collections::HashMap;

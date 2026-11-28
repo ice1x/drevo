@@ -1,9 +1,9 @@
-//! Cypher PoC edge-case stress catalogue — Phase 10.5 task `00126` (layer 2).
+//! Cypher PoC edge-case stress catalogue - Phase 10.5 task `00126` (layer 2).
 //!
 //! This is the catalogue of "proof-of-concept killers": the corner cases a
 //! Neo4j-literate reviewer reaches for in the first ten minutes of kicking a
 //! new Cypher engine's tyres. Each item is an **explicit** test asserting the
-//! *correct* observable behaviour — not merely "it didn't crash". When drevo
+//! *correct* observable behaviour - not merely "it didn't crash". When drevo
 //! diverges from Neo4j the divergence is documented inline next to the
 //! assertion so a future reader can tell intent from accident.
 //!
@@ -12,7 +12,7 @@
 //!
 //! * self-loops `(a)-[r]->(a)`
 //! * variable-length cycles `(a)-[*1..10]->(a)` with BFS / trail dedup
-//! * large `IN` lists (10 k elements — membership scan stays linear, not O(N²))
+//! * large `IN` lists (10 k elements - membership scan stays linear, not O(N²))
 //! * fat properties (1 000-element JSON array round-trips intact)
 //! * Unicode normalisation in `WHERE` equality (NFC vs NFD are *distinct*)
 //! * full `NULL` semantics matrix (`1 + NULL`, `NULL = NULL`, `NULL IN [NULL]`,
@@ -29,7 +29,7 @@
 //! "large" fixtures (10 k) are sized to finish in well under a second on the
 //! shared self-hosted runner. The two scaling cells (`large_in_list_*`,
 //! `batch_insert_*`, `dense_subgraph_*`) assert *correctness* on the large
-//! input rather than a wall-clock bound — a timing assertion would be flaky
+//! input rather than a wall-clock bound - a timing assertion would be flaky
 //! under nextest parallelism on the shared runner, whereas an O(N²) regression
 //! on a 10 k input would blow the per-test budget and trip nextest's own
 //! slow-test timeout, so the guard is structural rather than a brittle
@@ -110,7 +110,7 @@ fn self_loop_varlen_terminates_with_trail_uniqueness() {
     run("MATCH (a:Node {name: 'solo'}) CREATE (a)-[:LOOP]->(a)", &db);
     // A single self-loop edge: with trail (relationship) uniqueness, BFS may
     // traverse the loop edge exactly once. `[*1..10]` must therefore return
-    // the start node exactly once — and crucially terminate, not spin.
+    // the start node exactly once - and crucially terminate, not spin.
     let rows = run(
         "MATCH (a:Node {name: 'solo'})-[:LOOP*1..10]->(b:Node) RETURN b.name AS name",
         &db,
@@ -140,7 +140,7 @@ fn varlen_cycle_bfs_dedup_terminates() {
     // From `a`, `[*1..10]` over a 3-cycle. Trail uniqueness (no relationship
     // reused) caps the walk at three hops: a->b, a->b->c, a->b->c->a. The
     // reachable-node set is {b, c, a}; each surfaces once per distinct
-    // shortest trail. The key assertion is *termination* — an engine without
+    // shortest trail. The key assertion is *termination* - an engine without
     // dedup spins forever on a cycle.
     let mut names: Vec<String> = run(
         "MATCH (start:N {name: 'a'})-[:R*1..10]->(x:N) RETURN x.name AS name",
@@ -229,7 +229,7 @@ fn large_in_list_against_many_rows_is_not_quadratic() {
     }
     // A 10 000-element IN list. Evaluating `idx IN [..10k..]` once per matched
     // row is 1_000 × 10_000 = 10^7 comparisons in the worst (linear-scan)
-    // case — fine. An O(N²)-per-probe implementation would be 10^11 and trip
+    // case - fine. An O(N²)-per-probe implementation would be 10^11 and trip
     // nextest's slow-test timeout long before this assertion is reached.
     let list: String = (0..10_000)
         .map(|i| (i * 2).to_string()) // even numbers only
@@ -281,7 +281,7 @@ fn unicode_nfc_vs_nfd_are_distinct_in_where_equality() {
 
     run(&format!("CREATE (:Word {{text: '{}'}})", nfc), &db);
 
-    // drevo does NOT silently normalise — string equality is code-point exact,
+    // drevo does NOT silently normalise - string equality is code-point exact,
     // matching Neo4j (Cypher string equality is not Unicode-normalising). The
     // NFD spelling must NOT match the stored NFC value.
     let nfd_match = run(
@@ -316,7 +316,7 @@ fn null_arithmetic_propagates() {
 #[test]
 fn null_equality_is_null_not_true() {
     let db = db();
-    // NULL = NULL is NULL, not TRUE — the cardinal three-valued-logic trap.
+    // NULL = NULL is NULL, not TRUE - the cardinal three-valued-logic trap.
     assert_eq!(*scalar(&run("RETURN null = null AS x", &db)), Value::Null);
     // NULL <> NULL is also NULL.
     assert_eq!(*scalar(&run("RETURN null <> null AS x", &db)), Value::Null);
@@ -342,12 +342,12 @@ fn null_in_list_with_only_null_is_null() {
 #[test]
 fn membership_with_null_in_list() {
     let db = db();
-    // 1 IN [1, NULL, 3] is TRUE — a definite match short-circuits the unknown.
+    // 1 IN [1, NULL, 3] is TRUE - a definite match short-circuits the unknown.
     assert_eq!(
         *scalar(&run("RETURN 1 IN [1, null, 3] AS x", &db)),
         Value::Bool(true)
     );
-    // 2 IN [1, NULL, 3] is NULL — no match found, but a NULL in the list means
+    // 2 IN [1, NULL, 3] is NULL - no match found, but a NULL in the list means
     // the answer is "unknown", not FALSE.
     assert_eq!(
         *scalar(&run("RETURN 2 IN [1, null, 3] AS x", &db)),
@@ -358,7 +358,7 @@ fn membership_with_null_in_list() {
 #[test]
 fn list_literal_preserves_embedded_null() {
     let db = db();
-    // [1, NULL, 3] is a three-element list with a NULL in the middle — the
+    // [1, NULL, 3] is a three-element list with a NULL in the middle - the
     // NULL is preserved, not dropped or coalesced.
     let rows = run("RETURN [1, null, 3] AS xs", &db);
     match scalar(&rows) {
@@ -406,7 +406,7 @@ fn plus_concatenates_a_string_with_a_number_or_a_boolean() {
 #[test]
 fn plus_never_turns_a_string_into_a_number() {
     let db = db();
-    // 1 + '2' is the string "12" — never the number 3.
+    // 1 + '2' is the string "12" - never the number 3.
     assert_ne!(*scalar(&run("RETURN 1 + '2' AS x", &db)), Value::Integer(3));
     // Other arithmetic over a string is still a type error.
     for query in ["RETURN 1 - '2' AS x", "RETURN '2' * 3 AS x"] {

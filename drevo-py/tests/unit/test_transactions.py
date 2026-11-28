@@ -1,4 +1,4 @@
-"""Unit tests for explicit transactions — `Drevo.begin` / `Drevo.transaction` (#554).
+"""Unit tests for explicit transactions - `Drevo.begin` / `Drevo.transaction` (#554).
 
 A `Transaction` groups Cypher statements atomically: its writes are visible
 to its own statements (read-your-writes), invisible to everyone else until

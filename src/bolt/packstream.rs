@@ -1,4 +1,4 @@
-//! PackStream — the binary serialisation format used by the Bolt
+//! PackStream - the binary serialisation format used by the Bolt
 //! protocol.
 //!
 //! Every PackStream value is encoded as a one-byte *marker* followed
@@ -11,14 +11,14 @@
 //!
 //! - **Null** (`0xC0`)
 //! - **Boolean** (`0xC2` false / `0xC3` true)
-//! - **Integer** — five width-bucketed forms covering the full `i64`
+//! - **Integer** - five width-bucketed forms covering the full `i64`
 //!   range (TINY, INT_8, INT_16, INT_32, INT_64)
-//! - **Float** (`0xC1`) — 64-bit IEEE 754, big-endian
-//! - **String** — TINY (0x80–0x8F) + STRING_8 / STRING_16 / STRING_32
-//! - **Bytes** — BYTES_8 / BYTES_16 / BYTES_32
-//! - **List** — TINY (0x90–0x9F) + LIST_8 / LIST_16 / LIST_32
-//! - **Dictionary** — TINY (0xA0–0xAF) + DICT_8 / DICT_16 / DICT_32
-//! - **Structure** — TINY (0xB0–0xBF) + STRUCT_8 / STRUCT_16
+//! - **Float** (`0xC1`) - 64-bit IEEE 754, big-endian
+//! - **String** - TINY (0x80-0x8F) + STRING_8 / STRING_16 / STRING_32
+//! - **Bytes** - BYTES_8 / BYTES_16 / BYTES_32
+//! - **List** - TINY (0x90-0x9F) + LIST_8 / LIST_16 / LIST_32
+//! - **Dictionary** - TINY (0xA0-0xAF) + DICT_8 / DICT_16 / DICT_32
+//! - **Structure** - TINY (0xB0-0xBF) + STRUCT_8 / STRUCT_16
 //!
 //! ## Not in scope for this task
 //!
@@ -30,7 +30,7 @@
 //!
 //! ## Implementation notes
 //!
-//! * The codec works on plain byte slices and `Vec<u8>` — no
+//! * The codec works on plain byte slices and `Vec<u8>` - no
 //!   `Read` / `Write` traits, no allocations beyond the resulting
 //!   `Value`. This keeps it usable from sync, async, FFI and WASM
 //!   contexts without dragging in an I/O trait.
@@ -51,21 +51,21 @@ pub enum Value {
     Boolean(bool),
     /// PackStream `Integer`. Spans TINY (-16..=127) up through INT_64.
     Integer(i64),
-    /// PackStream `Float` — IEEE 754 double, marker `0xC1`.
+    /// PackStream `Float` - IEEE 754 double, marker `0xC1`.
     Float(f64),
     /// PackStream `String`. UTF-8 byte length determines the marker
     /// bucket (TINY / STRING_8 / STRING_16 / STRING_32).
     String(String),
-    /// PackStream `Bytes`. Always uses BYTES_8 / 16 / 32 — there is
+    /// PackStream `Bytes`. Always uses BYTES_8 / 16 / 32 - there is
     /// no tiny-bytes form in the v4 spec.
     Bytes(Vec<u8>),
     /// PackStream `List`. Items are heterogeneously typed.
     List(Vec<Value>),
-    /// PackStream `Dictionary` — string-keyed map. A `BTreeMap` is
+    /// PackStream `Dictionary` - string-keyed map. A `BTreeMap` is
     /// used to give the encoder a deterministic key order, matching
     /// what most Bolt clients also produce.
     Dictionary(BTreeMap<String, Value>),
-    /// PackStream `Structure` — a tagged tuple of fields. The Bolt
+    /// PackStream `Structure` - a tagged tuple of fields. The Bolt
     /// session layer uses this to carry messages (HELLO, RUN, …) and
     /// graph types (Node, Relationship, …).
     Structure {
@@ -250,10 +250,10 @@ fn encode_struct_header(size: usize, out: &mut Vec<u8>) {
 ///
 /// # Errors
 ///
-/// * [`BoltError::Eof`] — the input ran out mid-value.
-/// * [`BoltError::UnknownMarker`] — a marker byte not defined in the
+/// * [`BoltError::Eof`] - the input ran out mid-value.
+/// * [`BoltError::UnknownMarker`] - a marker byte not defined in the
 ///   Bolt v4 PackStream spec was encountered.
-/// * [`BoltError::LengthOverflow`] — a 32-bit length prefix did not
+/// * [`BoltError::LengthOverflow`] - a 32-bit length prefix did not
 ///   fit into `usize` on the current target.
 pub fn decode(input: &[u8]) -> BoltResult<(Value, &[u8])> {
     let (marker, rest) = split_first(input)?;

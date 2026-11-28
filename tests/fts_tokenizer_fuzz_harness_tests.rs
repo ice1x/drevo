@@ -1,4 +1,4 @@
-//! Phase 9 task `00058` — stable-CI replay of the `fuzz/seed_corpus/*`
+//! Phase 9 task `00058` - stable-CI replay of the `fuzz/seed_corpus/*`
 //! inputs against the FTS tokenizer invariants.
 //!
 //! The full coverage-guided harness lives under `fuzz/` and requires
@@ -7,15 +7,15 @@
 //! so the seed-corpus files are also replayed here under the stable
 //! `cargo test` matrix. The assertion bodies are kept in lock-step with
 //! `fuzz/fuzz_targets/*.rs`; if a property changes there, change it
-//! here in the same commit — the harness exists precisely so the two
+//! here in the same commit - the harness exists precisely so the two
 //! cannot silently drift.
 //!
 //! Cross-links:
 //!
-//! - `tests/proptest_fts_tokenizer.rs` — `00057` property-based suite.
-//! - `tests/fts_audit_tests.rs::tokenizer_extract_trigrams_is_deterministic_on_random_unicode`
-//!   — `00108` audit-grade xorshift32 fuzzer.
-//! - `audit/AUDIT-fts.md` §"#follow-up-tokenizer-fuzz" — division of
+//! - `tests/proptest_fts_tokenizer.rs` - `00057` property-based suite.
+//! - `tests/fts_audit_tests.rs::tokenizer_extract_trigrams_is_deterministic_on_random_unicode` -
+//!   `00108` audit-grade xorshift32 fuzzer.
+//! - `audit/AUDIT-fts.md` §"#follow-up-tokenizer-fuzz" - division of
 //!   labour between `00057`, `00108`, and this task.
 
 use std::fs;
@@ -30,7 +30,7 @@ fn fuzz_root() -> PathBuf {
 }
 
 /// Read every UTF-8 file under `seed_corpus/<target>/` and yield its
-/// `(filename, contents)`. Non-UTF-8 files are skipped — libFuzzer's
+/// `(filename, contents)`. Non-UTF-8 files are skipped - libFuzzer's
 /// `Arbitrary` impl for `&str` already filters those, so the stable
 /// replay does the same.
 fn read_utf8_corpus(target: &str) -> Vec<(String, String)> {
@@ -54,7 +54,7 @@ fn read_utf8_corpus(target: &str) -> Vec<(String, String)> {
     out.sort_by(|a, b| a.0.cmp(&b.0));
     assert!(
         !out.is_empty(),
-        "seed corpus {target} is empty — the fuzz harness needs at least one seed"
+        "seed corpus {target} is empty - the fuzz harness needs at least one seed"
     );
     out
 }
@@ -130,7 +130,7 @@ fn assert_extract_trigrams_invariants(label: &str, title: &str, body: &str) {
     let combined_expected = trigrams(&join_title_body(title, body));
     assert_eq!(
         result, combined_expected,
-        "{label}: extract_trigrams diverged from trigrams(joined) — title={title:?} body={body:?}"
+        "{label}: extract_trigrams diverged from trigrams(joined) - title={title:?} body={body:?}"
     );
 
     for pair in result.windows(2) {
@@ -178,7 +178,7 @@ fn fuzz_extract_trigrams_seed_corpus_holds_invariants() {
         let (title, body) = input.split_at(mid);
         assert_extract_trigrams_invariants(&format!("{name} (mid-split)"), title, body);
         // Also exercise the title-only and body-only branches with the
-        // raw input — these match the `title.is_empty()` /
+        // raw input - these match the `title.is_empty()` /
         // `body.is_empty()` short-circuits inside `extract_trigrams`.
         assert_extract_trigrams_invariants(&format!("{name} (title-only)"), &input, "");
         assert_extract_trigrams_invariants(&format!("{name} (body-only)"), "", &input);
@@ -235,7 +235,7 @@ fn every_fuzz_target_has_a_seed_corpus() {
 }
 
 /// Sanity check: the fuzz crate's `Cargo.toml` exists and declares each
-/// target as a `[[bin]]`. This is a lightweight regression guard — if a
+/// target as a `[[bin]]`. This is a lightweight regression guard - if a
 /// future refactor renames or removes a target, the stable harness
 /// notices in CI before the nightly fuzz job does.
 #[test]

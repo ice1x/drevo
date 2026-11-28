@@ -1,4 +1,4 @@
-//! `id()`-seek pushdown (RFC `docs/rfc-native-core.md`, #307 — the executor
+//! `id()`-seek pushdown (RFC `docs/rfc-native-core.md`, #307 - the executor
 //! gap surfaced by the real-data baseline): a conjunctive `WHERE id(n) = X` /
 //! `WHERE id(n) IN [...]` must resolve the pattern variable through
 //! [`GraphEngine::get_node`] point lookups instead of enumerating every node.
@@ -194,7 +194,7 @@ fn hub_expansion_with_id_seek_never_scans() {
     assert_eq!(
         e.full_scans(),
         0,
-        "the anchor seeks by id and the hop expands adjacency — no full scan anywhere"
+        "the anchor seeks by id and the hop expands adjacency - no full scan anywhere"
     );
 }
 

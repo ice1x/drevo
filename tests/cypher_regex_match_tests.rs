@@ -1,4 +1,4 @@
-//! End-to-end Cypher `=~` regex-match tests — Phase 10 follow-up task
+//! End-to-end Cypher `=~` regex-match tests - Phase 10 follow-up task
 //! `00140`.
 //!
 //! The parser already produces the `=~` binary operator (`00062`); this task
@@ -62,7 +62,7 @@ fn s(v: &str) -> Value {
     Value::String(v.to_string())
 }
 
-// ===== Core semantics — projecting the boolean ==============================
+// ===== Core semantics - projecting the boolean ==============================
 
 #[test]
 fn full_match_is_anchored_at_both_ends() {

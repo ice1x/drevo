@@ -1,4 +1,4 @@
-//! Integration tests for vector similarity / distance — Phase 12 task
+//! Integration tests for vector similarity / distance - Phase 12 task
 //! `00075`.
 //!
 //! Exercises the public `drevo::vector` surface the way the upcoming

@@ -46,13 +46,13 @@ fn neighbor_id_for_edge(edge: &Edge, current_id: u64, direction: Direction) -> u
 ///
 /// # Arguments
 ///
-/// * `backend` — the storage backend to query
-/// * `start_id` — the node ID to start from
-/// * `max_depth` — maximum number of hops (0 returns empty)
-/// * `direction` — which edges to follow (Outgoing, Incoming, Both)
-/// * `edge_kind` — if `Some`, only traverse edges with this kind
-/// * `get_node` — closure to retrieve a node by ID
-/// * `edges_of` — closure to retrieve edges of a node
+/// * `backend` - the storage backend to query
+/// * `start_id` - the node ID to start from
+/// * `max_depth` - maximum number of hops (0 returns empty)
+/// * `direction` - which edges to follow (Outgoing, Incoming, Both)
+/// * `edge_kind` - if `Some`, only traverse edges with this kind
+/// * `get_node` - closure to retrieve a node by ID
+/// * `edges_of` - closure to retrieve edges of a node
 pub fn bfs<F, G>(
     start_id: u64,
     max_depth: u8,
@@ -117,12 +117,12 @@ where
 ///
 /// # Arguments
 ///
-/// * `start_id` — the node ID to start from
-/// * `max_depth` — maximum number of hops (0 returns empty)
-/// * `direction` — which edges to follow (Outgoing, Incoming, Both)
-/// * `edge_kind` — if `Some`, only traverse edges with this kind
-/// * `get_node` — closure to retrieve a node by ID
-/// * `edges_of` — closure to retrieve edges of a node
+/// * `start_id` - the node ID to start from
+/// * `max_depth` - maximum number of hops (0 returns empty)
+/// * `direction` - which edges to follow (Outgoing, Incoming, Both)
+/// * `edge_kind` - if `Some`, only traverse edges with this kind
+/// * `get_node` - closure to retrieve a node by ID
+/// * `edges_of` - closure to retrieve edges of a node
 pub fn dfs<F, G>(
     start_id: u64,
     max_depth: u8,
@@ -220,7 +220,7 @@ impl Ord for DijkstraState {
 ///
 /// **Edge weights must be non-negative and finite.** The model layer
 /// guarantees finiteness (`DrevoError::InvalidWeight` rejects NaN /
-/// ±∞ at `create_edge` / `update_edge` time — see `AUDIT-db.md` F1).
+/// ±∞ at `create_edge` / `update_edge` time - see `AUDIT-db.md` F1).
 /// Negative weights are admitted by the storage layer but violate
 /// Dijkstra's correctness precondition: this implementation may
 /// return a non-optimal path because a node is treated as
@@ -228,20 +228,20 @@ impl Ord for DijkstraState {
 /// contains negative-weight edges and you need true shortest
 /// paths, use a different algorithm (Bellman-Ford; not yet
 /// implemented in drevo). Negative cycles are not detected and
-/// will *not* cause a panic — the lazy-update relaxation may
+/// will *not* cause a panic - the lazy-update relaxation may
 /// loop until the heap is empty, but it does terminate (`prev`
 /// only updates when the cost strictly decreases, so progress
 /// is bounded by the finite f32 precision lattice).
 ///
 /// # Arguments
 ///
-/// * `from` — source node ID
-/// * `to` — target node ID
-/// * `edge_kind` — if `Some`, only edges with this kind contribute to
+/// * `from` - source node ID
+/// * `to` - target node ID
+/// * `edge_kind` - if `Some`, only edges with this kind contribute to
 ///   the path (parity with `bfs` / `dfs`; previously
 ///   shortest_path silently considered every edge regardless of kind)
-/// * `get_node` — closure to verify a node exists (returns `Option<Node>`)
-/// * `edges_of` — closure to retrieve outgoing edges of a node
+/// * `get_node` - closure to verify a node exists (returns `Option<Node>`)
+/// * `edges_of` - closure to retrieve outgoing edges of a node
 pub fn shortest_path<F, G>(
     from: u64,
     to: u64,
@@ -324,14 +324,14 @@ where
 ///
 /// # Arguments
 ///
-/// * `root` — the node ID to start from
-/// * `depth` — maximum number of hops (0 returns only the root, no edges)
-/// * `edge_kind` — if `Some`, both the BFS-discovery phase and the
+/// * `root` - the node ID to start from
+/// * `depth` - maximum number of hops (0 returns only the root, no edges)
+/// * `edge_kind` - if `Some`, both the BFS-discovery phase and the
 ///   edge-collection phase skip edges whose `kind` does not match.
 ///   Nodes only reachable through filtered-out edges are not
 ///   discovered. `None` preserves the prior all-edges behavior.
-/// * `get_node` — closure to retrieve a node by ID
-/// * `edges_of` — closure to retrieve edges of a node (both directions)
+/// * `get_node` - closure to retrieve a node by ID
+/// * `edges_of` - closure to retrieve edges of a node (both directions)
 pub fn subgraph<F, G>(
     root: u64,
     depth: u8,
@@ -510,8 +510,8 @@ pub struct Expansion {
 /// Walk breadth-first from `seeds` and return each node reached once, at its
 /// shortest distance, with the relationship that first reached it.
 ///
-/// Nodes at one distance are walked in order — the seeds in the order given,
-/// later nodes by id — and each node's relationships by id, so the same graph
+/// Nodes at one distance are walked in order - the seeds in the order given,
+/// later nodes by id - and each node's relationships by id, so the same graph
 /// always gives the same answer: a node two nodes reach at the same distance
 /// is attributed to the one walked first.
 ///
@@ -931,7 +931,7 @@ mod tests {
         db.create_edge(make_edge(c.id, d.id, "links_to")).unwrap();
 
         let result = db.bfs(a.id, 2, Direction::Outgoing, None).unwrap();
-        assert_eq!(result.len(), 3); // B, C, D — no duplicates
+        assert_eq!(result.len(), 3); // B, C, D - no duplicates
         let ids: Vec<u64> = result.iter().map(|n| n.id).collect();
         assert!(ids.contains(&b.id));
         assert!(ids.contains(&c.id));
@@ -1136,7 +1136,7 @@ mod tests {
         db.create_edge(make_edge(c.id, d.id, "links_to")).unwrap();
 
         let result = db.dfs(a.id, 2, Direction::Outgoing, None).unwrap();
-        assert_eq!(result.len(), 3); // B, C, D — no duplicates
+        assert_eq!(result.len(), 3); // B, C, D - no duplicates
         let ids: Vec<u64> = result.iter().map(|n| n.id).collect();
         assert!(ids.contains(&b.id));
         assert!(ids.contains(&c.id));
@@ -1558,7 +1558,7 @@ mod expand_tests {
         }
     }
 
-    /// a(1) – b(2) – c(3) – d(4)
+    /// a(1) - b(2) - c(3) - d(4)
     fn chain() -> Graph {
         Graph::default()
             .nodes(&[1, 2, 3, 4])
@@ -1607,7 +1607,7 @@ mod expand_tests {
 
     #[test]
     fn diamond_returns_the_far_node_once_via_the_lower_frontier_node() {
-        // a(1)→b(2), a→c(3), b→d(4), c→d — d is reached from b first.
+        // a(1)→b(2), a→c(3), b→d(4), c→d - d is reached from b first.
         let g = Graph::default()
             .nodes(&[1, 2, 3, 4])
             .edge(10, 1, 2)
@@ -1622,7 +1622,7 @@ mod expand_tests {
 
     #[test]
     fn a_node_reached_from_two_seeds_appears_once_at_its_shortest_distance() {
-        // 1 – 2 – 3, seeds 1 and 3: 2 is one hop from both.
+        // 1 - 2 - 3, seeds 1 and 3: 2 is one hop from both.
         let g = Graph::default()
             .nodes(&[1, 2, 3])
             .edge(10, 1, 2)
@@ -1675,7 +1675,7 @@ mod expand_tests {
 
     #[test]
     fn labels_admit_only_matching_nodes_and_walk_only_through_them() {
-        // seed(1:Doc) – 2:Person – 3:Doc ; seed – 4:Doc – 5:Doc
+        // seed(1:Doc) - 2:Person - 3:Doc ; seed - 4:Doc - 5:Doc
         let g = Graph::default()
             .node(1, &["Doc"])
             .node(2, &["Person"])
@@ -1701,7 +1701,7 @@ mod expand_tests {
 
     #[test]
     fn excluded_labels_are_neither_returned_nor_walked_through() {
-        // 1 – 2:Message – 3 ; 1 – 4
+        // 1 - 2:Message - 3 ; 1 - 4
         let g = Graph::default()
             .node(1, &["Entity"])
             .node(2, &["Message"])
@@ -1757,7 +1757,7 @@ mod expand_tests {
 
     #[test]
     fn per_node_limit_counts_new_nodes_only() {
-        // 1 – 2 – 3, 2 – 4: from 2, the relationship back to 1 is not a new node.
+        // 1 - 2 - 3, 2 - 4: from 2, the relationship back to 1 is not a new node.
         let g = Graph::default()
             .nodes(&[1, 2, 3, 4])
             .edge(10, 1, 2)

@@ -1,4 +1,4 @@
-"""Unit tests for `Drevo.execute` — Cypher from Python (issue #553).
+"""Unit tests for `Drevo.execute` - Cypher from Python (issue #553).
 
 One statement per call, autocommit: a write is committed when `execute`
 returns. Results are a `CypherResult` with `.columns`, rows as dicts (by

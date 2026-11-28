@@ -201,7 +201,7 @@ impl CatalogStore for MemoryStore {
 }
 
 /// How a [`FileStore`] turns the catalog's JSON into the file's bytes and
-/// back — to encrypt the file, say.
+/// back - to encrypt the file, say.
 pub trait FileCodec: Send + Sync + std::fmt::Debug {
     /// The bytes to write for `json`.
     ///

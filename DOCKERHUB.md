@@ -1,19 +1,19 @@
 # drevo
 
-**An embedded graph + vector database in a single file — Neo4j-compatible, with built-in full-text search, HNSW vector search, and an OpenAI-compatible embeddings proxy. No external services.**
+**An embedded graph + vector database in a single file - Neo4j-compatible, with built-in full-text search, HNSW vector search, and an OpenAI-compatible embeddings proxy. No external services.**
 
-`drevo` is a self-contained graph database written in Rust. It stores everything in one [`redb`](https://github.com/cberner/redb) file, speaks the **Neo4j Bolt** wire protocol and **Cypher**, and ships a Web UI, an HTTP API, BM25 full-text search, and vector search — all in one small container with zero external dependencies.
+`drevo` is a self-contained graph database written in Rust. It stores everything in one [`redb`](https://github.com/cberner/redb) file, speaks the **Neo4j Bolt** wire protocol and **Cypher**, and ships a Web UI, an HTTP API, BM25 full-text search, and vector search - all in one small container with zero external dependencies.
 
 ---
 
 ## Features
 
-- **Graph + vector in one engine** — nodes, typed relationships, properties, and `Value::Vector` with an HNSW index for joint graph + semantic queries (RAG-ready).
-- **Neo4j-compatible** — a hand-written Cypher executor (`CREATE`/`MATCH`/`MERGE`/`SET`/`DELETE`/`WHERE`/`WITH`/`UNWIND`/`FOREACH`/aggregations/variable-length paths) served over the **Bolt** wire protocol, so `cypher-shell` and the official Neo4j drivers connect out of the box.
-- **Full-text search** — Okapi BM25 over a trigram index. Indexes node `title`/`body`, **all string node properties**, and **relationship properties** — `CALL fts.search(query, k)` and `CALL fts.searchRelationships(query, k)`.
-- **OpenAI-compatible embeddings proxy** — `POST /v1/embeddings` transparently forwards to your configured upstream (OpenAI / Voyage / any compatible endpoint). Opt-in and SSRF-safe: it answers `503` until configured.
-- **Web UI** — an interactive graph explorer at `/ui`.
-- **Durable & portable** — a version-stamped on-disk format; a single `.redb` file travels between a local session, a cloud worker, and a mobile app.
+- **Graph + vector in one engine** - nodes, typed relationships, properties, and `Value::Vector` with an HNSW index for joint graph + semantic queries (RAG-ready).
+- **Neo4j-compatible** - a hand-written Cypher executor (`CREATE`/`MATCH`/`MERGE`/`SET`/`DELETE`/`WHERE`/`WITH`/`UNWIND`/`FOREACH`/aggregations/variable-length paths) served over the **Bolt** wire protocol, so `cypher-shell` and the official Neo4j drivers connect out of the box.
+- **Full-text search** - Okapi BM25 over a trigram index. Indexes node `title`/`body`, **all string node properties**, and **relationship properties** - `CALL fts.search(query, k)` and `CALL fts.searchRelationships(query, k)`.
+- **OpenAI-compatible embeddings proxy** - `POST /v1/embeddings` transparently forwards to your configured upstream (OpenAI / Voyage / any compatible endpoint). Opt-in and SSRF-safe: it answers `503` until configured.
+- **Web UI** - an interactive graph explorer at `/ui`.
+- **Durable & portable** - a version-stamped on-disk format; a single `.redb` file travels between a local session, a cloud worker, and a mobile app.
 
 ---
 
@@ -46,7 +46,7 @@ with drv.session() as s:
 
 ## Data persistence
 
-The database is a single file at **`/data/drevo.redb`**. Bind-mount `/data` (as above) to keep it on the host — it survives image upgrades, and the version-stamped format stays backward-compatible.
+The database is a single file at **`/data/drevo.redb`**. Bind-mount `/data` (as above) to keep it on the host - it survives image upgrades, and the version-stamped format stays backward-compatible.
 
 The container runs as a non-root user. If the bind-mounted folder is owned by your host user, run the container as that user so it can take redb's write lock:
 
@@ -69,7 +69,7 @@ docker run -d --name drevo \
 | `DREVO_DATA_DIR` | `/data` | Directory holding `drevo.redb` |
 | `DREVO_BOLT_PORT` | `7687` | Bolt (Neo4j-compatible) port |
 
-**Embeddings proxy** (optional — enables `POST /v1/embeddings`; without these it returns `503`):
+**Embeddings proxy** (optional - enables `POST /v1/embeddings`; without these it returns `503`):
 
 | Variable | Example | Description |
 |---|---|---|
@@ -91,8 +91,8 @@ docker run -d --name drevo \
 
 ## Tags
 
-- `latest` — the most recent release.
-- `X.Y.Z` (e.g. `0.0.3`) — immutable, pinned versions.
+- `latest` - the most recent release.
+- `X.Y.Z` (e.g. `0.0.3`) - immutable, pinned versions.
 
 ## Source & docs
 

@@ -1,8 +1,8 @@
-//! End-to-end Cypher pattern-predicate tests — Phase 10 follow-up task `00151`.
+//! End-to-end Cypher pattern-predicate tests - Phase 10 follow-up task `00151`.
 //!
 //! A pattern predicate `(a)-[:R]->(b)` used in a boolean position (a `WHERE`
 //! filter, or anywhere an expression is expected) tests whether **at least one**
-//! match of the path pattern exists relative to the current row — anchored on
+//! match of the path pattern exists relative to the current row - anchored on
 //! any variables the surrounding query has already bound. It is the predicate-
 //! valued sibling of the pattern comprehension (`00150`): where a pattern
 //! comprehension *shapes a list* from a graph pattern, a pattern predicate
@@ -20,7 +20,7 @@
 //!   node) makes the predicate `null` (three-valued logic) rather than a type
 //!   error,
 //! * a bare parenthesised expression (`(a.age + 1)`, `(1 + 2) * 3`) is still
-//!   ordinary grouping — only a path with `≥ 1` relationship is a predicate,
+//!   ordinary grouping - only a path with `≥ 1` relationship is a predicate,
 //!
 //! plus the five scenario domains (CBT journal, story editor, task manager,
 //! ERP, bug tracker) the drevo Cypher suite standardises on.
@@ -257,7 +257,7 @@ fn parenthesised_grouping_in_return_is_unaffected() {
 fn bare_parenthesised_variable_is_grouping_not_a_predicate() {
     let d = db();
     run("CREATE (a:N {x: 7})", &d);
-    // `(a).x` — `(a)` is a grouped variable, not a path pattern (no relationship).
+    // `(a).x` - `(a)` is a grouped variable, not a path pattern (no relationship).
     let rows = run("MATCH (a:N) RETURN (a).x AS v", &d);
     assert_eq!(rows[0][0], Value::Integer(7));
 }

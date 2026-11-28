@@ -1,7 +1,7 @@
 //! Native durable embedding store + HNSW behaviour (issue #446, epic #444).
 //!
-//! The native `NativeService` embedding store — `set`/`get`/`count`/`delete`
-//! plus HNSW `vector_search` — is drevo-py's backend (S3), so its behaviour is
+//! The native `NativeService` embedding store - `set`/`get`/`count`/`delete`
+//! plus HNSW `vector_search` - is drevo-py's backend (S3), so its behaviour is
 //! pinned here directly. This was formerly a KV-vs-native differential suite;
 //! the KV oracle was dropped with the KV engine (epic #444), leaving direct
 //! assertions against known vectors.

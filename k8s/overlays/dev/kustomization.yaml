@@ -1,4 +1,4 @@
-# drevo — Kustomize overlay: dev
+# drevo - Kustomize overlay: dev
 #
 # Phase 8 task 00050. Wraps the base manifests under `k8s/` with
 # development-environment patches:

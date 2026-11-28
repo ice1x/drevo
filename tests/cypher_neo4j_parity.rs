@@ -1,4 +1,4 @@
-//! Phase 10.5 task `00124` — Neo4j parity diff harness (layer 2).
+//! Phase 10.5 task `00124` - Neo4j parity diff harness (layer 2).
 //!
 //! This is the **hard gate** between Phase 10 (the Cypher executor) and
 //! Phase 11 (the Bolt wire protocol): before official Neo4j drivers talk to
@@ -15,21 +15,21 @@
 //! `varlen`, `merge`, `set`, `delete`, …), is run against both. Results are
 //! normalised and diffed **row-by-row** with:
 //!
-//! * **f64 rounding tolerance** — floats are rounded to 6 decimals before
+//! * **f64 rounding tolerance** - floats are rounded to 6 decimals before
 //!   comparison, so `2.6666666` vs `2.6666667` does not flap.
-//! * **`RETURN`-without-`ORDER BY` non-determinism** — when a query has no
+//! * **`RETURN`-without-`ORDER BY` non-determinism** - when a query has no
 //!   `ORDER BY`, rows are canonically sorted before comparison, since neither
 //!   engine promises a row order.
-//! * **id/uuid independence** — `Node` / `Relationship` values are compared by
+//! * **id/uuid independence** - `Node` / `Relationship` values are compared by
 //!   their *content* (labels + properties, type + properties), never by the
 //!   internal storage id or UUID, which differ between the two engines.
 //!
 //! ## Two halves, by design
 //!
-//! 1. **drevo side — always-on (this file's non-ignored tests).** The corpus
+//! 1. **drevo side - always-on (this file's non-ignored tests).** The corpus
 //!    runs through `parse → execute`, is normalised, and diffed against the
 //!    committed `tests/cypher_neo4j_parity/golden/*.jsonl`. These goldens are
-//!    drevo's own normalised output — the **parity baseline** — so the
+//!    drevo's own normalised output - the **parity baseline** - so the
 //!    always-on suite is a fast drevo-regression guard that needs no Docker.
 //!    Regenerate after an intentional behaviour change with:
 //!
@@ -37,7 +37,7 @@
 //!    DREVO_UPDATE_GOLDEN=1 cargo test --test cypher_neo4j_parity
 //!    ```
 //!
-//! 2. **Neo4j side — `#[ignore]` ([`live_parity_against_neo4j`]).** Spin up
+//! 2. **Neo4j side - `#[ignore]` ([`live_parity_against_neo4j`]).** Spin up
 //!    Neo4j Community 5.x via `tests/cypher_neo4j_parity/docker-compose.yml`,
 //!    then run the same corpus through `cypher-shell` and diff Neo4j's answers
 //!    against the golden. This is the **true parity check** (≥ 95 % threshold,
@@ -46,7 +46,7 @@
 //!    cleanly when Neo4j / `cypher-shell` are absent.
 //!
 //! The remaining ≤ 5 % are expected to be *documented dialect divergences*,
-//! not bugs — the per-tag diff report shows **which feature class** drifted.
+//! not bugs - the per-tag diff report shows **which feature class** drifted.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -68,7 +68,7 @@ use serde_json::Value as Json;
 /// asserted on load).
 ///
 /// v2: `normalize` now canonicalises nested list values (sorts `collect()`
-/// results and label sets by content) to kill the `agg_collect` flakiness — a
+/// results and label sets by content) to kill the `agg_collect` flakiness - a
 /// v1 golden stored a single non-deterministic element order and must be
 /// regenerated.
 const SCHEMA_VERSION: u32 = 2;
@@ -109,7 +109,7 @@ struct ParityQuery {
 }
 
 /// The curated corpus. Every query uses only features drevo's Phase 10
-/// executor supports (`00063`–`00069`), so each produces a real result row
+/// executor supports (`00063`-`00069`), so each produces a real result row
 /// set that becomes the parity baseline. This is the seed corpus the roadmap
 /// grows toward ~100 entries; new entries simply append here and regenerate
 /// the golden.
@@ -317,7 +317,7 @@ fn has_order_by(cypher: &str) -> bool {
 ///
 /// Cypher's `collect()` does not guarantee element order and node label sets
 /// are unordered, so the same multiset can legitimately surface in different
-/// orders across two engines — or across two drevo runs, since the collected
+/// orders across two engines - or across two drevo runs, since the collected
 /// order follows non-deterministic node-iteration order. Sorting list values
 /// makes the parity diff compare cells by *content*, mirroring the row-level
 /// canonicalisation in [`normalize`]. Without this, the `agg_collect` corpus
@@ -347,7 +347,7 @@ fn canonicalize_json(j: Json) -> Json {
 }
 
 /// Build a [`Normalized`] from raw columns + rows. Every cell is canonicalised
-/// (nested list/label-set order sorted away — see [`canonicalize_json`]) before
+/// (nested list/label-set order sorted away - see [`canonicalize_json`]) before
 /// the row-level non-determinism sort is applied for queries without `ORDER BY`.
 fn normalize(columns: Vec<String>, rows: Vec<Vec<Json>>, ordered: bool) -> Normalized {
     let mut rows: Vec<Vec<Json>> = rows
@@ -443,7 +443,7 @@ fn load_goldens() -> HashMap<String, Normalized> {
         let (id, schema, norm) = parse_golden_line(line);
         assert_eq!(
             schema, SCHEMA_VERSION,
-            "golden for `{id}` is schema v{schema} but harness is v{SCHEMA_VERSION} — \
+            "golden for `{id}` is schema v{schema} but harness is v{SCHEMA_VERSION} - \
              regenerate with DREVO_UPDATE_GOLDEN=1"
         );
         out.insert(id, norm);
@@ -504,7 +504,7 @@ fn diff(expected: &Normalized, actual: &Normalized) -> DiffOutcome {
 }
 
 // ===========================================================================
-// Always-on tests (drevo side) — run on every PR, no Docker required
+// Always-on tests (drevo side) - run on every PR, no Docker required
 // ===========================================================================
 
 /// Entry point that honours `DREVO_UPDATE_GOLDEN`. Kept as a `#[test]` so the
@@ -534,11 +534,11 @@ fn drevo_matches_golden_baseline() {
 
     assert!(
         missing.is_empty(),
-        "no golden for {missing:?} — regenerate with DREVO_UPDATE_GOLDEN=1"
+        "no golden for {missing:?} - regenerate with DREVO_UPDATE_GOLDEN=1"
     );
     assert!(
         mismatches.is_empty(),
-        "drevo drifted from the parity baseline on {mismatches:?} — if intentional, \
+        "drevo drifted from the parity baseline on {mismatches:?} - if intentional, \
          regenerate with DREVO_UPDATE_GOLDEN=1"
     );
 }
@@ -561,7 +561,7 @@ fn corpus_is_well_formed() {
             "query {} has empty cypher",
             q.id
         );
-        // Every query must parse — a typo in the corpus is caught here, not
+        // Every query must parse - a typo in the corpus is caught here, not
         // as an opaque execution failure later.
         parse(q.cypher).unwrap_or_else(|e| panic!("corpus query `{}` fails to parse: {e:?}", q.id));
     }
@@ -772,7 +772,7 @@ fn diff_engine_detects_and_classifies_mismatches() {
 }
 
 // ===========================================================================
-// Live parity (Neo4j side) — #[ignore], on-demand, needs Docker + cypher-shell
+// Live parity (Neo4j side) - #[ignore], on-demand, needs Docker + cypher-shell
 // ===========================================================================
 
 /// Bolt port the docker-compose Neo4j publishes.
@@ -841,14 +841,14 @@ fn cypher_shell(stmt: &str) -> Result<String, String> {
 /// Skips cleanly (passes) when Neo4j / `cypher-shell` are unavailable so a
 /// developer running the whole `--ignored` set without infra isn't blocked.
 #[test]
-#[ignore = "live Neo4j parity: needs docker-compose Neo4j 5.x + cypher-shell — run on demand"]
+#[ignore = "live Neo4j parity: needs docker-compose Neo4j 5.x + cypher-shell - run on demand"]
 fn live_parity_against_neo4j() {
     if !cypher_shell_available() {
-        eprintln!("SKIP: cypher-shell not on PATH — see tests/cypher_neo4j_parity/README.md");
+        eprintln!("SKIP: cypher-shell not on PATH - see tests/cypher_neo4j_parity/README.md");
         return;
     }
     if !neo4j_reachable() {
-        eprintln!("SKIP: nothing on {NEO4J_BOLT_ADDR} — start docker-compose Neo4j first");
+        eprintln!("SKIP: nothing on {NEO4J_BOLT_ADDR} - start docker-compose Neo4j first");
         return;
     }
 

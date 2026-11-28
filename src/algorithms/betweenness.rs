@@ -1,15 +1,15 @@
-//! Betweenness centrality — RFC #307 Phase 8.
+//! Betweenness centrality - RFC #307 Phase 8.
 //!
 //! The betweenness of a node is the number of shortest paths between other
 //! pairs of nodes that pass **through** it (each pair's contribution split
 //! evenly when it has several equally-shortest paths). It surfaces the brokers
-//! and bottlenecks of a graph — the nodes whose removal would most lengthen or
-//! sever routes — which centrality metrics like
+//! and bottlenecks of a graph - the nodes whose removal would most lengthen or
+//! sever routes - which centrality metrics like
 //! [`pagerank`](crate::algorithms::pagerank) (a popularity/flow measure) do not
 //! capture.
 //!
-//! Computed with **Brandes' algorithm** — a single-source shortest-path sweep
-//! plus back-propagated dependency accumulation, `O(V·(V+E))` — over the
+//! Computed with **Brandes' algorithm** - a single-source shortest-path sweep
+//! plus back-propagated dependency accumulation, `O(V·(V+E))` - over the
 //! **directed, unweighted** graph (hop count, the usual knowledge-graph
 //! default; edge weights are ignored). Parallel edges and self-loops do not
 //! affect shortest paths and are collapsed. Scores are structural, so the
@@ -42,7 +42,7 @@ pub fn betweenness(graph: &AdjacencyList) -> BetweennessResult {
         return BetweennessResult { scores: Vec::new() };
     }
 
-    // De-duplicated directed successors, self-loops removed — Brandes needs a
+    // De-duplicated directed successors, self-loops removed - Brandes needs a
     // simple graph so parallel edges don't inflate the path counts.
     let succ: Vec<Vec<usize>> = (0..n)
         .map(|i| {
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn most_central_is_reported_first() {
         // 1 -> 2 -> 3 -> 4: nodes 2 and 3 are brokers; 2 lies on (1,3) and (1,4),
-        // 3 lies on (1,4),(2,4) — both score 2, so the head of the list is one
+        // 3 lies on (1,4),(2,4) - both score 2, so the head of the list is one
         // of them, ties broken by ascending id → node 2 first.
         let g = AdjacencyList::from_parts(
             vec![1, 2, 3, 4],

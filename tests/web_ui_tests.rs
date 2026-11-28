@@ -1,9 +1,9 @@
-//! Phase 15 task `00092` — integration tests for the embedded
+//! Phase 15 task `00092` - integration tests for the embedded
 //! Web UI handlers.
 //!
 //! Sibling to `src/web_ui.rs` (unit tests). This file drives the
 //! actual `axum::Router` returned by [`drevo::native_api::build_native_router`]
-//! via `tower::ServiceExt::oneshot` — the same pattern used by
+//! via `tower::ServiceExt::oneshot` - the same pattern used by
 //! `tests/http_api_tests.rs`. No real TCP listener; the router is
 //! exercised in-process so the tests run on any CI cell that
 //! compiles the `http` feature.
@@ -160,7 +160,7 @@ async fn ui_live_physics_arms_on_drag_not_on_grab() {
         "a forest/tree must use the hierarchical breadthfirst layout"
     );
     // The live cola sim's spring rest-length must be derived from the CURRENT
-    // on-screen geometry, not a hardcoded constant, and PER EDGE — a shared mean
+    // on-screen geometry, not a hardcoded constant, and PER EDGE - a shared mean
     // springs every off-mean edge (a hub's long and short edges) toward one
     // value, jolting the whole graph on the first drag tick. Each edge gets its
     // own current length as its rest length so every spring starts at rest and
@@ -182,7 +182,7 @@ async fn ui_live_physics_arms_on_drag_not_on_grab() {
         "the live layout must NOT hardcode a spring length that can desync from the static layout"
     );
     // Repacking disconnected components on sim start hurls peripheral nodes
-    // across the canvas — the other half of the drag jolt.
+    // across the canvas - the other half of the drag jolt.
     assert!(
         js.contains("handleDisconnected: false"),
         "the live layout must NOT repack disconnected components (that jolts peripheral nodes)"
@@ -829,7 +829,7 @@ async fn ui_root_with_trailing_slash_redirects_to_ui() {
 async fn ui_unknown_subpath_falls_through_to_404() {
     let app = make_app();
     let (status, _ct, _bytes) = get(&app, "/ui/no-such-asset.png").await;
-    // Unknown asset under `/ui/` must not silently serve anything —
+    // Unknown asset under `/ui/` must not silently serve anything -
     // the existing API fallback handler returns 404. Without this
     // assertion, accidentally adding `ServeDir` (which behaves
     // differently on missing files than the explicit-route pattern
@@ -964,7 +964,7 @@ async fn ui_html_includes_storage_panel() {
 async fn ui_app_js_calls_storage_endpoints() {
     // app.js must drive the panel off the real storage endpoints; a rename of
     // /storage/keyspaces (server side) without updating the UI would silently
-    // break the panel — this pins the contract.
+    // break the panel - this pins the contract.
     let app = make_app();
     let (_status, _ct, bytes) = get(&app, "/ui/app.js").await;
     let body = String::from_utf8(bytes).expect("utf-8");
@@ -996,7 +996,7 @@ async fn ui_app_js_calls_storage_endpoints() {
 
 #[tokio::test]
 async fn ui_html_references_vendored_cytoscape() {
-    // Cytoscape is vendored same-origin (see src/web_ui.rs) — the HTML
+    // Cytoscape is vendored same-origin (see src/web_ui.rs) - the HTML
     // must point at /ui/vendor/, never a public CDN, so the WebUI works
     // offline / behind a CDN-blocking browser.
     let app = make_app();

@@ -1,6 +1,6 @@
 //! The extractive summariser: a community described by its best-ranked
 //! members grouped by label, its keywords and its heaviest relationship
-//! types — deterministic, no model, within a token budget.
+//! types - deterministic, no model, within a token budget.
 //!
 //! A summary reads
 //!

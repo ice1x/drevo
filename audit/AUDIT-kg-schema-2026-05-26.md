@@ -1,4 +1,4 @@
-# KG schema audit — 2026-05-26 cleanup
+# KG schema audit - 2026-05-26 cleanup
 
 Project: `drevo` knowledge graph (Neo4j, MCP server `knowledge-graph`).
 Branch: `feature/kg-snake-case-schema-unify`.
@@ -15,7 +15,7 @@ The original `kg_migration_snake_case_2026_05_26` was a pure lowercase + separat
 
 Two migrations recorded in the project's `kg.migrations` table (visible via `MATCH (m:Migration {project:'drevo'}) RETURN m.seq, m.description, m.applied`).
 
-### Migration seq 1 — duplicate merges
+### Migration seq 1 - duplicate merges
 
 26 pairs merged via `apoc.refactor.mergeNodes([target, source], {properties: 'discard', mergeRels: true, produceSelfRel: false})`. Before each merge, the source's `observations` list was pre-concatenated onto the target so neither side's content was lost.
 
@@ -48,13 +48,13 @@ Two migrations recorded in the project's `kg.migrations` table (visible via `MAT
 | `task_00116_python_package_wheels` | `task_00116_python_package_wheels_landed` |
 | `phase8_5_auditrefactor` | `phase_8_5_audit_plan` |
 
-### Migration seq 2 — standalone renames
+### Migration seq 2 - standalone renames
 
 12 in-place `SET n.name = new_name` renames where no canonical twin existed:
 
 | old | new |
 |---|---|
-| `task_00116_python_package_wheels_landed` | `task_00116_python_package_wheels` (re-shortened — status moved to `.status` property) |
+| `task_00116_python_package_wheels_landed` | `task_00116_python_package_wheels` (re-shortened - status moved to `.status` property) |
 | `task00046_dockerignore` | `task_00046_dockerignore` |
 | `phase16_task_00115` | `phase_16_task_00115` |
 | `dumpformat_v1` | `dump_format_v1` |
@@ -94,7 +94,7 @@ MATCH (n:Entity {project:'drevo'}) RETURN count(n);   // 228
 // Regex conformance: 100%.
 MATCH (n:Entity {project:'drevo'}) WHERE NOT n.name =~ '^[a-z0-9_]+$' RETURN n.name;   // (empty)
 
-// Word-boundary drift detection — pairs that differ only in underscore placement.
+// Word-boundary drift detection - pairs that differ only in underscore placement.
 MATCH (n:Entity {project:'drevo'}) WITH collect(n.name) AS names
 UNWIND names AS a UNWIND names AS b WITH a, b
 WHERE a < b AND replace(a,'_','') = replace(b,'_','')

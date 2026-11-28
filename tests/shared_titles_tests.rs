@@ -1,7 +1,7 @@
 //! Node titles are not unique (issue #595): any number of nodes may share a
 //! title, as in Neo4j and Memgraph. Covered here across the surfaces that
-//! used to reject a repeat — Cypher, the service API, JSON and GraphML
-//! import, full-text search and a durable reopen — plus graphbook's case of an
+//! used to reject a repeat - Cypher, the service API, JSON and GraphML
+//! import, full-text search and a durable reopen - plus graphbook's case of an
 //! embedded note named like an external one.
 
 use std::collections::HashMap;
@@ -147,7 +147,7 @@ fn json_and_graphml_round_trip_keep_both_nodes() {
 #[test]
 fn importing_a_title_that_already_exists_adds_a_node() {
     // The dump's node has id 2; the target already holds id 1 with the same
-    // title. Ids do not collide, titles do — and that is fine.
+    // title. Ids do not collide, titles do - and that is fine.
     let src = NativeService::in_memory();
     let filler = src.create_node(note("note", "filler", "")).unwrap();
     src.create_node(note("note", "Shared", "from the dump"))

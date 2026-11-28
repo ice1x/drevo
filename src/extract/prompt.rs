@@ -40,7 +40,7 @@ pub struct PromptOptions<'a> {
 
 /// The follow-up sent once when an answer was not the JSON object asked for.
 pub const JSON_NUDGE: &str = "Your answer was not valid JSON. Return ONLY the JSON object \
-     {\"entities\": [...], \"facts\": [...]} described above — no prose, no markdown.";
+     {\"entities\": [...], \"facts\": [...]} described above - no prose, no markdown.";
 
 /// The system prompt for an extraction (see the module docs).
 #[must_use]

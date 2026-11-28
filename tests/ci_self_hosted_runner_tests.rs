@@ -1,4 +1,4 @@
-//! GitHub Actions workflow tests — `runs-on` labels.
+//! GitHub Actions workflow tests - `runs-on` labels.
 //!
 //! drevo CI is **fully GitHub-hosted** as of the open-source move: the
 //! self-hosted runner is retired. Every job runs on an ephemeral GitHub-hosted
@@ -9,8 +9,8 @@
 //! Why this changed: the repo is going public. For public repos GitHub-hosted
 //! minutes are free and unlimited, so the only reason for self-hosted (the
 //! private-repo minute budget) is gone. More importantly, a self-hosted runner
-//! on a PUBLIC repo is a security hole — a malicious fork PR can execute
-//! arbitrary code on the host — so self-hosted MUST be gone before the repo is
+//! on a PUBLIC repo is a security hole - a malicious fork PR can execute
+//! arbitrary code on the host - so self-hosted MUST be gone before the repo is
 //! made public. This also fixes the chronic single-runner serialization that
 //! made `CI / Test` queue for 1-2 hours per push.
 //!
@@ -19,7 +19,7 @@
 //!
 //! 1. Every `runs-on:` line references one of the documented allow-listed
 //!    GitHub-hosted runners (`ubuntu-latest` is the default; `macos-latest` +
-//!    `windows-latest` only where a platform-native reason applies — Python
+//!    `windows-latest` only where a platform-native reason applies - Python
 //!    wheels/CI matrix and the iOS/macOS cross-compile targets).
 //! 2. The `fuzz` job in `.github/workflows/ci.yml` runs on `ubuntu-latest`
 //!    (cargo-fuzz + nightly + libFuzzer + ASAN all work on Linux GitHub runners;
@@ -27,7 +27,7 @@
 //! 3. The Docker Publish workflow runs on `ubuntu-latest` (its tag-only
 //!    multi-arch build must never block CI on a shared runner; the `type=gha`
 //!    layer cache bounds the per-build cost).
-//! 4. No `runner.os` reference in a *job-level* `if:` — that's
+//! 4. No `runner.os` reference in a *job-level* `if:` - that's
 //!    rejected by GitHub's workflow validator (regression test for
 //!    commit `03c3909`, reverted in `31ea23a`).
 //!
@@ -95,7 +95,7 @@ fn at_least_one_runs_on_directive_exists() {
     let lines = all_runs_on_lines();
     assert!(
         !lines.is_empty(),
-        "no `runs-on:` directives found across workflows — that cannot be right"
+        "no `runs-on:` directives found across workflows - that cannot be right"
     );
 }
 
@@ -107,7 +107,7 @@ fn at_least_one_runs_on_directive_exists() {
 /// (`cargo test --test smoke_tests` runs `tests/smoke_tests.rs`); if that
 /// file is deleted, cargo aborts the whole job with `error: no test target
 /// named 'smoke_tests' in default-run packages` (exit 101). Because
-/// `cross-compile.yml` only runs on `push:main` (never on PRs — see that
+/// `cross-compile.yml` only runs on `push:main` (never on PRs - see that
 /// file's header), such a break is invisible to PR CI and only turns
 /// `main` red on the very next merge.
 ///
@@ -115,12 +115,12 @@ fn at_least_one_runs_on_directive_exists() {
 /// the KV benches removed `tests/smoke_tests.rs`,
 /// `tests/cross_compilation_tests.rs`, and `benches/comparison_bench.rs`,
 /// but the `cross-compile.yml` jobs and `benchmarks.yml` that ran them by
-/// name were not updated — so `main` went red on the #518 merge while
+/// name were not updated - so `main` went red on the #518 merge while
 /// every PR check had been green. This guard makes any future
 /// `--test`/`--bench <deleted>` a local + PR failure instead.
 #[test]
 fn workflow_cargo_test_and_bench_targets_all_exist() {
-    // (flag, target directory) — cargo resolves each `--<flag> <name>` to
+    // (flag, target directory) - cargo resolves each `--<flag> <name>` to
     // `<dir>/<name>.rs` in the package: the root package, or the workspace
     // member a `-p <name>` selects (its directory is named after it).
     let target_dirs_for = |package: Option<&str>| -> Vec<(&'static str, PathBuf)> {
@@ -202,7 +202,7 @@ fn workflow_cargo_test_and_bench_targets_all_exist() {
     assert!(
         missing.is_empty(),
         "Workflow(s) invoke `cargo test --test <name>` / `cargo bench --bench \
-         <name>` for target file(s) that no longer exist — the job aborts with \
+         <name>` for target file(s) that no longer exist - the job aborts with \
          `no test target named ...` (exit 101). Repoint the step to an existing \
          target or drop it:\n{}",
         missing.join("\n"),
@@ -214,16 +214,16 @@ fn workflow_cargo_test_and_bench_targets_all_exist() {
 /// policy decision. New aliases require a code review explaining why
 /// the workflow needs them.
 ///
-/// * `self-hosted` — retained in the allow-list only so the array-form runner
+/// * `self-hosted` - retained in the allow-list only so the array-form runner
 ///   machinery below keeps compiling; NO workflow uses it anymore (the runner
-///   is retired). fuzz + Docker Publish run on ubuntu-latest — see
+///   is retired). fuzz + Docker Publish run on ubuntu-latest - see
 ///   fuzz_job_in_ci_must_be_github_hosted + docker_publish_job_must_be_github_hosted.
-/// * `ubuntu-24.04` — the GitHub-hosted Linux runner for every stable-Rust
+/// * `ubuntu-24.04` - the GitHub-hosted Linux runner for every stable-Rust
 ///   job (check, test, clippy, fmt, doc, msrv, k8s, fuzz) and Docker Publish.
 ///   Pinned, not `ubuntu-latest`: GitHub moves that label to Ubuntu 26 on
 ///   2026-10-19, and an OS bump must be a deliberate PR, not a surprise red
 ///   main. See `no_workflow_uses_a_floating_ubuntu_label`.
-/// * `macos-latest` + `windows-latest` — Phase 16 tasks `00116` AND
+/// * `macos-latest` + `windows-latest` - Phase 16 tasks `00116` AND
 ///   `00122` only.
 ///   PyO3 wheels are platform-native (every wheel is an `.so` / `.dylib` /
 ///   `.pyd` compiled for the target OS), so the `cibuildwheel` matrix in
@@ -233,16 +233,16 @@ fn workflow_cargo_test_and_bench_targets_all_exist() {
 ///   Cited: `audit/RFC-python-api.md` §2 "Wheel layout"; README §"Phase
 ///   16 cross-cutting acceptance criteria" wheel matrix.
 ///
-///   Task `00122` widens the same allow-list to `.github/workflows/python.yml`
-///   — the Python CI matrix that exercises the three test layers (00118
+///   Task `00122` widens the same allow-list to `.github/workflows/python.yml` -
+///   the Python CI matrix that exercises the three test layers (00118
 ///   unit, 00119 integration, 00120 e2e) across 4 CPython × 3 OS = 12
 ///   cells. The justification mirrors the wheel-matrix reasoning: PyO3
 ///   ABI checks are platform-native, FTS UTF-8 tokenisation is locale-
-///   sensitive on Windows, redb file locking is kernel-dependent — only
+///   sensitive on Windows, redb file locking is kernel-dependent - only
 ///   running on real macOS / Windows runners gives a meaningful
 ///   regression signal for those classes.
 ///
-///   Adding any new runner here requires the same kind of citation —
+///   Adding any new runner here requires the same kind of citation -
 ///   a workflow that could run on `ubuntu-latest` is not a justification
 ///   for adding a new label.
 const ALLOWED_RUNS_ON: &[&str] = &[
@@ -263,7 +263,7 @@ fn no_workflow_uses_a_floating_ubuntu_label() {
             let code = line.split('#').next().unwrap_or_default();
             assert!(
                 !code.contains("ubuntu-latest"),
-                "{}:{}: uses the floating `ubuntu-latest` label — pin `ubuntu-24.04`",
+                "{}:{}: uses the floating `ubuntu-latest` label - pin `ubuntu-24.04`",
                 path.display(),
                 i + 1
             );
@@ -290,7 +290,7 @@ fn every_runs_on_uses_an_allow_listed_runner() {
                 .map(str::trim)
                 .all(|label| {
                     // OS / arch disambiguation labels are allowed in
-                    // arrays as long as `self-hosted` is also present —
+                    // arrays as long as `self-hosted` is also present -
                     // this is enforced below by `array_form_with_os_label_requires_self_hosted`.
                     ALLOWED_RUNS_ON.contains(&label)
                         || matches!(label, "Linux" | "macOS" | "Windows" | "X64" | "ARM64")
@@ -299,7 +299,7 @@ fn every_runs_on_uses_an_allow_listed_runner() {
             // Matrix-expansion form, e.g. `runs-on: ${{ matrix.os }}`.
             // The literal values come from `strategy.matrix.<name>` and
             // are validated in `matrix_runner_values_are_all_allow_listed`
-            // below — accepting the expression here keeps the matrix
+            // below - accepting the expression here keeps the matrix
             // pattern available without weakening the allowlist.
             true
         } else {
@@ -308,7 +308,7 @@ fn every_runs_on_uses_an_allow_listed_runner() {
 
         assert!(
             ok,
-            "{file}: `runs-on: {value}` is not allow-listed — supported \
+            "{file}: `runs-on: {value}` is not allow-listed - supported \
              values are {ALLOWED_RUNS_ON:?} (or an array including \
              `self-hosted` plus OS/arch labels, or a `${{{{ matrix.X }}}}` \
              expression backed by an allow-listed matrix). Adding a new \
@@ -320,7 +320,7 @@ fn every_runs_on_uses_an_allow_listed_runner() {
 
 /// Companion to `every_runs_on_uses_an_allow_listed_runner`. When a
 /// workflow uses `runs-on: ${{ matrix.os }}` (or similar), the literal
-/// runner labels live under `strategy.matrix.os` — assert that EVERY
+/// runner labels live under `strategy.matrix.os` - assert that EVERY
 /// such literal is on `ALLOWED_RUNS_ON`. Without this guard, a future
 /// PR could add `matrix.os: [ubuntu-latest, foo-runner]` and silently
 /// schedule jobs on a runner class the policy never approved.
@@ -374,18 +374,18 @@ fn matrix_runner_values_are_all_allow_listed() {
                             assert!(
                                 ALLOWED_RUNS_ON.contains(&label),
                                 "{file} strategy.matrix.os contains `{label}` \
-                                 which is not allow-listed — see \
+                                 which is not allow-listed - see \
                                  ALLOWED_RUNS_ON in this test"
                             );
                         }
                     } else if !rest.is_empty() {
-                        // Scalar value, e.g. `os: macos-latest` — common inside a
+                        // Scalar value, e.g. `os: macos-latest` - common inside a
                         // `matrix.include:` map. Check it directly.
                         let label = rest.trim_matches('"').trim_matches('\'');
                         assert!(
                             ALLOWED_RUNS_ON.contains(&label),
                             "{file} strategy.matrix.os `{label}` is not \
-                             allow-listed — see ALLOWED_RUNS_ON in this test"
+                             allow-listed - see ALLOWED_RUNS_ON in this test"
                         );
                     } else {
                         // Bare `os:` → list items on following lines as `- foo`.
@@ -399,7 +399,7 @@ fn matrix_runner_values_are_all_allow_listed() {
                         assert!(
                             ALLOWED_RUNS_ON.contains(&label),
                             "{file} strategy.matrix.os contains `{label}` \
-                             which is not allow-listed — see \
+                             which is not allow-listed - see \
                              ALLOWED_RUNS_ON in this test"
                         );
                         continue;
@@ -417,7 +417,7 @@ fn matrix_runner_values_are_all_allow_listed() {
 /// `macos-latest` and `windows-latest` are allowed ONLY for the Phase
 /// 16 Python wheel matrix (`python-wheels.yml`, task `00116`) and the
 /// Phase 16 Python CI matrix (`python.yml`, task `00122`). Any other
-/// workflow reaching for those runners is almost certainly a slip —
+/// workflow reaching for those runners is almost certainly a slip -
 /// `ubuntu-latest` covers every stable-Rust gate and `self-hosted`
 /// covers the niche-target jobs. This guard catches the slip at PR
 /// time so we don't silently drift back into burning GitHub minutes
@@ -431,9 +431,9 @@ fn matrix_runner_values_are_all_allow_listed() {
 /// on ALLOWED_RUNS_ON above for the full citation.
 /// Workflows allowed to reach for `macos-latest` / `windows-latest`, each for a
 /// platform-native reason:
-/// * `python-wheels.yml` / `python.yml` — PyO3 wheels + the Python CI matrix
+/// * `python-wheels.yml` / `python.yml` - PyO3 wheels + the Python CI matrix
 ///   (00116 / 00122): ABI checks are platform-native, no cross-compile path.
-/// * `cross-compile.yml` — the `aarch64-apple-ios` target needs the Apple SDK,
+/// * `cross-compile.yml` - the `aarch64-apple-ios` target needs the Apple SDK,
 ///   and the macOS platform smoke tests need a real macOS host.
 const MACOS_WINDOWS_ALLOWED_WORKFLOWS: &[&str] =
     &["python-wheels.yml", "python.yml", "cross-compile.yml"];
@@ -447,7 +447,7 @@ fn macos_and_windows_runners_only_in_justified_workflows() {
                 assert!(
                     MACOS_WINDOWS_ALLOWED_WORKFLOWS.contains(&file.as_str()),
                     "{file} uses `{restricted}` but only \
-                     {MACOS_WINDOWS_ALLOWED_WORKFLOWS:?} are allowed to — \
+                     {MACOS_WINDOWS_ALLOWED_WORKFLOWS:?} are allowed to - \
                      PyO3 wheels (00116) + Python CI matrix (00122) and the \
                      iOS/macOS cross-compile targets are the sole justified \
                      macOS/Windows use cases. See the comment on ALLOWED_RUNS_ON.",
@@ -462,7 +462,7 @@ fn fuzz_job_in_ci_must_be_github_hosted() {
     // The `fuzz` job runs on GitHub-hosted ubuntu-latest like every other job:
     // cargo-fuzz + nightly + libFuzzer + ASAN all install/run fine on Linux
     // GitHub runners, and on a public repo the minutes are free. Keeping ANY job
-    // on self-hosted is forbidden — a self-hosted runner on a public repo lets a
+    // on self-hosted is forbidden - a self-hosted runner on a public repo lets a
     // malicious fork PR execute arbitrary code on the host.
     let ci_yml = workflows_dir().join("ci.yml");
     let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
@@ -483,7 +483,7 @@ fn fuzz_job_in_ci_must_be_github_hosted() {
     let line = fuzz_runs_on.expect("ci.yml fuzz job must declare `runs-on:`");
     assert!(
         !line.contains("self-hosted"),
-        "ci.yml fuzz job must NOT run on self-hosted (found `{line}`) — no job \
+        "ci.yml fuzz job must NOT run on self-hosted (found `{line}`) - no job \
          may, now that the repo targets public + GitHub-hosted runners.",
     );
     assert!(
@@ -553,7 +553,7 @@ fn docker_publish_job_must_be_github_hosted() {
         if trimmed.starts_with("runs-on:") {
             assert!(
                 !trimmed.contains("self-hosted"),
-                "docker-publish.yml must NOT run on `self-hosted` — the multi-arch \
+                "docker-publish.yml must NOT run on `self-hosted` - the multi-arch \
                  release build monopolises the single self-hosted runner and stalls \
                  every PR's CI behind each release tag. Keep it on `ubuntu-24.04`.",
             );
@@ -603,7 +603,7 @@ fn array_form_with_os_label_requires_self_hosted() {
                 assert!(
                     labels.contains("self-hosted"),
                     "{file}: `{line}` includes `{os}` label without \
-                     `self-hosted` — under some org configurations \
+                     `self-hosted` - under some org configurations \
                      this would route to a GitHub-hosted runner",
                 );
             }
@@ -616,12 +616,12 @@ fn workflow_files_do_not_smuggle_runner_os_at_job_level() {
     // Regression test for commit 03c3909, reverted in 31ea23a.
     // `runner.os` is NOT available in job-level `if:` because the
     // runner context is populated only after a runner is assigned
-    // to a job — job-level `if:` is evaluated before assignment.
+    // to a job - job-level `if:` is evaluated before assignment.
     // GitHub rejects the whole workflow file with the generic
     // "This run likely failed because of a workflow file issue"
     // error, blocking every job in the file, not just the one with
-    // the bad expression. This is a silent class of bug — local
-    // YAML validation passes, GitHub-side validation fails — so we
+    // the bad expression. This is a silent class of bug - local
+    // YAML validation passes, GitHub-side validation fails - so we
     // pin it from the test side.
     //
     // Heuristic: any `if:` line that sits at the same indent as
@@ -658,7 +658,7 @@ fn workflow_files_do_not_smuggle_runner_os_at_job_level() {
             if let Some(ji) = job_indent {
                 if indent == ji && trimmed.starts_with("if:") && trimmed.contains("runner.") {
                     panic!(
-                        "{file}: job-level `if:` references `runner.` — \
+                        "{file}: job-level `if:` references `runner.` - \
                          this is rejected by GitHub's workflow validator \
                          because the `runner` context is only available \
                          at step level. Move the condition to each \
@@ -682,7 +682,7 @@ fn ci_yml_declares_concurrency_cancel_in_progress() {
     let body = fs::read_to_string(&ci_yml).expect("ci.yml exists");
     assert!(
         body.contains("concurrency:"),
-        "ci.yml must declare a `concurrency:` block — without it, \
+        "ci.yml must declare a `concurrency:` block - without it, \
          rapid-fire PR pushes stack into the runner queue and CI \
          latency balloons. See the comment above the block in \
          ci.yml for the full rationale."
@@ -690,7 +690,7 @@ fn ci_yml_declares_concurrency_cancel_in_progress() {
     assert!(
         body.contains("cancel-in-progress: true"),
         "ci.yml `concurrency:` block must set \
-         `cancel-in-progress: true` — otherwise the cancel does not \
+         `cancel-in-progress: true` - otherwise the cancel does not \
          take effect and stale runs continue blocking the queue."
     );
 }
@@ -765,7 +765,7 @@ fn ci_yml_caps_cargo_build_jobs_below_runner_core_count() {
     assert!(
         body.contains("CARGO_BUILD_JOBS"),
         "ci.yml must set `CARGO_BUILD_JOBS` to cap parallel compilation on \
-         the self-hosted runner — without it a full `cargo build` saturates \
+         the self-hosted runner - without it a full `cargo build` saturates \
          every core and can wedge the daily-driver machine into a freeze."
     );
     let jobs = parse_capped_int(&body, "CARGO_BUILD_JOBS")
@@ -777,7 +777,7 @@ fn ci_yml_caps_cargo_build_jobs_below_runner_core_count() {
     );
 }
 
-/// The docs-only path set — these glob patterns MUST appear in
+/// The docs-only path set - these glob patterns MUST appear in
 /// `paths-ignore:` of every NON-required heavy workflow that runs on
 /// branch pushes (cross-compile.yml) so docs-only PRs don't consume
 /// runner time or hit upstream flakes there.
@@ -793,7 +793,7 @@ const DOCS_ONLY_GLOBS: &[&str] = &["**/*.md", "audit/**", "memory/**", "LICENSE"
 /// `paths-ignore`. A docs-only PR (README, audit/, memory/, …) touches
 /// no Rust code / infra, so running these wastes runner time AND risks a
 /// PR-blocking upstream flake (e.g. Android NDK download from
-/// dl.google.com — PR #81, a README-only PR, was blocked by exactly
+/// dl.google.com - PR #81, a README-only PR, was blocked by exactly
 /// that on cross-compile.yml before this invariant landed). ci.yml is
 /// intentionally absent (it always runs; it gates docs-only per job).
 /// docker-publish.yml was removed 2026-07-30: it no longer runs on
@@ -820,7 +820,7 @@ fn heavy_workflows_share_docs_only_paths_ignore() {
             assert!(
                 body.contains(glob),
                 "{workflow} `paths-ignore:` is missing the docs-only \
-                 glob `{glob}` — the set must be {DOCS_ONLY_GLOBS:?} \
+                 glob `{glob}` - the set must be {DOCS_ONLY_GLOBS:?} \
                  and stay in sync across {HEAVY_WORKFLOWS_WITH_DOCS_SKIP:?}."
             );
         }
@@ -838,7 +838,7 @@ fn ci_yml_uses_per_job_docs_gate_not_paths_ignore() {
     let body = fs::read_to_string(workflows_dir().join("ci.yml")).expect("ci.yml exists");
     assert!(
         !body.contains("paths-ignore:"),
-        "ci.yml must NOT use `paths-ignore:` — it must always run and gate \
+        "ci.yml must NOT use `paths-ignore:` - it must always run and gate \
          docs-only changes per job via the `changes` job. A workflow-level \
          path filter leaves the required `CI / <Job>` checks unreported on \
          docs-only PRs (the bug ci-skip.yml worked around; it is now gone)."
@@ -858,14 +858,14 @@ fn ci_yml_has_changes_detector_job() {
     assert!(
         body.contains("code: ${{ steps.detect.outputs.code }}"),
         "ci.yml's `changes` job must expose `outputs.code` from its detect \
-         step — every gated job's `if:` reads `needs.changes.outputs.code`."
+         step - every gated job's `if:` reads `needs.changes.outputs.code`."
     );
 }
 
 #[test]
 fn ci_yml_required_jobs_are_gated_on_changes() {
     // Every required build job must (a) `needs: changes` and (b) gate on
-    // `needs.changes.outputs.code != 'false'` — the fail-safe form: it
+    // `needs.changes.outputs.code != 'false'` - the fail-safe form: it
     // runs unless the change is provably docs-only, so a detector failure
     // or any non-docs file runs the real job (never a silent skip).
     let body = fs::read_to_string(workflows_dir().join("ci.yml")).expect("ci.yml exists");
@@ -914,7 +914,7 @@ fn ci_skip_yml_must_not_exist() {
     // resurrected ci-skip.yml would re-create the race.
     assert!(
         !workflows_dir().join("ci-skip.yml").exists(),
-        "`.github/workflows/ci-skip.yml` must NOT exist — docs-only \
+        "`.github/workflows/ci-skip.yml` must NOT exist - docs-only \
          filtering is now per-job in ci.yml. A second `name: CI` workflow \
          re-creates the status-check race."
     );
@@ -925,7 +925,7 @@ fn ci_yml_test_job_does_not_run_benches() {
     // PR-gating CI is for correctness, NOT performance measurement.
     // The drevo benchmark crates declare `harness = false` in
     // `Cargo.toml`, which means their criterion-based `main()` runs
-    // when included in a test invocation — and on the heavy ones
+    // when included in a test invocation - and on the heavy ones
     // (`bulk_put_100k/RedbBackend` ≈ 530s, `traversal_bfs/...` ≈ 240s
     // each) a single iteration is enough to push a PR run past 60
     // minutes. PR #76 was observed to do exactly that: 1695 real
@@ -985,7 +985,7 @@ fn ci_yml_test_job_does_not_run_benches() {
         bench_offenders.is_empty(),
         "ci.yml `test` job's nextest invocation passes one or more \
          bench-enabling flags. PR-gating CI MUST NOT execute \
-         criterion benches — they push the job past 60 minutes. \
+         criterion benches - they push the job past 60 minutes. \
          Offenders:\n  {}\n\n\
          Default `cargo nextest run` includes only library unit + \
          integration tests; that is the right scope for PR validation. \
@@ -1230,7 +1230,7 @@ fn bench_yml_exists() {
     let bench_yml = workflows_dir().join("bench.yml");
     assert!(
         bench_yml.exists(),
-        "`.github/workflows/bench.yml` must exist — it is the \
+        "`.github/workflows/bench.yml` must exist - it is the \
          scheduled nightly criterion bench workflow. Without it, \
          we have no perf-regression signal at all (since PR-gating \
          CI was changed to skip benches)."
@@ -1252,7 +1252,7 @@ fn bench_yml_is_scheduled_at_4am_utc() {
         has_cron,
         "bench.yml must declare exactly `- cron: '0 4 * * *'` \
          (daily at 04:00 UTC). Changing the time is a deliberate \
-         operational decision — update this test together with the \
+         operational decision - update this test together with the \
          cron expression and explain the new time in the workflow \
          comment block."
     );
@@ -1277,7 +1277,7 @@ fn bench_yml_runs_on_github_hosted() {
     // bench.yml runs on GitHub-hosted ubuntu-latest like every other workflow
     // (no self-hosted runner exists anymore). Absolute benchmark numbers from
     // ephemeral VMs carry more noise, but the workflow is scheduled/opt-in and
-    // criterion reports its own variance — a stable host is not worth keeping a
+    // criterion reports its own variance - a stable host is not worth keeping a
     // self-hosted runner (a security liability on a public repo).
     let bench_yml = workflows_dir().join("bench.yml");
     let body = fs::read_to_string(&bench_yml).expect("bench.yml exists");
@@ -1307,7 +1307,7 @@ fn bench_yml_caps_runtime_so_it_cannot_hog_the_runner() {
         .find(|l| l.trim_start().starts_with("timeout-minutes:"))
         .unwrap_or_else(|| {
             panic!(
-                "bench.yml must declare `timeout-minutes:` — without it the job \
+                "bench.yml must declare `timeout-minutes:` - without it the job \
                  inherits GitHub's 360-min default and can squat the single \
                  self-hosted runner for hours (it took ~3h nightly before this cap)."
             )
@@ -1326,7 +1326,7 @@ fn bench_yml_caps_runtime_so_it_cannot_hog_the_runner() {
     assert!(
         body.contains("--sample-size"),
         "bench.yml must pass criterion `--sample-size` to keep the nightly run \
-         under the timeout — the default (100) samples took ~150-175 min."
+         under the timeout - the default (100) samples took ~150-175 min."
     );
 }
 
@@ -1370,7 +1370,7 @@ fn bench_yml_does_not_trigger_on_pr_or_push() {
     assert!(
         forbidden_hits.is_empty(),
         "bench.yml declares a PR/push trigger (`{}`). Benches MUST \
-         NOT run on PR or push — that path is what caused the \
+         NOT run on PR or push - that path is what caused the \
          four-hour CI runs on PR #76. Allowed triggers are \
          `schedule:` (nightly cron) and `workflow_dispatch:` \
          (manual) only.",
@@ -1382,7 +1382,7 @@ fn bench_yml_does_not_trigger_on_pr_or_push() {
 /// every PR's CI for ~24 hours after commit `0872954` landed.
 ///
 /// **Background.** GHA's `runner.*` expression context is only resolved
-/// *at step execution time* — after a runner has been assigned to a
+/// *at step execution time* - after a runner has been assigned to a
 /// job. Putting `${{ runner.tool_cache }}` (or any other `runner.*`
 /// expression) in a workflow-level `env:` block OR in a job-level
 /// `env:` block produces a generic "workflow file issue" error: the
@@ -1394,7 +1394,7 @@ fn bench_yml_does_not_trigger_on_pr_or_push() {
 /// **History.** A first revision of the CARGO_TARGET_DIR caching change
 /// put the expression in the *workflow-level* `env:` block, caught and
 /// fixed in commit `0872954`. That fix moved the expression to *job-
-/// level* `env:` — but GHA rejects it there too, which only became
+/// level* `env:` - but GHA rejects it there too, which only became
 /// visible after PR #89 merged because no PR landed for the 24h
 /// window where the workflow-parse failure swallowed the `pull_request`
 /// trigger.  This invariant locks the working pattern: a setup step
@@ -1404,7 +1404,7 @@ fn bench_yml_does_not_trigger_on_pr_or_push() {
 /// **What this test checks.** For every workflow file, parse a tiny
 /// indentation-based state machine over the YAML to track whether the
 /// current line sits inside `steps:`. Forbid any `${{ runner.* }}`
-/// expression OUTSIDE `steps:` — that's the failure mode.  Comments
+/// expression OUTSIDE `steps:` - that's the failure mode.  Comments
 /// are exempt (they're allowed to reference the expression in prose so
 /// future contributors know what NOT to do).
 #[test]
@@ -1437,7 +1437,7 @@ fn ci_workflows_dont_use_runner_context_outside_steps() {
                     steps_indent = None;
                 }
             }
-            // Comments referencing the expression in prose are fine —
+            // Comments referencing the expression in prose are fine -
             // they're how we educate future contributors about WHY this
             // doesn't work.
             if trimmed.starts_with('#') {
@@ -1446,7 +1446,7 @@ fn ci_workflows_dont_use_runner_context_outside_steps() {
             // Inside steps: the expression is valid. Outside it: forbidden.
             if line.contains("${{ runner.") && steps_indent.is_none() {
                 violations.push(format!(
-                    "{}:{}: `${{{{ runner.* }}}}` used outside of `steps:` — \
+                    "{}:{}: `${{{{ runner.* }}}}` used outside of `steps:` - \
                      GHA's runner context is only resolved at step \
                      execution time. Move into a setup step like \
                      `run: echo \"VAR=$RUNNER_TOOL_CACHE/…\" >> $GITHUB_ENV`. \
@@ -1470,7 +1470,7 @@ fn ci_workflows_dont_use_runner_context_outside_steps() {
 }
 
 // ============================================================================
-// Android NDK download — curl resilience against dl.google.com HTTP/2 flakes
+// Android NDK download - curl resilience against dl.google.com HTTP/2 flakes
 // ============================================================================
 //
 // The Android job in cross-compile.yml downloads the NDK from
@@ -1485,8 +1485,8 @@ fn ci_workflows_dont_use_runner_context_outside_steps() {
 // build, and the Android job is the only thing in the workflow that
 // touches the public internet for a ~1 GiB artifact. The fix is to make
 // curl retry transient failures (including mid-stream HTTP/2 resets) and
-// to force HTTP/1.1, which sidesteps the HTTP/2 termination class entirely
-// — dl.google.com still serves the same archive over HTTP/1.1 with no
+// to force HTTP/1.1, which sidesteps the HTTP/2 termination class entirely -
+// dl.google.com still serves the same archive over HTTP/1.1 with no
 // behavioural difference besides the absence of stream multiplexing.
 //
 // These flags are NON-NEGOTIABLE on every curl-to-dl.google.com call in
@@ -1496,7 +1496,7 @@ const ANDROID_NDK_CURL_FLAGS: &[(&str, &str)] = &[
     (
         "--retry",
         "without `--retry N` (N>=3) the single transient HTTP/2 reset from \
-         dl.google.com fails the whole CI run — exactly the failure mode \
+         dl.google.com fails the whole CI run - exactly the failure mode \
          observed on commit bce8ade",
     ),
     (
@@ -1515,7 +1515,7 @@ const ANDROID_NDK_CURL_FLAGS: &[(&str, &str)] = &[
     (
         "--connect-timeout",
         "without `--connect-timeout` a hung TCP connect can stall the job \
-         for the workflow's full 6-hour budget before timing out — \
+         for the workflow's full 6-hour budget before timing out - \
          dl.google.com edge nodes occasionally accept-then-stall on warm \
          self-hosted IPs",
     ),
@@ -1547,14 +1547,14 @@ fn cross_compile_android_ndk_download_uses_resilient_curl() {
     assert!(
         !curl_text.is_empty(),
         "the `Install Android NDK` step in cross-compile.yml must invoke \
-         `curl` to fetch the NDK archive from dl.google.com — block was:\n{}",
+         `curl` to fetch the NDK archive from dl.google.com - block was:\n{}",
         ndk_block,
     );
     for (flag, why) in ANDROID_NDK_CURL_FLAGS {
         assert!(
             curl_text.contains(flag),
-            "the NDK-download `curl` in cross-compile.yml is missing `{flag}` \
-             — {why}. Current curl invocation(s):\n{curl_text}"
+            "the NDK-download `curl` in cross-compile.yml is missing `{flag}` - \
+             {why}. Current curl invocation(s):\n{curl_text}"
         );
     }
 }
@@ -1562,7 +1562,7 @@ fn cross_compile_android_ndk_download_uses_resilient_curl() {
 /// Collapse `\`-continued shell command lines that start with `curl `
 /// into a single logical line each, then return all such commands
 /// joined by newlines. Lines that are pure shell-comment (`#`) inside
-/// a continuation chain are dropped — `curl` does not honour comments
+/// a continuation chain are dropped - `curl` does not honour comments
 /// mid-arguments. This lets the flag assertions above match across
 /// physical line boundaries without forcing the workflow to keep curl
 /// on a single physical line.
@@ -1578,7 +1578,7 @@ fn join_continued_curl_lines(block: &str) -> String {
             }
             current = Some(line.trim_end_matches('\\').trim().to_string());
             // If the curl line itself does NOT end with `\`, it's a
-            // single-line invocation — flush it immediately.
+            // single-line invocation - flush it immediately.
             if !line.trim_end().ends_with('\\') {
                 if let Some(done) = current.take() {
                     out.push(done);
@@ -1587,7 +1587,7 @@ fn join_continued_curl_lines(block: &str) -> String {
             continue;
         }
         if let Some(ref mut buf) = current {
-            // Inside a continuation chain. Skip pure comment lines —
+            // Inside a continuation chain. Skip pure comment lines -
             // they aren't part of the curl arguments.
             if trimmed.starts_with('#') {
                 continue;
@@ -1609,14 +1609,14 @@ fn join_continued_curl_lines(block: &str) -> String {
 
 /// Extract the body of the `Install Android NDK (cached on self-hosted
 /// runner)` step from cross-compile.yml so the curl-flag assertions
-/// above are scoped to the actual NDK-download script — not any other
+/// above are scoped to the actual NDK-download script - not any other
 /// curl that might appear elsewhere in the workflow.
 fn extract_ndk_install_block(workflow: &str) -> String {
     let marker = "Install Android NDK";
     let start = workflow.find(marker).unwrap_or_else(|| {
         panic!(
             "cross-compile.yml must contain a step named \"Install \
-             Android NDK\" — the curl-flag invariants below need to \
+             Android NDK\" - the curl-flag invariants below need to \
              find the right block. Workflow body:\n{workflow}"
         )
     });
@@ -1632,7 +1632,7 @@ fn extract_ndk_install_block(workflow: &str) -> String {
 }
 
 // ============================================================================
-// Docker login — avoid macOS Keychain when running on a self-hosted Mac
+// Docker login - avoid macOS Keychain when running on a self-hosted Mac
 // ============================================================================
 //
 // `docker/login-action` shells out to `docker login`, which on macOS
@@ -1676,7 +1676,7 @@ fn docker_publish_overrides_docker_config_to_avoid_macos_keychain() {
     // invokes no credential helper.
     assert!(
         !w.contains("uses: docker/login-action"),
-        "docker-publish.yml must NOT use `docker/login-action` — it triggers the \
+        "docker-publish.yml must NOT use `docker/login-action` - it triggers the \
          macOS osxkeychain credsStore and fails -25308 on the headless runner. \
          Pre-bake an `auths` blob into DOCKER_CONFIG instead."
     );
@@ -1690,8 +1690,8 @@ fn docker_publish_overrides_docker_config_to_avoid_macos_keychain() {
 #[test]
 fn every_ci_job_declares_a_timeout() {
     // Incident 2026-06-10 (PR #145 duplicate run): the `test` job hung at
-    // "Compiling drevo" — blocked on the cargo build-dir lock held by a
-    // concurrent job sharing the same `$CARGO_TARGET_DIR` — and, with no
+    // "Compiling drevo" - blocked on the cargo build-dir lock held by a
+    // concurrent job sharing the same `$CARGO_TARGET_DIR` - and, with no
     // explicit `timeout-minutes`, squatted the single self-hosted runner
     // for GitHub's full 360-minute default before being killed, starving
     // every other PR. Every job in ci.yml must declare an explicit
@@ -1722,7 +1722,7 @@ fn every_ci_job_declares_a_timeout() {
     }
     assert!(
         jobs.len() >= 5,
-        "expected to parse several jobs from ci.yml, found {} — parser likely \
+        "expected to parse several jobs from ci.yml, found {} - parser likely \
          broke against a workflow reformat",
         jobs.len()
     );
@@ -1735,7 +1735,7 @@ fn every_ci_job_declares_a_timeout() {
             .find(|l| l.trim_start().starts_with("timeout-minutes:"));
         let timeout_line = timeout_line.unwrap_or_else(|| {
             panic!(
-                "ci.yml job `{name}` MUST declare `timeout-minutes:` — without \
+                "ci.yml job `{name}` MUST declare `timeout-minutes:` - without \
                  it the job inherits GitHub's 360-minute default and can squat \
                  the single self-hosted runner for 6h on a build-lock hang (see \
                  the PR #145 incident in this test's comment)."
@@ -1749,7 +1749,7 @@ fn every_ci_job_declares_a_timeout() {
         assert!(
             value < 360,
             "ci.yml job `{name}` timeout-minutes={value} must be < 360 (the \
-             default) — the whole point is to cap below the 6h ceiling"
+             default) - the whole point is to cap below the 6h ceiling"
         );
     }
 }

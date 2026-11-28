@@ -1,14 +1,14 @@
-//! ACID conformance — **C (Consistency)** for the default `native-durable`
+//! ACID conformance - **C (Consistency)** for the default `native-durable`
 //! engine, exercised as **Rust** tests directly against the `drevo-core`
 //! [`NativeGraph`] seam (no HTTP layer).
 //!
 //! Consistency here means two things: (1) every declared schema
-//! [`Constraint`](drevo_core::native::Constraint) — UNIQUE, property EXISTS,
-//! NODE KEY — is enforced at commit, and a transaction whose writes would
+//! [`Constraint`](drevo_core::native::Constraint) - UNIQUE, property EXISTS,
+//! NODE KEY - is enforced at commit, and a transaction whose writes would
 //! violate one aborts atomically (leaving the pre-transaction state intact,
 //! tying into Atomicity, issue #424); and (2) the engine's structural
-//! invariants — title uniqueness, edge-endpoint existence, finite edge weight,
-//! cascade edge-deletion — always hold.
+//! invariants - title uniqueness, edge-endpoint existence, finite edge weight,
+//! cascade edge-deletion - always hold.
 //!
 //! Part of the ACID conformance set (issue #425).
 
@@ -201,7 +201,7 @@ fn edge_endpoint_existence_invariant_holds() {
     assert_eq!(g.edge_count(), 0);
 }
 
-/// Edge weight must be finite (NaN / ±Inf rejected) — the graph derives
+/// Edge weight must be finite (NaN / ±Inf rejected) - the graph derives
 /// `PartialEq`, which a NaN weight would break.
 #[test]
 fn edge_weight_finiteness_invariant_holds() {
@@ -222,7 +222,7 @@ fn edge_weight_finiteness_invariant_holds() {
     assert_eq!(g.edge_count(), 1);
 }
 
-/// Deleting a node cascades to its incident edges — no dangling edge is left.
+/// Deleting a node cascades to its incident edges - no dangling edge is left.
 #[test]
 fn cascade_edge_deletion_invariant_holds() {
     let g = NativeGraph::new();

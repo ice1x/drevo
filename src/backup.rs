@@ -269,8 +269,8 @@ fn server_files(data_dir: &Path) -> std::io::Result<Vec<(String, Vec<u8>)>> {
     Ok(files)
 }
 
-/// Restore the server backups in `chain` — a full one, then any taken with
-/// `since` the one before, oldest first — into `data_dir`, a new or empty
+/// Restore the server backups in `chain` - a full one, then any taken with
+/// `since` the one before, oldest first - into `data_dir`, a new or empty
 /// directory a server can then open. Each database is restored from its
 /// latest full backup in the chain on; every file is checked first.
 ///

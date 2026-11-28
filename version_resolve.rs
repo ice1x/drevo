@@ -7,16 +7,16 @@
 
 /// Resolve the reported version from the three sources, first non-empty wins:
 ///
-///  1. `env_version` — the explicit `DREVO_VERSION` build-arg / env override
+///  1. `env_version` - the explicit `DREVO_VERSION` build-arg / env override
 ///     (how the release image injects the real version; `.git` is excluded from
 ///     the Docker build context so this is the only path there).
-///  2. `git_version` — `git describe` on a dev checkout.
-///  3. `cargo_version` — `CARGO_PKG_VERSION`, the last-resort fallback.
+///  2. `git_version` - `git describe` on a dev checkout.
+///  3. `cargo_version` - `CARGO_PKG_VERSION`, the last-resort fallback.
 ///
 /// The wrinkle: the release flow keeps the git tag as the version source of
 /// truth and never bumps `Cargo.toml`, so `CARGO_PKG_VERSION` is the placeholder
 /// `0.0.0`. If we fall all the way through to it, the value is not a real
-/// version — it just means "this image was built without a version" (no
+/// version - it just means "this image was built without a version" (no
 /// build-arg AND no `.git`, e.g. a plain `docker build`). Reporting a bare
 /// `0.0.0` there is misleading (it looks like a real release); mark it
 /// `0.0.0-unknown` so the misconfiguration is visible in `GET /` / the UI

@@ -1,4 +1,4 @@
-//! End-to-end Cypher `OPTIONAL MATCH` tests — Phase 10 task `00067`.
+//! End-to-end Cypher `OPTIONAL MATCH` tests - Phase 10 task `00067`.
 //!
 //! Exercises left-join semantics (each upstream row is preserved; any
 //! pattern variables that fail to bind become `NULL`) across the five
@@ -38,7 +38,7 @@ fn int(rows: &[Vec<Value>], r: usize, c: usize) -> i64 {
     }
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_every_thought_with_optional_distortion() {
@@ -66,7 +66,7 @@ fn cbt_every_thought_with_optional_distortion() {
     assert_eq!(string(&rows, 2, 1).as_deref(), Some("mind_reading"));
 }
 
-// ===== Scenario 2 — Story editor ============================================
+// ===== Scenario 2 - Story editor ============================================
 
 #[test]
 fn story_every_scene_with_optional_followup() {
@@ -91,7 +91,7 @@ fn story_every_scene_with_optional_followup() {
     assert_eq!(string(&rows, 2, 1), None);
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_manager_every_task_with_optional_assignee() {
@@ -149,7 +149,7 @@ fn task_manager_count_subtasks_with_zero_for_leafs() {
     assert_eq!(int(&rows, 2, 1), 0);
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_every_order_with_optional_invoice() {
@@ -201,7 +201,7 @@ fn erp_revenue_per_buyer_including_zero_buyers() {
     assert_eq!(int(&rows, 2, 1), 0);
 }
 
-// ===== Scenario 5 — Bug tracker =============================================
+// ===== Scenario 5 - Bug tracker =============================================
 
 #[test]
 fn bug_tracker_every_bug_with_optional_assignee_and_fix() {
@@ -269,7 +269,7 @@ fn optional_match_alone_on_empty_db_returns_single_null_row() {
 fn optional_match_multi_pattern_each_independent_null() {
     let db = db();
     run("CREATE (:Person {name: 'A'})", &db);
-    // No KNOWS, no LIKES. Two OPTIONAL MATCHes in a chain — each
+    // No KNOWS, no LIKES. Two OPTIONAL MATCHes in a chain - each
     // independently emits a NULL row on miss; the result has one row
     // with both rel variables NULL.
     let rows = run(

@@ -1,4 +1,4 @@
-// drevo browser — problem notifications and "Report a problem" (#552).
+// drevo browser - problem notifications and "Report a problem" (#552).
 //
 // Pure helpers, split out of app.js so they can be unit-tested under
 // `node --test` (report.test.js) with no DOM: turning a server problem from
@@ -21,7 +21,7 @@
   // Browsers and GitHub start rejecting URLs somewhere past 8 KB; stay below.
   const MAX_ISSUE_URL = 7800;
   const TRUNCATED_NOTE =
-    "\n\n…(truncated to fit the issue URL — the full report is in the downloaded JSON file; please attach it)";
+    "\n\n…(truncated to fit the issue URL - the full report is in the downloaded JSON file; please attach it)";
 
   // A server problem (GET /problems entry) → {kind, title, detail}.
   function toastFromProblem(p) {
@@ -72,7 +72,7 @@
   // skeleton that runs it against an in-memory NativeService.
   function reproTestCase({ query, params, error, stats } = {}) {
     if (!query) {
-      return "_No failing query was captured in this browser session — describe the steps above._";
+      return "_No failing query was captured in this browser session - describe the steps above._";
     }
     const p = params || {};
     const hasParams = Object.keys(p).length > 0;
@@ -169,7 +169,7 @@
       `- drevo ${server.version || "?"} (git ${server.git_sha || "?"}, built ${server.build_date || "?"})`,
       `- engine: ${server.engine || "?"}, uptime ${server.uptime_seconds ?? "?"} s`,
       `- statement timeout: ${config.statement_timeout_ms ? config.statement_timeout_ms + " ms" : "off"}`,
-      `- database: ${graph.database || "?"} — ${graph.nodes ?? "?"} nodes / ${graph.edges ?? "?"} edges`,
+      `- database: ${graph.database || "?"} - ${graph.nodes ?? "?"} nodes / ${graph.edges ?? "?"} edges`,
       `- browser: ${userAgent || "?"}`,
     ].join("\n");
 

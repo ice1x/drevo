@@ -1,4 +1,4 @@
-//! Porter stemmer (M.F. Porter, 1980) — pure-Rust, dependency-free.
+//! Porter stemmer (M.F. Porter, 1980) - pure-Rust, dependency-free.
 //!
 //! Keyword extraction ([`crate::fts::keywords`]) uses this *optionally* to
 //! collapse morphological variants of a term ("running", "runs", "ran"→no,
@@ -9,14 +9,14 @@
 //! This is the classic 1980 algorithm (the original suffix list, not the
 //! later Snowball/"Porter2" revision), operating on lowercase ASCII words.
 //! Non-ASCII or non-alphabetic tokens (CJK, anything with digits) are
-//! returned unchanged — the algorithm's vowel/consonant rules are defined
-//! only over `a`–`z`. The canonical Porter test vocabulary is exercised in
+//! returned unchanged - the algorithm's vowel/consonant rules are defined
+//! only over `a`-`z`. The canonical Porter test vocabulary is exercised in
 //! the unit tests.
 
 /// Stem a single lowercase token using the Porter algorithm.
 ///
 /// Returns the input unchanged when it is shorter than three characters or
-/// contains any non-`a`–`z` byte (the algorithm is ASCII-alphabetic only).
+/// contains any non-`a`-`z` byte (the algorithm is ASCII-alphabetic only).
 pub(crate) fn stem(word: &str) -> String {
     // Porter is defined over ASCII letters; bail out for anything else so we
     // never mangle digits, CJK, or accented text.
@@ -167,7 +167,7 @@ fn step1c(b: &mut [u8]) {
 /// Replace `suffix` with `repl` when the word ends in `suffix` and the
 /// measure of the part before the suffix is greater than `min_m`. Returns
 /// `true` when the suffix matched (whether or not the measure gate fired) so
-/// the caller stops trying further suffixes for this step — matching the
+/// the caller stops trying further suffixes for this step - matching the
 /// single-branch structure of Porter's original switch.
 fn replace(b: &mut Vec<u8>, suffix: &str, repl: &str, min_m: usize) -> bool {
     if ends(b, suffix) {
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn step2_double_suffixes() {
         // Expected values are FULL-algorithm outputs (the paper's step-2
-        // examples are intermediate; later steps reduce them further —
+        // examples are intermediate; later steps reduce them further -
         // e.g. step-2 "relate" then loses its final `e` in step 5).
         check(&[
             ("relational", "relat"),

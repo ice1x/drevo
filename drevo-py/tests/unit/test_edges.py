@@ -19,7 +19,7 @@ import drevo
 
 @pytest.fixture
 def two_nodes(drevo_db: drevo.Drevo) -> tuple[drevo.Node, drevo.Node]:
-    """`(src, dst)` — a pair of bare `note` nodes for edge tests."""
+    """`(src, dst)` - a pair of bare `note` nodes for edge tests."""
     src = drevo_db.create_node(drevo.NewNode(kind="note", title="src"))
     dst = drevo_db.create_node(drevo.NewNode(kind="note", title="dst"))
     return src, dst
@@ -88,7 +88,7 @@ def test_create_edge_invalid_weight_raises_invalid_weight_error(
     two_nodes: tuple[drevo.Node, drevo.Node],
     bad_weight: float,
 ) -> None:
-    """RFC §5.3 — non-finite weights surface `InvalidWeightError` (≤ ValueError)."""
+    """RFC §5.3 - non-finite weights surface `InvalidWeightError` (≤ ValueError)."""
     src, dst = two_nodes
     with pytest.raises(ValueError):
         drevo_db.create_edge(
