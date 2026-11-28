@@ -1,20 +1,20 @@
-// Grammar-aware Cypher generator — Phase 15 task `00099`.
+// Grammar-aware Cypher generator - Phase 15 task `00099`.
 //
 // Shared, dependency-free source `include!`d by BOTH the libFuzzer target
 // `fuzz/fuzz_targets/fuzz_cypher_grammar.rs` AND the stable replay harness
 // `tests/cypher_fuzz_harness_tests.rs`, so the grammar that the nightly
 // coverage-guided fuzzer explores is exactly the grammar the stable
 // `cargo test` matrix exercises on every PR. If you change a production
-// rule here, both consumers pick it up in the same commit — they cannot
+// rule here, both consumers pick it up in the same commit - they cannot
 // silently drift.
 //
 // The generator interprets an arbitrary byte slice as a *choice stream*:
 // every decision (which clause, which label, which literal) consumes one
 // byte and maps it onto a grammar alternative. This makes it a true
-// grammar-aware generator — the output is always a syntactically
+// grammar-aware generator - the output is always a syntactically
 // well-formed Cypher query drawn from the subset drevo's parser supports
 // (Phase 10: MATCH / OPTIONAL MATCH / WHERE / WITH / RETURN / CREATE /
-// MERGE / SET / DELETE / aggregations / variable-length paths) — while
+// MERGE / SET / DELETE / aggregations / variable-length paths) - while
 // still letting libFuzzer's mutator steer coverage through the byte
 // stream. An empty / exhausted stream deterministically reads `0`, so the
 // generator always terminates and always produces a non-empty query.

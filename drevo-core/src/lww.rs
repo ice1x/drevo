@@ -5,15 +5,15 @@
 //! keeps the value with the greatest stamp. Because stamps are **totally
 //! ordered** (HLC first, then a unique per-replica origin id to break ties) and
 //! each write's stamp is unique, the merge is commutative, associative, and
-//! idempotent — two peers that see the same set of writes in any order converge
+//! idempotent - two peers that see the same set of writes in any order converge
 //! to the same value. This is the minimal viable convergence for offline-first
 //! shared records: a [`LwwMap`] of a node's properties is a
 //! register-LWW CRDT over the graph.
 //!
 //! Deletes that converge against a concurrent edit are modelled by
 //! [`LwwSet`]: membership is a
-//! per-element [`LwwRegister`]`<bool>`, so a `remove` is a *causal tombstone* — a
-//! timestamped `false` — that wins or loses against a concurrent `add` purely
+//! per-element [`LwwRegister`]`<bool>`, so a `remove` is a *causal tombstone* - a
+//! timestamped `false` - that wins or loses against a concurrent `add` purely
 //! by stamp order. This is the add/remove set drevo needs for node/edge
 //! *existence*. (A `LwwMap` deliberately has no per-key remove: property maps
 //! resolve values, not membership.) Dependency-free, infallible, always
@@ -183,7 +183,7 @@ impl<K: Ord + Clone, V: Clone> LwwMap<K, V> {
     }
 
     /// Merge `other` in: union of keys, per-key LWW. Commutative, associative,
-    /// idempotent — replicas converge regardless of merge order. Returns
+    /// idempotent - replicas converge regardless of merge order. Returns
     /// whether `self` changed.
     pub fn merge(&mut self, other: &Self) -> bool {
         let mut changed = false;
@@ -203,8 +203,8 @@ impl<K: Ord + Clone, V: Clone> LwwMap<K, V> {
 /// A Last-Writer-Wins element set with **causal tombstones**: each element's membership is a [`LwwRegister`]`<bool>`, so an
 /// [`add`](Self::add) writes `true` and a [`remove`](Self::remove) writes a
 /// timestamped `false` (the tombstone). A concurrent add and remove of the same
-/// element resolve by stamp order — deterministically the same on every replica
-/// — so a delete converges against a concurrent edit instead of being
+/// element resolve by stamp order - deterministically the same on every replica -
+/// so a delete converges against a concurrent edit instead of being
 /// non-deterministically resurrected or lost. This is the add/remove set for
 /// node/edge *existence*.
 ///
@@ -279,7 +279,7 @@ impl<T: Ord + Clone> LwwSet<T> {
     }
 
     /// Merge `other` in: per-element LWW over membership (adds and tombstones
-    /// alike). Commutative, associative, idempotent — replicas converge
+    /// alike). Commutative, associative, idempotent - replicas converge
     /// regardless of merge order. Returns whether `self` changed.
     pub fn merge(&mut self, other: &Self) -> bool {
         let mut changed = false;
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn register_concurrent_writes_resolve_by_origin() {
         // Two peers write the SAME HLC (truly concurrent) with different
-        // origins — the higher origin wins, deterministically, either order.
+        // origins - the higher origin wins, deterministically, either order.
         let p1 = LwwRegister::new("from-1", stamp(10, 0, 1));
         let p2 = LwwRegister::new("from-2", stamp(10, 0, 2));
         let mut a = p1.clone();

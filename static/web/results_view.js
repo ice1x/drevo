@@ -1,4 +1,4 @@
-// drevo browser — pure helpers for showing values: Cypher result cells in the
+// drevo browser - pure helpers for showing values: Cypher result cells in the
 // Table and JSON views, the view a result opens in, and property values in
 // the inspector. DOM-free so they can be unit-tested under `node --test` (see
 // results_view.test.js).

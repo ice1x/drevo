@@ -1,4 +1,4 @@
-//! Integration tests for the Bolt handshake — Phase 11 task `00070`.
+//! Integration tests for the Bolt handshake - Phase 11 task `00070`.
 //!
 //! When a client opens a Bolt connection it sends 20 bytes: 4 magic
 //! preamble bytes (`0x60 0x60 0xB0 0x17`) followed by four 4-byte

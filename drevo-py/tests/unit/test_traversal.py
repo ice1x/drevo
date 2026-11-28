@@ -18,7 +18,7 @@ def test_bfs_depth_one_returns_immediate_neighbour(
     """a → b → c → d: BFS depth=1 from `a` returns the frontier `{b}`.
 
     The Rust traversal returns *discovered* nodes (the frontier) and
-    does not re-emit the seed — RFC §3.3 documents `bfs(start, depth)`
+    does not re-emit the seed - RFC §3.3 documents `bfs(start, depth)`
     as "nodes reachable from start within depth edges, excluding start".
     """
     visited = drevo_db.bfs(connected_chain["a"].id, 1, drevo.Direction.OUT)
@@ -35,7 +35,7 @@ def test_bfs_depth_two_extends_one_more_hop(
 def test_bfs_depth_zero_returns_empty(
     drevo_db: drevo.Drevo, connected_chain: dict[str, drevo.Node]
 ) -> None:
-    """Depth 0 = "no edges followed" — the frontier is empty."""
+    """Depth 0 = "no edges followed" - the frontier is empty."""
     visited = drevo_db.bfs(connected_chain["a"].id, 0, drevo.Direction.OUT)
     assert visited == []
 
@@ -51,7 +51,7 @@ def test_bfs_in_direction_walks_backwards(
 def test_bfs_edge_kind_filter_only_follows_matching_edges(
     drevo_db: drevo.Drevo, connected_chain: dict[str, drevo.Node]
 ) -> None:
-    """No `unknown_kind` edges exist — depth=3 yields the empty frontier."""
+    """No `unknown_kind` edges exist - depth=3 yields the empty frontier."""
     visited = drevo_db.bfs(
         connected_chain["a"].id, 3, drevo.Direction.OUT, edge_kind="unknown_kind"
     )
@@ -87,7 +87,7 @@ def test_shortest_path_returns_id_list(
 
 
 def test_shortest_path_returns_none_for_disconnected_nodes(drevo_db: drevo.Drevo) -> None:
-    """Two isolated nodes have no path — the contract returns `None`."""
+    """Two isolated nodes have no path - the contract returns `None`."""
     a = drevo_db.create_node(drevo.NewNode(kind="note", title="iso-a"))
     b = drevo_db.create_node(drevo.NewNode(kind="note", title="iso-b"))
     assert drevo_db.shortest_path(a.id, b.id) is None

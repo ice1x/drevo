@@ -1,4 +1,4 @@
-//! Bolt authentication — Phase 11 task `00074`.
+//! Bolt authentication - Phase 11 task `00074`.
 //!
 //! The Bolt handshake (task `00070`) and session loop (`00071`) accept
 //! any connection. Official Neo4j drivers, however, always send an
@@ -16,14 +16,14 @@
 //!
 //! This module supplies:
 //!
-//! * [`Authenticator`](crate::bolt::auth::Authenticator) — a
+//! * [`Authenticator`](crate::bolt::auth::Authenticator) - a
 //!   dependency-free trait the session layer calls with the decoded
 //!   `HELLO` extras. Always compiled, so the session state machine can
 //!   hold an `Option<&dyn Authenticator>` without pulling in any crypto
 //!   dependency.
-//! * [`AuthOutcome`](crate::bolt::auth::AuthOutcome) — the result the
+//! * [`AuthOutcome`](crate::bolt::auth::AuthOutcome) - the result the
 //!   trait returns.
-//! * [`UserStore`](crate::bolt::auth::UserStore) (feature `auth`) — the
+//! * [`UserStore`](crate::bolt::auth::UserStore) (feature `auth`) - the
 //!   user table from the `drevo-auth` crate. Passwords are stored as
 //!   Argon2id PHC strings (salted, never plaintext or an unsalted
 //!   digest), and it issues and verifies opaque bearer **session
@@ -35,7 +35,7 @@
 //! The trait + outcome are free of crypto deps so default builds (no
 //! `auth` feature) still compile the session integration and can
 //! plug in their own authenticator (LDAP, a callback, a test double).
-//! Only [`UserStore`](crate::bolt::auth::UserStore) — which pulls in `argon2` — sits behind the
+//! Only [`UserStore`](crate::bolt::auth::UserStore) - which pulls in `argon2` - sits behind the
 //! feature flag.
 
 use std::collections::BTreeMap;
@@ -84,7 +84,7 @@ pub fn string_field<'a>(extra: &'a BTreeMap<String, Value>, key: &str) -> Option
 }
 
 // ===========================================================================
-// UserStore — the Argon2id store from `drevo-auth` (feature `auth`).
+// UserStore - the Argon2id store from `drevo-auth` (feature `auth`).
 // ===========================================================================
 
 /// Users with Argon2id password hashes plus session tokens, from the

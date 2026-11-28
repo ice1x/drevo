@@ -1,4 +1,4 @@
-# 🎄 drevo — Embedded Graph Database for Knowledge Management
+# 🎄 drevo - Embedded Graph Database for Knowledge Management
 
 [![CI](https://github.com/ice1x/drevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ice1x/drevo/actions/workflows/ci.yml)
 [![Container image](https://img.shields.io/docker/v/ice1x/drevo?sort=semver&logo=docker&logoColor=white&label=docker%20hub)](https://hub.docker.com/r/ice1x/drevo)
@@ -10,11 +10,11 @@
 
 A lightweight, embeddable graph database written in Rust, with **full ACID transactions** (MVCC snapshot isolation + a write-ahead log). Designed as the storage engine for cross-platform knowledge-base applications (similar to Obsidian), drevo runs natively on desktop (via FFI/Tauri), mobile (iOS/Android via C bindings), and in the browser (via WebAssembly). It also ships as a standalone HTTP server for containerised deployments.
 
-**Drop-in memory backend for AI agents** (LangGraph, Claude Code, CrewAI, Cursor, multi-agent swarms) over HTTP / Bolt / MCP — persistent recall that survives sessions, agents, and machines. See the [Agent Memory Graph](#agent-memory-graph) use case.
+**Drop-in memory backend for AI agents** (LangGraph, Claude Code, CrewAI, Cursor, multi-agent swarms) over HTTP / Bolt / MCP - persistent recall that survives sessions, agents, and machines. See the [Agent Memory Graph](#agent-memory-graph) use case.
 
 > **📖 Documentation lives in [`docs/`](docs/)** and on the [docs site](https://ice1x.github.io/drevo/). See the [Documentation](#documentation) map below.
 
-**Run it in a container** — HTTP API + embedded Web UI on `:8080`, Neo4j-compatible Bolt on `:7687`:
+**Run it in a container** - HTTP API + embedded Web UI on `:8080`, Neo4j-compatible Bolt on `:7687`:
 
 ```bash
 # Published image (Docker Hub badge above). DREVO_AUTH sets the first user's
@@ -31,13 +31,13 @@ docker build -t drevo . && \
 Without `DREVO_AUTH` the first start creates `neo4j` with a generated password, printed once in
 `docker logs drevo`, which must be changed at the first login; `DREVO_AUTH=none` turns logins off.
 
-Then open <http://localhost:8080/ui>. Full deploy options — Compose, host bind-mounts, custom Bolt port, Kubernetes — are in the [Admin Guide](docs/admin-guide.md#3-docker).
+Then open <http://localhost:8080/ui>. Full deploy options - Compose, host bind-mounts, custom Bolt port, Kubernetes - are in the [Admin Guide](docs/admin-guide.md#3-docker).
 
 ---
 
 ## Use Cases
 
-drevo is a standalone embedded graph database: link it into an app as a library, or run it as a container / HTTP / Bolt service, to store, traverse, and full-text-search a property graph. Its primitives — node/edge **kinds**, arbitrary **properties**, **FTS**, **subgraph** extraction, and **transactions** — are domain-agnostic, so one engine models very different domains: knowledge graphs, agent memory, narrative or document trees, dependency and catalog graphs. One worked example — drevo as agent memory:
+drevo is a standalone embedded graph database: link it into an app as a library, or run it as a container / HTTP / Bolt service, to store, traverse, and full-text-search a property graph. Its primitives - node/edge **kinds**, arbitrary **properties**, **FTS**, **subgraph** extraction, and **transactions** - are domain-agnostic, so one engine models very different domains: knowledge graphs, agent memory, narrative or document trees, dependency and catalog graphs. One worked example - drevo as agent memory:
 
 ### Agent Memory Graph
 
@@ -55,7 +55,7 @@ The full flow is pinned by [`tests/scenario_agent_memory.rs`](tests/scenario_age
 
 **Native context graph (`drevo.memory.*`).** The three memory layers of the
 Neo4j GenAI "context graph" are also built-in procedures, so any Bolt/HTTP
-client gets agent memory in one call each — no pipeline to write
+client gets agent memory in one call each - no pipeline to write
 ([reference](docs/cypher-reference.md#agent-memory-533)):
 
 | Layer | Procedures |
@@ -70,7 +70,7 @@ Neo4j-compatible index surface (`CREATE VECTOR INDEX`, `db.index.vector.queryNod
 / `queryRelationships`, `SHOW INDEXES`) lets the Neo4j GenAI Python stack run
 against drevo unmodified.
 
-**Why drevo over the usual options** — its differentiator is hitting all five at once:
+**Why drevo over the usual options** - its differentiator is hitting all five at once:
 
 | | Embedded | Cross-platform | Graph-native | Built-in FTS | No external deps |
 |---|:---:|:---:|:---:|:---:|:---:|
@@ -79,14 +79,14 @@ against drevo unmodified.
 | SQLite ad-hoc schema | ✅ | ✅ | ❌ | ~ | ✅ |
 | **drevo** | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-Because drevo runs embedded on Linux/macOS/Windows, iOS/Android, WASM, and as a Docker/HTTP service, a **single memory graph file can travel** between a local Claude Code session, a cloud orchestrator run, and a mobile app — synced by file copy or over Bolt/HTTP.
+Because drevo runs embedded on Linux/macOS/Windows, iOS/Android, WASM, and as a Docker/HTTP service, a **single memory graph file can travel** between a local Claude Code session, a cloud orchestrator run, and a mobile app - synced by file copy or over Bolt/HTTP.
 
 > An agent-memory MCP server that exposes this surface to MCP-capable orchestrators lives in the separate [`ice1x/drevo-mcp`](https://github.com/ice1x/drevo-mcp) repo, not here.
 
 ### Common modeling patterns
 
-- **Node kinds** define domain entities — the `kind` field + `kind_index` provide filtered views
-- **Edge kinds** define relationships — `scan_prefix` retrieves all edges of a given type
+- **Node kinds** define domain entities - the `kind` field + `kind_index` provide filtered views
+- **Edge kinds** define relationships - `scan_prefix` retrieves all edges of a given type
 - **Properties** (HashMap) store domain-specific metadata without schema migration
 - **FTS** enables search across all content (titles, bodies, properties)
 - **Subgraph** extraction provides bounded context for AI agents (MCP)
@@ -104,7 +104,7 @@ User- and operator-facing guides live in [`docs/`](docs/) and render on the [doc
 | [User Guide](docs/user-guide.md) | Getting started, core concepts, everyday queries |
 | [Cypher Reference](docs/cypher-reference.md) | The supported Cypher surface (clauses, functions, procedures) |
 | [SDK Reference](docs/sdk-reference.md) | The Python Graph-RAG SDK (`drevo-py`) |
-| [Admin Guide](docs/admin-guide.md) | Deployment — Docker, Compose, Kubernetes — and operations |
+| [Admin Guide](docs/admin-guide.md) | Deployment - Docker, Compose, Kubernetes - and operations |
 | [Migration Guide](docs/migration-guide.md) | Importing an existing Neo4j graph into drevo |
 | [Architecture & Design](docs/architecture.md) | Vision, requirements, data model, storage engine, Rust API surface, serialization, error handling, performance targets, crate layout, dependencies |
 | [Benchmarks](docs/benchmarks.md) · [Native-core baseline](docs/native-core-baseline.md) · [Native load & concurrency](docs/native-load.md) | Measured performance, engine baselines, load/concurrency behaviour |
@@ -115,10 +115,10 @@ User- and operator-facing guides live in [`docs/`](docs/) and render on the [doc
 
 ## Project Status
 
-drevo is in active use. The default deployment engine is **`native-durable`** — an in-memory graph with a JSON-Lines write-ahead log as the store of record (zero redb); the original **redb** key-value backend stays selectable via `DREVO_ENGINE=kv`. Both engines serve the same HTTP / Bolt / Cypher / Web-UI surface.
+drevo is in active use. The default deployment engine is **`native-durable`** - an in-memory graph with a JSON-Lines write-ahead log as the store of record (zero redb); the original **redb** key-value backend stays selectable via `DREVO_ENGINE=kv`. Both engines serve the same HTTP / Bolt / Cypher / Web-UI surface.
 
 - **Releases:** see [tags](https://github.com/ice1x/drevo/tags) and the [Docker Hub image](https://hub.docker.com/r/ice1x/drevo) (`ice1x/drevo`).
-- **What's built:** the full history — engine, Cypher, Bolt, vectors, MVCC, Python SDK, semantic index, native core — is recorded in [`PHASE-HISTORY.md`](PHASE-HISTORY.md).
+- **What's built:** the full history - engine, Cypher, Bolt, vectors, MVCC, Python SDK, semantic index, native core - is recorded in [`PHASE-HISTORY.md`](PHASE-HISTORY.md).
 - **What's next / open work:** tracked in [GitHub issues](https://github.com/ice1x/drevo/issues), not in this file.
 
 ### ACID transactions
@@ -127,20 +127,20 @@ The default engine is fully **ACID**, and each property is proven by a dedicated
 
 | Property | Guarantee | Conformance suite |
 |---|---|---|
-| **A** — Atomicity | commit/rollback are all-or-nothing; a torn commit batch replays whole or not at all | [`drevo-core/tests/acid_atomicity.rs`](drevo-core/tests/acid_atomicity.rs) |
-| **C** — Consistency | UNIQUE / property-EXISTS / NODE-KEY constraints + structural invariants enforced at commit; a violating tx aborts atomically | [`drevo-core/tests/acid_consistency.rs`](drevo-core/tests/acid_consistency.rs) |
-| **I** — Isolation | MVCC snapshot isolation — no dirty read, repeatable read, write–write conflict detection | [`drevo-core/tests/acid_isolation.rs`](drevo-core/tests/acid_isolation.rs) |
-| **D** — Durability | acknowledged writes are fsync'd before return and survive a crash; replay is idempotent; ids stay monotonic | [`drevo-core/tests/acid_durability.rs`](drevo-core/tests/acid_durability.rs) |
+| **A** - Atomicity | commit/rollback are all-or-nothing; a torn commit batch replays whole or not at all | [`drevo-core/tests/acid_atomicity.rs`](drevo-core/tests/acid_atomicity.rs) |
+| **C** - Consistency | UNIQUE / property-EXISTS / NODE-KEY constraints + structural invariants enforced at commit; a violating tx aborts atomically | [`drevo-core/tests/acid_consistency.rs`](drevo-core/tests/acid_consistency.rs) |
+| **I** - Isolation | MVCC snapshot isolation - no dirty read, repeatable read, write-write conflict detection | [`drevo-core/tests/acid_isolation.rs`](drevo-core/tests/acid_isolation.rs) |
+| **D** - Durability | acknowledged writes are fsync'd before return and survive a crash; replay is idempotent; ids stay monotonic | [`drevo-core/tests/acid_durability.rs`](drevo-core/tests/acid_durability.rs) |
 
 The model is described in [`docs/architecture.md`](docs/architecture.md) and [`docs/rfc-native-core.md`](docs/rfc-native-core.md).
 
 ---
 
-## Quick Start — Container + External MCP (FastMCP)
+## Quick Start - Container + External MCP (FastMCP)
 
 Run drevo as a **server in a container** (the single owner of the redb file, serving
-the HTTP API **and** the Web UI) and attach the **MCP server** — a *separate process*
-that talks to the container over HTTP / Bolt — so an AI client can read the graph in
+the HTTP API **and** the Web UI) and attach the **MCP server** - a *separate process*
+that talks to the container over HTTP / Bolt - so an AI client can read the graph in
 conversation. Because the MCP server never opens the redb file, it never fights the
 container for redb's single-process lock; the Web UI and the MCP server query the same
 data at once. The MCP server is maintained in its own repository:
@@ -160,8 +160,8 @@ curl -s localhost:8080/health      # {"status":"ok"}
 open http://localhost:8080/ui      # the embedded graph Web UI (served by default)
 ```
 
-Equivalent plain `docker run` (also enables the Neo4j-compatible Bolt listener — see
-the Bolt drop-in MCP below — and survives reboots):
+Equivalent plain `docker run` (also enables the Neo4j-compatible Bolt listener - see
+the Bolt drop-in MCP below - and survives reboots):
 
 ```bash
 docker build -t drevo:latest .     # or: docker pull ice1x/drevo
@@ -174,7 +174,7 @@ docker run -d --name drevo --restart unless-stopped \
 ```
 
 The container bind-mounts the host folder to `/data` and serves `<folder>/drevo.redb`.
-The Web UI is **fully self-contained** — Cytoscape.js and the layout libraries are
+The Web UI is **fully self-contained** - Cytoscape.js and the layout libraries are
 vendored and served from `/ui/vendor/`, so the graph renders with no CDN access (works
 offline / behind privacy browsers). Type a query → **Search** → click a result to draw its
 2-hop subgraph. The overview shows up to 5000 nodes (**Show … nodes**): from 250 nodes on
@@ -183,8 +183,8 @@ top of another.
 
 ### 2. Attach the MCP server
 
-The MCP server lives in its own repository —
-**[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp)** — and offers
+The MCP server lives in its own repository -
+**[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp)** - and offers
 both an HTTP client (read-only tools mapped to `src/api.rs` endpoints) and a
 Neo4j-compatible Bolt drop-in (the same knowledge-graph tool surface as a Neo4j
 MCP, pointed at the container's Bolt port). Follow that repo's README to install
@@ -195,8 +195,8 @@ container:
 - HTTP transport → `DREVO_HTTP_URL=http://localhost:8080`
 - Bolt transport → `DREVO_BOLT_URL=bolt://localhost:7688` (host `:7688` in the `docker run` above)
 
-Either transport holds **no** redb lock — the container's `drevo-server` is the
-single file owner — so the Web UI and the MCP server run against the same data at
+Either transport holds **no** redb lock - the container's `drevo-server` is the
+single file owner - so the Web UI and the MCP server run against the same data at
 once.
 
 ---
@@ -205,7 +205,7 @@ once.
 
 The [Model Context Protocol](https://modelcontextprotocol.io) server for drevo
 lives in a **separate repository**:
-**[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp)** — *Drevo
+**[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp)** - *Drevo
 Graph MCP*.
 
 It runs as its own process and talks to a running `drevo-server` over HTTP / the
@@ -217,7 +217,7 @@ follow the MCP repo's README to connect Claude Desktop / Claude Code / Cline.
 > History: an *embedded* `drevo-mcp` stdio binary (former tasks `00090` /
 > `00121`) once shipped in this repo (`src/mcp/`, `src/bin/mcp.rs`). It opened
 > the redb file in-process and therefore could not run alongside `drevo-server`
-> on the same file — so it was removed in favour of the out-of-process MCP above.
+> on the same file - so it was removed in favour of the out-of-process MCP above.
 > Likewise the in-tree helper packages `tools/drevo-mcp` (HTTP) and
 > `tools/drevo-mcp-bolt` (Bolt) were folded into that external repository.
 

@@ -500,7 +500,7 @@ fn build_erp_graph(db: &NativeService) -> ErpGraph {
 }
 
 // =========================================================================
-// Tests — run against both backends via macro
+// Tests - run against both backends via macro
 // =========================================================================
 
 macro_rules! erp_tests {
@@ -862,7 +862,7 @@ macro_rules! erp_tests {
             }
 
             // -----------------------------------------------------------------
-            // 6. Kind index — board views
+            // 6. Kind index - board views
             // -----------------------------------------------------------------
 
             #[test]
@@ -924,7 +924,7 @@ macro_rules! erp_tests {
             }
 
             // -----------------------------------------------------------------
-            // 7. FTS — search by name / description
+            // 7. FTS - search by name / description
             // -----------------------------------------------------------------
 
             #[test]
@@ -985,7 +985,7 @@ macro_rules! erp_tests {
             }
 
             // -----------------------------------------------------------------
-            // 8. Subgraph — full context of an order
+            // 8. Subgraph - full context of an order
             // -----------------------------------------------------------------
 
             #[test]
@@ -1038,7 +1038,7 @@ macro_rules! erp_tests {
             }
 
             // -----------------------------------------------------------------
-            // 9. Traversals — BFS / DFS / shortest path
+            // 9. Traversals - BFS / DFS / shortest path
             // -----------------------------------------------------------------
 
             #[test]
@@ -1184,7 +1184,7 @@ macro_rules! erp_tests {
             }
 
             // -----------------------------------------------------------------
-            // 11. Transactional updates — order status, inventory
+            // 11. Transactional updates - order status, inventory
             // -----------------------------------------------------------------
 
             #[test]

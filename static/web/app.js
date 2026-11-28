@@ -1,4 +1,4 @@
-// drevo browser — minimal Cytoscape.js front-end driving the existing
+// drevo browser - minimal Cytoscape.js front-end driving the existing
 // Phase 8 HTTP API. Phase 15 task `00092`.
 //
 // Wire shape (defined in src/api.rs):
@@ -7,7 +7,7 @@
 //   GET  /nodes/{id}             → Node
 //   GET  /nodes/{id}/subgraph    → { nodes: [Node], edges: [Edge] }
 //
-// Everything is plain ES2017 — no module bundler, no transpile step.
+// Everything is plain ES2017 - no module bundler, no transpile step.
 
 (function () {
   "use strict";
@@ -101,15 +101,15 @@
   const $slowMsg = document.getElementById("settings-slowquery-msg");
 
   // ── Graph overview state ─────────────────────────────────────────────
-  // What the overview draws — every node and relationship with its kind,
-  // title and small property values — is fetched once from /export/overview
+  // What the overview draws - every node and relationship with its kind,
+  // title and small property values - is fetched once from /export/overview
   // and cached; large values (bodies, embeddings) stay on the server until
   // a node is opened in the inspector (#846). The on-load overview and the
   // kind-chip filters all render bounded
   // samples from this cache, so changing the node limit or switching
   // kinds never re-hits the network. The cache is re-fetched (via
   // `loadOverview`) after a graph write from this UI, on database switch,
-  // and on demand via the Refresh control — so a mutation on the server
+  // and on demand via the Refresh control - so a mutation on the server
   // never leaves the view showing deleted/stale nodes and edges (#433).
   /** @type {{nodes: any[], edges: any[]} | null} */
   let graphCache = null;
@@ -125,8 +125,8 @@
 
   // ── Dynamic node colour (task 00093) ────────────────────────────────
   // A handful of common kinds get curated, semantically-suggestive
-  // colours; every other kind is hashed to a stable hue so any schema
-  // — CBT journal, story, tasks, ERP, bug tracker — gets distinct,
+  // colours; every other kind is hashed to a stable hue so any schema -
+  // CBT journal, story, tasks, ERP, bug tracker - gets distinct,
   // repeatable node colours without a hard-coded palette per project.
   const CURATED_KIND_COLORS = {
     person: "#76e3a4",
@@ -469,13 +469,13 @@
     window.open(url, "_blank", "noopener");
     setReportMsg(
       copied
-        ? "Issue opened in a new tab — paste the screenshot (Cmd/Ctrl+V) into it, and attach the downloaded report if the text was truncated."
+        ? "Issue opened in a new tab - paste the screenshot (Cmd/Ctrl+V) into it, and attach the downloaded report if the text was truncated."
         : "Issue opened in a new tab. The screenshot could not be copied; use \"Download report\" and attach it.",
       "ok",
     );
   }
 
-  // ── Server info — top-right ────────────────────────────────────────
+  // ── Server info - top-right ────────────────────────────────────────
   async function loadServerInfo() {
     try {
       const info = await apiGet("/");
@@ -516,7 +516,7 @@
   };
 
   function formatBytes(n) {
-    if (n === null || n === undefined) return "—";
+    if (n === null || n === undefined) return "-";
     if (n < 1024) return `${n} B`;
     const units = ["KiB", "MiB", "GiB", "TiB"];
     let v = n / 1024;
@@ -550,7 +550,7 @@
       .join("");
     const ratio =
       bloat.bloat_ratio === null || bloat.bloat_ratio === undefined
-        ? "—"
+        ? "-"
         : `${bloat.bloat_ratio.toFixed(2)}×`;
     $storageBody.innerHTML = `
       <dl class="storage-stats">
@@ -569,7 +569,7 @@
       </table>
       <p class="storage-note">
         <strong>Shrink</strong> rebuilds the database file in place to reclaim
-        copy-on-write bloat — online, with no restart. The graph is copied
+        copy-on-write bloat - online, with no restart. The graph is copied
         verbatim (nothing migrates) and operations briefly pause while the file
         is swapped. Take a <strong>Backup</strong> first if you want a safety net.
       </p>`;
@@ -638,7 +638,7 @@
       name.className = "ks-name";
       name.textContent = s.name;
       name.title = [directory ? `${directory}/${s.name}` : s.name, ...s.notes].join("\n");
-      tr.insertCell().textContent = s.when ? s.when.toLocaleString() : "—";
+      tr.insertCell().textContent = s.when ? s.when.toLocaleString() : "-";
       tr.insertCell().textContent = s.kind;
       const dbs = tr.insertCell();
       dbs.className = "ks-num";
@@ -725,8 +725,8 @@
       query.className = "tx-query";
       query.textContent = TxView.queryLabel(t);
       query.title = `${t.id}${t.client ? " · " + t.client : ""}\n${t.query || ""}`;
-      tr.insertCell().textContent = t.user || "—";
-      tr.insertCell().textContent = t.protocol || "—";
+      tr.insertCell().textContent = t.user || "-";
+      tr.insertCell().textContent = t.protocol || "-";
       const elapsed = tr.insertCell();
       elapsed.className = "ks-num";
       elapsed.textContent = TxView.formatElapsed(t.elapsedMs);
@@ -825,7 +825,7 @@
             <div><dt>FTS search (median)</dt><dd>${r.search_median_ms} ms</dd></div>
           </dl>
           <p class="storage-note">Write throughput measured on a throwaway in-memory
-            database (${r.incr_n} nodes) — the live graph is untouched. FTS latency is
+            database (${r.incr_n} nodes) - the live graph is untouched. FTS latency is
             the median of ${r.search_samples} read-only searches against this database.</p>`;
       }
       status("Benchmark complete.", "ok");
@@ -862,7 +862,7 @@
   }
 
   // ── Settings panel: embeddings config (GET/POST /config/embeddings) ──────
-  // The status endpoint returns { configured, upstream, model, api_key_set } —
+  // The status endpoint returns { configured, upstream, model, api_key_set } -
   // never the key. The key field is write-only: left blank on save, the stored
   // secret is kept.
   async function loadEmbeddingsConfig() {
@@ -876,12 +876,12 @@
       if ($embKey) {
         $embKey.value = "";
         $embKey.placeholder = s.api_key_set
-          ? "•••••• stored — leave blank to keep"
-          : "not set — paste a key to enable";
+          ? "•••••• stored - leave blank to keep"
+          : "not set - paste a key to enable";
       }
       $embStatus.textContent = s.configured
         ? `Configured${s.api_key_set ? " · key set" : " · no key"}`
-        : "Not configured — set an upstream to enable embeddings.";
+        : "Not configured - set an upstream to enable embeddings.";
     } catch (err) {
       $embStatus.textContent = `Unavailable: ${err.message}`;
     }
@@ -907,7 +907,7 @@
       return;
     }
     const body = { upstream, model: ($embModel && $embModel.value.trim()) || "" };
-    // Only send the key when the user typed one — blank keeps the stored secret.
+    // Only send the key when the user typed one - blank keeps the stored secret.
     const key = ($embKey && $embKey.value) || "";
     if (key.trim()) body.api_key = key;
 
@@ -927,7 +927,7 @@
       // Reload first (it clears the message area), then show the confirmation
       // so it isn't wiped by the refresh.
       await loadEmbeddingsConfig();
-      setEmbMsg("Saved — applied immediately, no restart needed.", false);
+      setEmbMsg("Saved - applied immediately, no restart needed.", false);
     } catch (err) {
       setEmbMsg(`Save failed: ${err.message}`, true);
     } finally {
@@ -950,12 +950,12 @@
       if ($t2cKey) {
         $t2cKey.value = "";
         $t2cKey.placeholder = s.api_key_set
-          ? "•••••• stored — leave blank to keep"
-          : "not set — none needed for a local Ollama";
+          ? "•••••• stored - leave blank to keep"
+          : "not set - none needed for a local Ollama";
       }
       $t2cStatus.textContent = s.configured
         ? `Configured · ${s.model}${s.api_key_set ? " · key set" : " · no key"}`
-        : "Not configured — set a chat completions URL to enable Ask.";
+        : "Not configured - set a chat completions URL to enable Ask.";
     } catch (err) {
       $t2cStatus.textContent = `Unavailable: ${err.message}`;
     }
@@ -998,7 +998,7 @@
         throw new Error(data.error || `${r.status} ${r.statusText}`);
       }
       await loadText2CypherConfig();
-      setT2cMsg("Saved — Ask uses it from now on, no restart needed.", false);
+      setT2cMsg("Saved - Ask uses it from now on, no restart needed.", false);
     } catch (err) {
       setT2cMsg(`Save failed: ${err.message}`, true);
     } finally {
@@ -1061,7 +1061,7 @@
       }
       await loadSlowQueryConfig();
       setSlowMsg(
-        ms === 0 ? "Saved — the slow-statement log is off." : "Saved — applies now, until the server restarts.",
+        ms === 0 ? "Saved - the slow-statement log is off." : "Saved - applies now, until the server restarts.",
         false,
       );
     } catch (err) {
@@ -1092,7 +1092,7 @@
   //
   // `randomize` controls the seed: a FRESH render (search result, Cypher
   // result, overview sample) randomises so the physics has somewhere to
-  // pull from — crucial when the result has FEW OR NO edges (e.g.
+  // pull from - crucial when the result has FEW OR NO edges (e.g.
   // `MATCH (n) RETURN n`), where there are no springs and only node
   // repulsion + gravity spread the nodes. An incremental expand passes
   // `randomize: false` so it nudges the existing graph instead of
@@ -1126,7 +1126,7 @@
   // A forest (tree / hierarchy) has exactly `nodes − 1` edges per connected
   // component and no cycles. Most drevo exploration is hierarchical (search
   // trees, folder/subtree views), and a force layout tangles a tree's edges
-  // needlessly — a hierarchical `breadthfirst` gives it a clean, crossing-free
+  // needlessly - a hierarchical `breadthfirst` gives it a clean, crossing-free
   // radial layout instead. Cyclic graphs fall back to fcose.
   function isForest() {
     if (!cy) return false;
@@ -1135,7 +1135,7 @@
     return comps.every((c) => c.edges().length === c.nodes().length - 1);
   }
 
-  // `breadthfirst` (Cytoscape core — no extra vendor bundle) lays a tree out in
+  // `breadthfirst` (Cytoscape core - no extra vendor bundle) lays a tree out in
   // rings by hop-distance from the root: zero edge crossings, the hierarchy is
   // legible, and it still reads as the familiar radial shape.
   function breadthfirstOptions(animate) {
@@ -1299,7 +1299,7 @@
   // and the whole graph jitters on the first drag tick even though nothing was
   // touched. The fix is a PER-EDGE rest length equal to each edge's own current
   // length: then every spring starts exactly at rest and only the dragged
-  // (cursor-pinned) node perturbs its neighbourhood — the rest of the graph
+  // (cursor-pinned) node perturbs its neighbourhood - the rest of the graph
   // stays put. The pure length math lives in graph_math.js so it is unit-tested
   // (graph_math.test.js). #437/#440 history: fcose's idealEdgeLength was retuned
   // to 90 while cola stayed pinned at a hardcoded 150; measuring live keeps the
@@ -1323,7 +1323,7 @@
       animate: true,
       randomize: false, // start from the current (fcose) positions
       // Per-edge rest length = that edge's CURRENT length, so every spring
-      // begins exactly at rest and only the dragged neighbourhood moves — no
+      // begins exactly at rest and only the dragged neighbourhood moves - no
       // whole-graph jolt from a shared mean pulling off-mean edges.
       edgeLength: (edge) => {
         const s = edge.source().position();
@@ -1335,7 +1335,7 @@
       },
       nodeSpacing: 28,
       // Repacking disconnected components on start yanks every peripheral /
-      // weakly-connected node across the canvas — a jolt on any graph that
+      // weakly-connected node across the canvas - a jolt on any graph that
       // isn't one fully-connected blob. Leave components where fcose put them.
       handleDisconnected: false,
       // Let the user keep grabbing nodes while the sim runs.
@@ -1346,14 +1346,14 @@
   // itself + its direct neighbours + the edges between them), never the whole
   // graph. cola is a *stress* layout: over the full graph its all-pairs model
   // pulls every pair of nodes toward a distance proportional to their hop count,
-  // i.e. cola's own equilibrium — which differs from the fcose layout the graph
+  // i.e. cola's own equilibrium - which differs from the fcose layout the graph
   // is already sitting in. With `infinite: true` it keeps marching toward that
   // equilibrium for as long as the drag lasts, so distant, untouched nodes
   // visibly spread apart across the canvas (the #471 per-edge rest-length fix
   // only neutralised *adjacent* springs; the all-pairs stress term still reflows
   // everything). Restricting the layout's element set to the 1-hop neighbourhood
-  // freezes every other node — cola literally can't move a node that isn't in
-  // its set — so only the dragged node's direct neighbours trail it, exactly the
+  // freezes every other node - cola literally can't move a node that isn't in
+  // its set - so only the dragged node's direct neighbours trail it, exactly the
   // Neo4j-Browser-style local tug we want.
   function startLiveLayout(node) {
     if (!cy || !node) return;
@@ -1426,7 +1426,7 @@
           "text-max-width": "120px",
           "text-wrap": "ellipsis",
           // Labels only appear once the graph is zoomed in enough to read
-          // them — declutters the wide-out view (like the Neo4j Browser).
+          // them - declutters the wide-out view (like the Neo4j Browser).
           "min-zoomed-font-size": 9,
           "z-index": 10, // nodes paint above edges
           // Size grows with the node's connections on the canvas (`size` is
@@ -1505,7 +1505,7 @@
     try {
       localStorage.setItem("drevo-theme", theme);
     } catch (e) {
-      /* private mode / disabled storage — non-fatal */
+      /* private mode / disabled storage - non-fatal */
     }
     if ($themeToggle) $themeToggle.textContent = theme === "dark" ? "☀" : "☾";
     if (cy) cy.style(cyStyle(theme)); // re-skin the canvas to match
@@ -1546,7 +1546,7 @@
       loadFullNode(node);
       focusNeighbourhood(node);
     });
-    // Tapping a relationship inspects it — the sidebar shows its type,
+    // Tapping a relationship inspects it - the sidebar shows its type,
     // endpoints and properties, mirroring node inspection.
     cy.on("tap", "edge", (evt) => {
       renderEdgeInspector(evt.target.data("raw"));
@@ -1583,7 +1583,7 @@
     //
     // The simulation is armed on the first `drag` event, NOT on `grab`. `grab`
     // (mouse-down) fires on every plain click too, so arming there kicked off a
-    // whole-graph re-simulation on any click — the layout visibly "rebuilt"
+    // whole-graph re-simulation on any click - the layout visibly "rebuilt"
     // itself just from selecting a node. `drag` fires only once the pointer
     // actually moves the node, so a click now only selects/inspects and the
     // physics runs solely during a real drag. We re-emit `grab` when starting so
@@ -1966,7 +1966,7 @@
   // A bare `USE <name>` (no trailing query) is a database switch, handled
   // client-side by moving the picker rather than a round-trip.
   const BARE_USE_RE = /^\s*USE\s+([A-Za-z0-9_-]+)\s*;?\s*$/i;
-  // Admin commands whose success changes the catalog / selection — after
+  // Admin commands whose success changes the catalog / selection - after
   // running one we refresh the database picker.
   const DB_ADMIN_RE = /^\s*(SHOW\s+DATABASES|CREATE\s+DATABASE|USE)\b/i;
   // Clauses that mutate the graph. After a successful write from this UI we
@@ -1985,7 +1985,7 @@
     const req = startRequest("Running Cypher");
     try {
       // Own fetch (not apiPost) so we can surface the executor's error
-      // text — /cypher returns the parse/exec message as the body on 400.
+      // text - /cypher returns the parse/exec message as the body on 400.
       const r = await fetch("/cypher", {
         method: "POST",
         headers: {
@@ -2148,7 +2148,7 @@
     $results.innerHTML = "";
     const li = document.createElement("li");
     li.className = "results-summary";
-    li.textContent = `Cypher result: ${rowCount} row${rowCount === 1 ? "" : "s"} — open the Table view`;
+    li.textContent = `Cypher result: ${rowCount} row${rowCount === 1 ? "" : "s"} - open the Table view`;
     li.addEventListener("click", () => showView("table"));
     $results.appendChild(li);
   }
@@ -2460,7 +2460,7 @@
     }
     addOmittedRow(edge);
   }
-  // Human label for an endpoint id — the node's label if it is currently
+  // Human label for an endpoint id - the node's label if it is currently
   // on the canvas, otherwise `#<id>`.
   function endpointLabel(id) {
     if (cy) {
@@ -2755,7 +2755,7 @@
 
   // Prompt for a name, create the database, then switch to it.
   async function createDatabase() {
-    const name = (window.prompt("New database name (A–Z, 0–9, _-):") || "").trim();
+    const name = (window.prompt("New database name (A-Z, 0-9, _-):") || "").trim();
     if (!name) return;
     try {
       await apiPost("/databases", { name });
@@ -2955,7 +2955,7 @@
     if (!q) return;
     rememberQuery(q);
     // A bare `USE <name>` just switches the active database (like the
-    // picker) — no query to run.
+    // picker) - no query to run.
     const bareUse = q.match(BARE_USE_RE);
     if (bareUse) {
       switchDatabase(bareUse[1]);
@@ -2965,7 +2965,7 @@
     // text is a full-text search.
     if (looksLikeCypher(q)) {
       runCypher(q).then((ok) => {
-        // `CREATE DATABASE` / `USE` may have changed the catalog — refresh
+        // `CREATE DATABASE` / `USE` may have changed the catalog - refresh
         // the picker so a newly created database appears.
         if (DB_ADMIN_RE.test(q)) loadDatabases();
         // A successful graph write invalidates the client-side sample cache;
@@ -3068,7 +3068,7 @@
     );
   }
 
-  // Storage panel — open / close / refresh.
+  // Storage panel - open / close / refresh.
   $viewTabs.addEventListener("click", (e) => {
     const tab = e.target.closest("[data-view]");
     if (tab) showView(tab.dataset.view);

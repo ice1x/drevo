@@ -2,8 +2,8 @@
 //! word of the query, where [`FtsMatch::All`] (what `search` does) takes
 //! only a document holding all of it.
 //!
-//! A natural-language question — "who watched the storm from the
-//! lighthouse" — is the case: no document holds every word of it, and the
+//! A natural-language question - "who watched the storm from the
+//! lighthouse" - is the case: no document holds every word of it, and the
 //! one that answers it holds most of them.
 
 use drevo_core::engine::GraphEngine;

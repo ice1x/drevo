@@ -4,12 +4,12 @@
 //! The full-text index covers committed data only, and a statement or an
 //! explicit transaction that has written is refused with
 //! `ExecError::IndexBehindWrites`. The graph-RAG procedures search full text,
-//! so the ordinary agent turn — store the message, then build the context,
-//! in one unit of work — fails, and so does a second traced
+//! so the ordinary agent turn - store the message, then build the context,
+//! in one unit of work - fails, and so does a second traced
 //! `drevo.rag.context` (the first one wrote its `:ContextTrace`).
 //!
 //! These tests state the behaviour #817 asks for: full text sees the
-//! transaction's own writes, as the label / property / text indexes do —
+//! transaction's own writes, as the label / property / text indexes do -
 //! the same hits and scores the search gives once the transaction commits.
 
 use std::collections::HashMap;

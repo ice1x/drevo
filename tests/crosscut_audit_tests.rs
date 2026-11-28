@@ -1,23 +1,23 @@
 //! Cross-cutting compliance invariants for Phase 8.5 task `00113`.
 //!
-//! Where other audit tasks (`00103`–`00112`) verify a single module against
+//! Where other audit tasks (`00103`-`00112`) verify a single module against
 //! a single skill, this task locks in the **repo-wide** invariants that no
 //! per-module audit can see on its own:
 //!
-//! - **MSRV is declared** — `Cargo.toml` must carry a `rust-version` key so
+//! - **MSRV is declared** - `Cargo.toml` must carry a `rust-version` key so
 //!   `cargo +stable build` and the CI matrix have a single source of truth
-//!   (`drevo-rust` §"Code Style" — _"Edition 2021, MSRV latest stable"_).
-//! - **`make audit` exists** — the audit matrix (fmt + clippy native + clippy
+//!   (`drevo-rust` §"Code Style" - _"Edition 2021, MSRV latest stable"_).
+//! - **`make audit` exists** - the audit matrix (fmt + clippy native + clippy
 //!   wasm + test + doc + machete + llvm-cov) is one command, not seven
 //!   (`drevo-tdd` §"CI Gates").
-//! - **Crate-level rustdoc + `#![warn(missing_docs)]`** — every public
-//!   item documented (`drevo-rust` §"Code Style" — _"Doc-comments on every
+//! - **Crate-level rustdoc + `#![warn(missing_docs)]`** - every public
+//!   item documented (`drevo-rust` §"Code Style" - _"Doc-comments on every
 //!   `pub` item"_).
-//! - **`getrandom` declared-but-unused is documented as ignored** —
+//! - **`getrandom` declared-but-unused is documented as ignored** -
 //!   `cargo machete` would otherwise flip on every audit run because the
 //!   crate exists only to surface the `wasm_js` feature flag.
-//! - **No `unwrap()` / `expect()` outside tests/benches/`#[cfg(test)]`** —
-//!   already enforced module-by-module in `00103`–`00112`; this test
+//! - **No `unwrap()` / `expect()` outside tests/benches/`#[cfg(test)]`** -
+//!   already enforced module-by-module in `00103`-`00112`; this test
 //!   replays the regex once across the whole `src/` tree so a regression
 //!   anywhere in the workspace surfaces in CI (`drevo-rust`
 //!   §"Error Handling").
@@ -78,7 +78,7 @@ fn ci_matrix_pins_msrv_job() {
     assert!(
         ci.contains("msrv") || ci.contains("MSRV") || ci.contains("rust-version"),
         "CI workflow must include an MSRV job that builds against the version declared in \
-         Cargo.toml — otherwise the field decays silently. Add a job that runs \
+         Cargo.toml - otherwise the field decays silently. Add a job that runs \
          `cargo +<rust-version> check --all-features`."
     );
 }
@@ -94,7 +94,7 @@ fn makefile_exists_with_audit_target() {
         makefile_path.exists(),
         "Makefile missing at repo root. Audit task 00113 requires a `make audit` target that \
          runs the strict matrix (fmt / clippy native / clippy wasm / test / doc / machete) in one \
-         command — see README task 00113 'Refactor targets'."
+         command - see README task 00113 'Refactor targets'."
     );
     let makefile = read("Makefile");
     assert!(
@@ -133,7 +133,7 @@ fn lib_rs_has_crate_level_doc_and_missing_docs_warn() {
     assert!(
         lib.contains("#![warn(missing_docs)]") || lib.contains("#![deny(missing_docs)]"),
         "src/lib.rs must enable `#![warn(missing_docs)]` (or `deny`) so every `pub` item without \
-         a rustdoc fails the audit (drevo-rust §\"Code Style\" — doc-comments on every pub item)."
+         a rustdoc fails the audit (drevo-rust §\"Code Style\" - doc-comments on every pub item)."
     );
 }
 
@@ -147,9 +147,9 @@ fn getrandom_marked_as_ignored_in_cargo_machete_metadata() {
     assert!(
         manifest.contains("[package.metadata.cargo-machete]"),
         "Cargo.toml must declare `[package.metadata.cargo-machete]` with `getrandom` in the \
-         `ignored` list — the crate has no direct `use getrandom::...` site, but the optional \
+         `ignored` list - the crate has no direct `use getrandom::...` site, but the optional \
          dep exists solely to surface the `wasm_js` feature flag on the same `getrandom` \
-         version that `uuid` v1 already pulls in (drevo-rust §\"WASM Bindings\" — _\"WASM needs \
+         version that `uuid` v1 already pulls in (drevo-rust §\"WASM Bindings\" - _\"WASM needs \
          the `wasm_js` feature on `getrandom` for browser-compatible RNG\"_)."
     );
     assert!(
@@ -222,7 +222,7 @@ fn no_unwrap_or_expect_in_library_source() {
     let src = repo_root().join("src");
     let mut hits = Vec::new();
     walk_src(&src, &mut hits);
-    // Known exceptions (audited, documented). Keep this list short — every
+    // Known exceptions (audited, documented). Keep this list short - every
     // entry needs a one-line rationale in the AUDIT-crosscut report.
     let allow_substrings: &[&str] = &[
         // Tracing initialiser in the http feature is fallible only on
@@ -238,7 +238,7 @@ fn no_unwrap_or_expect_in_library_source() {
          `RunError` variant or annotated with a `// SAFETY:` rationale:\n{}",
         hits.len(),
         hits.iter()
-            .map(|(p, line, src)| format!("  {}:{} — {}", p.display(), line, src.trim()))
+            .map(|(p, line, src)| format!("  {}:{} - {}", p.display(), line, src.trim()))
             .collect::<Vec<_>>()
             .join("\n"),
     );
@@ -256,13 +256,13 @@ fn cargo_toml_dev_profile_trims_debuginfo() {
     // generating + linking debuginfo rather than running tests (the single
     // self-hosted runner serialised that cost into multi-hour jobs). The root
     // manifest must pin `[profile.dev] debug` below full (`0`, `1`, "none",
-    // or "line-tables-only") so every cargo invocation — CI and local —
+    // or "line-tables-only") so every cargo invocation - CI and local -
     // compiles + links faster. `debug = 1` keeps `file:line` in backtraces.
     let manifest = read("Cargo.toml");
 
     // Extract the `[profile.dev]` section body (until the next `[` table).
     let start = manifest.find("[profile.dev]").expect(
-        "Cargo.toml must declare `[profile.dev]` with a reduced `debug` level — see the \
+        "Cargo.toml must declare `[profile.dev]` with a reduced `debug` level - see the \
                  compile-time rationale comment in Cargo.toml",
     );
     let after = &manifest[start + "[profile.dev]".len()..];
@@ -284,7 +284,7 @@ fn cargo_toml_dev_profile_trims_debuginfo() {
     let is_full = value == "2" || value == "true" || value == "\"full\"";
     assert!(
         !is_full,
-        "[profile.dev] debug = {value} is full debuginfo — that is the slow default this guard \
+        "[profile.dev] debug = {value} is full debuginfo - that is the slow default this guard \
          exists to prevent. Use `debug = 1` (line tables) or `0`/\"none\" to keep CI compile + \
          link fast on the self-hosted runner."
     );

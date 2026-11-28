@@ -1,21 +1,21 @@
-//! End-to-end Cypher list / map indexing & slicing tests — Phase 10
+//! End-to-end Cypher list / map indexing & slicing tests - Phase 10
 //! follow-up task `00139`.
 //!
 //! The executor evaluates the two element-access expression forms the parser
 //! already produces (`00062`):
 //!
-//! * `expr[index]` — a single list element (`xs[0]`, `xs[-1]`) or a
+//! * `expr[index]` - a single list element (`xs[0]`, `xs[-1]`) or a
 //!   map / node / relationship field (`m['key']`, equivalent to property
 //!   access). A list index is zero-based, may be negative (counting from the
 //!   end), and yields `NULL` when out of range. A map key must be a string;
 //!   an absent key yields `NULL`.
-//! * `expr[from..to]` — a `from`-inclusive / `to`-exclusive list slice with
+//! * `expr[from..to]` - a `from`-inclusive / `to`-exclusive list slice with
 //!   negative bounds counting from the end, every bound clamped into range,
 //!   and either bound optional (`xs[..n]` / `xs[n..]` / `xs[..]`).
 //!
 //! `NULL` propagates through a `NULL` base, a `NULL` index, or a `NULL` slice
-//! bound. Genuine misuse — a non-integer list index, a non-string map key, or
-//! indexing / slicing a scalar — is a recoverable `ExecError::TypeMismatch`.
+//! bound. Genuine misuse - a non-integer list index, a non-string map key, or
+//! indexing / slicing a scalar - is a recoverable `ExecError::TypeMismatch`.
 //!
 //! These cases drive the real parser → executor pipeline across the five
 //! drevo target scenario domains (CBT journal, story / book editor, IT task
@@ -66,7 +66,7 @@ fn ints(values: &[i64]) -> Value {
     Value::List(values.iter().map(|i| Value::Integer(*i)).collect())
 }
 
-// ===== List indexing — core semantics =======================================
+// ===== List indexing - core semantics =======================================
 
 #[test]
 fn list_literal_index_zero_based() {
@@ -136,7 +136,7 @@ fn map_index_non_string_key_is_type_error() {
     assert!(matches!(e, ExecError::TypeMismatch { .. }), "{e:?}");
 }
 
-// ===== List slicing — core semantics ========================================
+// ===== List slicing - core semantics ========================================
 
 #[test]
 fn slice_inclusive_from_exclusive_to() {

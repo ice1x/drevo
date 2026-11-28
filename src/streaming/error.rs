@@ -1,13 +1,13 @@
 //! The standalone error channel for the streaming-ingestion engine.
 //!
 //! Like the replication engine (task `00095`), the authorization engine
-//! (`00094`), and the query planner (`00085`–`00089`), streaming ingestion
+//! (`00094`), and the query planner (`00085`-`00089`), streaming ingestion
 //! keeps its own [`StreamError`] rather than adding a variant to the crate-wide
 //! `DrevoError`: it is an opt-in substrate not yet wired into the executor /
 //! HTTP / Bolt request path, so it has no reason to widen the core error type's
 //! exhaustive match sites. A sink (the thing that actually mutates the graph)
 //! reports failures as opaque strings which are wrapped in the
-//! [`Sink`](StreamError::Sink) variant — this keeps the engine decoupled from
+//! [`Sink`](StreamError::Sink) variant - this keeps the engine decoupled from
 //! any one sink implementation's error type.
 
 use crate::streaming::source::Offset;
@@ -27,7 +27,7 @@ pub enum StreamError {
         reason: String,
     },
 
-    /// The sink rejected an otherwise well-formed event — for example a
+    /// The sink rejected an otherwise well-formed event - for example a
     /// duplicate title, a dangling edge endpoint, or a storage-layer failure.
     /// Carries the broker [`Offset`] and the sink's own error rendered to text.
     #[error("sink rejected event at offset {offset}: {reason}")]

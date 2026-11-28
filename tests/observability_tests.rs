@@ -1,7 +1,7 @@
-//! Phase 15 task `00130` — integration tests for the observability surface.
+//! Phase 15 task `00130` - integration tests for the observability surface.
 //!
 //! Drives the real `axum::Router` returned by [`drevo::native_api::build_native_router`] via
-//! `tower::ServiceExt::oneshot` — the same in-process pattern as
+//! `tower::ServiceExt::oneshot` - the same in-process pattern as
 //! `tests/web_ui_tests.rs` and `tests/http_api_tests.rs` (no TCP listener, so
 //! the suite runs on any CI cell that compiles the `http` feature).
 //!
@@ -121,7 +121,7 @@ async fn in_flight_counts_only_the_active_scrape() {
     }
     let (_, _, body) = send(&app, "GET", "/metrics").await;
     // The scrape itself is in flight while it renders, so the gauge reads
-    // exactly 1 — not 4. A value > 1 would mean `request_finished` never ran.
+    // exactly 1 - not 4. A value > 1 would mean `request_finished` never ran.
     assert!(
         body.contains("drevo_http_requests_in_flight 1"),
         "in-flight must show only the active scrape (1), proving prior \

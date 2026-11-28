@@ -7,7 +7,7 @@
 > First slice of [#241]. A repeatable driver that runs a **mixed read/write
 > workload** over the public `Drevo` API across a **concurrency sweep** and
 > reports **p50/p95/p99** latency and **throughput**. It is a measurement tool,
-> not a `cargo test` — it runs on demand and is kept off `ci-fast`.
+> not a `cargo test` - it runs on demand and is kept off `ci-fast`.
 
 ## Running it
 
@@ -22,7 +22,7 @@ Knobs (environment variables):
 | `NODES` | `5000` | seed nodes the workload reads/links against |
 | `OPS` | `2000` | operations **per thread** |
 | `READ_PCT` | `80` | percent of ops that are reads (rest are edge writes) |
-| `BACKEND` | `memory` | `memory` (in-memory) or `redb` (on-disk) — see below |
+| `BACKEND` | `memory` | `memory` (in-memory) or `redb` (on-disk) - see below |
 
 ```text
 NODES=20000 OPS=5000 READ_PCT=50 cargo run --release --example load_harness
@@ -37,7 +37,7 @@ stderr is a compact human table.
 **`BACKEND=redb`** runs the identical sweep against the on-disk redb backend
 instead of the ephemeral in-memory one. Every `create_edge` then commits with an
 fsync, so writes are far slower and the single-writer ceiling shows in real
-wall-clock — this is where the concurrency curve reflects redb's actual
+wall-clock - this is where the concurrency curve reflects redb's actual
 copy-on-write cost rather than just lock contention. Because each write fsyncs,
 **use small `NODES`/`OPS`** (the default 5000×2000 would take a long time on
 disk). It is an on-demand measurement, never run in CI.
@@ -63,7 +63,7 @@ between two seed nodes. The op mix and per-thread access stream are deterministi
 ## Baseline (main, in-memory backend)
 
 Captured with the defaults (`NODES=5000 OPS=2000 READ_PCT=80`). **Absolute
-numbers are hardware-specific** — regenerate locally with the command above; the
+numbers are hardware-specific** - regenerate locally with the command above; the
 signal is the *shape* across the sweep, not the raw figures.
 
 | threads | ops/sec | read p50 µs | read p99 µs | write p50 µs | write p99 µs |
@@ -80,7 +80,7 @@ signal is the *shape* across the sweep, not the raw figures.
   rises (636k → 393k ops/sec) rather than scaling up: the write path serializes,
   so adding threads adds contention, not throughput. This is the redb / in-memory
   single-writer model showing through.
-- **Write tail latency grows with contention** — write p99 climbs 6 µs → 441 µs
+- **Write tail latency grows with contention** - write p99 climbs 6 µs → 441 µs
   across the sweep, while reads stay comparatively cheap (they don't hold the
   writer). This is the quantitative companion to the adjacency-layout analysis in
   [`adjacency-key-schema.md`](adjacency-key-schema.md) and [#243].
@@ -88,8 +88,8 @@ signal is the *shape* across the sweep, not the raw figures.
 ## Churn → compact → recovery (`churn_compact` example)
 
 The second harness measures the degradation the [#240] adjacency-layout
-investigation predicts — a COW B-tree file holds its high-water mark and
-scatters live pages across the freelist under churn — and how much
+investigation predicts - a COW B-tree file holds its high-water mark and
+scatters live pages across the freelist under churn - and how much
 `Drevo::compact()` recovers. Unlike the in-memory sweep above, it runs against
 the **redb (on-disk) backend** so the file footprint and compaction are real.
 
@@ -102,12 +102,12 @@ NODES=20000 EDGES=40000 CHURN=40000 PROBE=20000 cargo run --release --example ch
 |---|---|---|
 | `NODES` | `10000` | seed nodes |
 | `EDGES` | `20000` | seed edges (so `neighbors` returns something) |
-| `CHURN` | `20000` | churn rounds — grow-then-shrink: insert this many edges (rewriting node bodies), then delete them all |
+| `CHURN` | `20000` | churn rounds - grow-then-shrink: insert this many edges (rewriting node bodies), then delete them all |
 | `PROBE` | `10000` | read-probe ops per phase (`get_node` + 1-hop `neighbors`) |
 
-It runs a single-threaded read probe in three phases — **steady** → (churn) →
-**degraded** → (`compact()`) → **recovered** — and prints JSON with each phase's
-throughput / p50–p99 / on-disk `file_bytes`, plus the `CompactReport`
+It runs a single-threaded read probe in three phases - **steady** → (churn) →
+**degraded** → (`compact()`) → **recovered** - and prints JSON with each phase's
+throughput / p50-p99 / on-disk `file_bytes`, plus the `CompactReport`
 (`bytes_before` / `bytes_after` / `bytes_reclaimed`).
 
 > **On-disk writes are fsync-bound and slow on the shared self-hosted runner**
@@ -120,7 +120,7 @@ throughput / p50–p99 / on-disk `file_bytes`, plus the `CompactReport`
 >
 > **Reclaim only manifests at scale.** redb pre-allocates a file region and
 > recycles freed pages from its freelist, so a small run stays inside that region
-> and reports `bytes_reclaimed: 0` with a flat `file_bytes` across phases — the
+> and reports `bytes_reclaimed: 0` with a flat `file_bytes` across phases - the
 > grow-then-shrink churn has to push the file past the pre-allocated region
 > before `compact()` returns space to the OS. Use a large `CHURN` (and enough
 > `NODES`/`EDGES`) to see non-zero reclaim; the existing
@@ -131,7 +131,7 @@ throughput / p50–p99 / on-disk `file_bytes`, plus the `CompactReport`
 The sweeps above call the in-process API directly. The standalone `http_load`
 over-the-wire example was removed together with the legacy KV HTTP router
 (epic #444): it drove the KV-only REST endpoints (`GET /nodes/{id}`,
-`POST /edges`) that no longer exist — the shipping server serves the durable
+`POST /edges`) that no longer exist - the shipping server serves the durable
 native router, where graph reads and writes go through Cypher on `POST /cypher`.
 
 The over-the-wire flow is still covered on the normal PR gate by
@@ -145,7 +145,7 @@ large-scale over-the-wire benchmark is needed again.
 All four planned slices of [#241] landed: the in-memory concurrency sweep, the
 redb backend variant, the churn → compact → recovery harness, and the HTTP load
 path (the standalone over-the-wire example was later retired with the KV HTTP
-router — see above).
+router - see above).
 
 [#240]: https://github.com/ice1x/drevo/issues/240
 [#241]: https://github.com/ice1x/drevo/issues/241

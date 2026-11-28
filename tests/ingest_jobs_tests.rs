@@ -433,7 +433,7 @@ fn bad_submissions_are_refused_and_store_nothing() {
             "CALL drevo.ingest.submit(['x'], {source: 'missing-source'})",
             &[]
         ),
-        "no source `missing-source` — add it first with drevo.memory.addSource, or pass \
+        "no source `missing-source` - add it first with drevo.memory.addSource, or pass \
          {id, uri, title, kind}"
     );
     assert_eq!(

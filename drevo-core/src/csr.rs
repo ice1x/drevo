@@ -2,21 +2,21 @@
 //! parallel scans and graph algorithms.
 //!
 //! The live engine stores adjacency as a `HashMap<u64, Vec<AdjEntry>>` keyed by
-//! sparse node id — great for point lookups and incremental writes, poor for a
+//! sparse node id - great for point lookups and incremental writes, poor for a
 //! full-graph sweep (pointer-chasing, no locality). A
 //! [`CsrAdjacency`] flattens one
 //! [`GraphSnapshot`](crate::native::GraphSnapshot) into three contiguous arrays:
 //!
-//! * `vertices` — the snapshot's node ids, sorted ascending; a node's **dense
+//! * `vertices` - the snapshot's node ids, sorted ascending; a node's **dense
 //!   index** `0..V` is its position here (local ids are sparse after deletes).
-//! * `offsets` — `offsets[i]..offsets[i+1]` bounds vertex `i`'s neighbour slice.
-//! * `neighbors` — every out-neighbour as a **dense index**, laid out per vertex.
+//! * `offsets` - `offsets[i]..offsets[i+1]` bounds vertex `i`'s neighbour slice.
+//! * `neighbors` - every out-neighbour as a **dense index**, laid out per vertex.
 //!
 //! Iterating a vertex's neighbours is then a walk over one contiguous `&[u32]`,
 //! and a whole-graph algorithm can index a flat `result[0..V]` vector by dense
 //! index instead of a hash map. Because it is built off an immutable
 //! [MVCC snapshot](crate::native::NativeGraph::snapshot), workers can fan out
-//! over it with no locking — see [`par_map`](crate::csr::CsrAdjacency::par_map).
+//! over it with no locking - see [`par_map`](crate::csr::CsrAdjacency::par_map).
 //!
 //! This module provides the **layout and the parallel-scan primitive**, not the
 //! algorithms: the graph analytics (PageRank, Louvain, connected components,
@@ -55,8 +55,8 @@ impl CsrAdjacency {
     /// slice is stored as sorted dense indices.
     ///
     /// `vertices` must be sorted ascending (dense-index lookup binary-searches
-    /// it); the caller — [`GraphSnapshot::csr_out`](crate::native::GraphSnapshot::csr_out)
-    /// — guarantees that.
+    /// it); the caller - [`GraphSnapshot::csr_out`](crate::native::GraphSnapshot::csr_out) -
+    /// guarantees that.
     #[must_use]
     pub fn from_out_neighbors(vertices: Vec<u64>, out_neighbors: impl Fn(u64) -> Vec<u64>) -> Self {
         let n = vertices.len();
@@ -113,7 +113,7 @@ impl CsrAdjacency {
         self.neighbors_of(index).len()
     }
 
-    /// The out-neighbours of the vertex at `index` as dense indices — a slice
+    /// The out-neighbours of the vertex at `index` as dense indices - a slice
     /// into the flat neighbour array. Empty for an out-of-range index.
     #[must_use]
     pub fn neighbors_of(&self, index: usize) -> &[u32] {
@@ -138,7 +138,7 @@ impl CsrAdjacency {
     /// worker writes only its own disjoint output slice, so there is **no
     /// locking and no contention**. Because a [`CsrAdjacency`] is immutable and
     /// built off a frozen [MVCC snapshot](crate::native::NativeGraph::snapshot),
-    /// `f` can read the whole structure freely — this is the parallel-execution
+    /// `f` can read the whole structure freely - this is the parallel-execution
     /// substrate for whole-graph algorithms. `threads` is clamped to
     /// `1..=vertex_count`; an empty graph returns an empty vector. Sequential and
     /// parallel runs produce identical results.

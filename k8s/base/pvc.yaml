@@ -1,4 +1,4 @@
-# drevo — PersistentVolumeClaim for the redb data file
+# drevo - PersistentVolumeClaim for the redb data file
 #
 # Phase 8 task 00049. Requests a ReadWriteOnce volume that the
 # Deployment binds at /data. ReadWriteOnce matches drevo's single-writer
@@ -7,7 +7,7 @@
 # which would corrupt it.
 #
 # Sizing: 1Gi is a starter default. Operators should raise this for
-# production deployments — graph workloads in the use cases the project
+# production deployments - graph workloads in the use cases the project
 # targets (CBT journals, story drafts, task graphs, ERP entities, bug
 # trackers) routinely run into the tens of GiB once FTS indices are
 # populated. `kubectl edit pvc/drevo-data` (or `kubectl patch`) supports

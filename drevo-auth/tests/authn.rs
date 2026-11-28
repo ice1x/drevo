@@ -268,7 +268,7 @@ fn a_basic_authorization_header_carries_user_and_password() {
 
 #[test]
 fn the_password_in_a_basic_header_may_contain_colons_and_utf8() {
-    // "ann:a:b:пароль" — only the first colon separates.
+    // "ann:a:b:пароль" - only the first colon separates.
     let header = "Basic YW5uOmE6YjrQv9Cw0YDQvtC70Yw=";
     assert_eq!(
         Credentials::from_http_authorization(header),

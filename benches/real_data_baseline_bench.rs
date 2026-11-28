@@ -2,13 +2,13 @@
 //! measurement-first, #522).
 //!
 //! The synthetic `pagerank_bench` times an algorithm on a generated graph; this
-//! bench runs the shipping engine — `NativeService`, the sole engine after epic
-//! #444 — over a **GraphML copy of real data**, because synthetic shapes have
+//! bench runs the shipping engine - `NativeService`, the sole engine after epic
+//! #444 - over a **GraphML copy of real data**, because synthetic shapes have
 //! repeatedly misestimated real-world wins (the FTS posting-list rewrite
 //! measured 2× off until validated on a live copy; see feedback
 //! `validate_on_real_data_not_synthetic`). It is the measuring stick for RFC
 //! Phase 2 (arena / CSR, #522): a naive CSR PageRank/WCC slice was already
-//! built (#408–#416) and **removed as measured-slower** — so before any
+//! built (#408-#416) and **removed as measured-slower** - so before any
 //! re-attempt, this establishes the current native baseline the change must
 //! actually beat.
 //!
@@ -32,7 +32,7 @@
 //! All workloads run on the native [`NativeService`](drevo::native_service::NativeService)
 //! the shipping server uses. Two seams are timed:
 //!
-//! * The **Cypher executor** path a user actually hits — `count(*)`, a label
+//! * The **Cypher executor** path a user actually hits - `count(*)`, a label
 //!   scan, a 1-hop fan-out from the highest-degree hub, and `drevo.search.hybrid`
 //!   (BM25 + cosine scan + RRF, `candidates: 20`) next to its BM25-only mode
 //!   when the graph has nodes with an `embedding` property
@@ -40,7 +40,7 @@
 //!   `drevo.graph.expand` from 5 seeds over 2 hops with `perNodeLimit: 25`,
 //!   and `drevo.rag.context` with its defaults (hybrid seeds, 2 hops, PPR,
 //!   a 2000-token markdown context) on the same query and embedder.
-//! * The **adjacency seam** underneath it — a 1-hop `neighbors`, a 2-hop
+//! * The **adjacency seam** underneath it - a 1-hop `neighbors`, a 2-hop
 //!   frontier expansion, and a full-graph PageRank over an
 //!   [`AdjacencyList`](drevo::algorithms::AdjacencyList) built from the live
 //!   topology.
@@ -48,7 +48,7 @@
 //! The **2-hop frontier** row is the Phase-2 before/after anchor: a single
 //! 1-hop lookup hides the per-edge iteration a CSR rewrite reshapes, whereas
 //! expanding `hub -> N1 -> N2` exercises `|N1| + 1` adjacency probes and the
-//! concatenation of their neighbour slices — exactly what an arena / CSR
+//! concatenation of their neighbour slices - exactly what an arena / CSR
 //! representation would change. Workload parameters (the densest label, the
 //! highest out-degree node) are derived from the data itself so the bench stays
 //! meaningful as the graph evolves.
@@ -80,7 +80,7 @@ struct Loaded {
 }
 
 /// Parse + execute a read query on the native service, panicking on either
-/// failure — a bench with a broken workload query has nothing to measure.
+/// failure - a bench with a broken workload query has nothing to measure.
 fn run(svc: &NativeService, source: &str) -> ExecResult {
     let q = parse(source).expect("workload query parses");
     svc.execute(&q, HashMap::new())
@@ -88,7 +88,7 @@ fn run(svc: &NativeService, source: &str) -> ExecResult {
 }
 
 /// A label is safe to splice into `MATCH (n:Label)` only if it is a plain
-/// identifier — real drevo kinds are (`note`, `person`, …); guarding keeps a
+/// identifier - real drevo kinds are (`note`, `person`, …); guarding keeps a
 /// pathological export from turning into a parse error.
 fn is_simple_ident(s: &str) -> bool {
     !s.is_empty()
@@ -168,7 +168,7 @@ fn load() -> Result<Loaded, Box<dyn std::error::Error>> {
         .map(|(label, _)| label)
         .filter(|label| is_simple_ident(label));
 
-    // Highest out-degree node — let the executor find it in one pass.
+    // Highest out-degree node - let the executor find it in one pass.
     let hub = run(
         &svc,
         "MATCH (a)-->(b) RETURN id(a) AS id, count(*) AS deg ORDER BY deg DESC LIMIT 1",
@@ -318,7 +318,7 @@ fn main() {
 
     // --- Adjacency seam (isolates index-free adjacency from the executor) --
     // The id-only `neighbor_ids` fan-out reads straight from the adjacency
-    // index without materialising node records — the layer an arena / CSR
+    // index without materialising node records - the layer an arena / CSR
     // representation reshapes. (`NativeService::neighbors` would fold in the
     // cost of cloning every `Node`, which is a different measurement.)
     if let Some(hub) = l.hub_id {
@@ -336,7 +336,7 @@ fn main() {
         });
         g.finish();
 
-        // Two-hop frontier expansion — the arena / CSR before/after anchor. A
+        // Two-hop frontier expansion - the arena / CSR before/after anchor. A
         // single 1-hop lookup a HashMap already serves well hides the per-edge
         // iteration a CSR rewrite changes; expanding hub -> N1 -> N2 exercises
         // `|N1| + 1` adjacency probes and the concatenation of their slices.
@@ -361,7 +361,7 @@ fn main() {
 
     // --- Full-graph PageRank over the live topology ------------------------
     // Build the adjacency once from the real graph, then time only the power
-    // iteration — the traversal-heavy algorithm whose per-edge cost an arena /
+    // iteration - the traversal-heavy algorithm whose per-edge cost an arena /
     // CSR layout targets.
     if !l.node_ids.is_empty() {
         let graph = l.svc.graph();

@@ -7,7 +7,7 @@
 //!
 //! The fixture is a bug tracker. The answer to "login fails on iOS"
 //! needs the ticket (search finds it), its crash log and the commit that
-//! fixes it — which share no words with the question and carry no
+//! fixes it - which share no words with the question and carry no
 //! embedding, so only a walk from the ticket reaches them. Four comments
 //! hang off the ticket too; they sort before the fix by id, so a
 //! nearest-first ranking spends the budget on them, while Personalized

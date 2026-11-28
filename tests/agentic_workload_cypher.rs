@@ -1,9 +1,9 @@
-//! Phase 10.5 task `00128` — Cypher executor agentic workload (layer 2).
+//! Phase 10.5 task `00128` - Cypher executor agentic workload (layer 2).
 //!
 //! This is **layer 2** of the five-layer agentic workload model (README →
-//! "Phase 10.5 — Cypher Reliability & Agentic Hardening"). Where layer 1
-//! (`00123`, `agentic_workload_rust_api.rs`) measured the *raw `Drevo` API*
-//! — the upper bound of "redb + our indexes, nothing on top" — this layer
+//! "Phase 10.5 - Cypher Reliability & Agentic Hardening"). Where layer 1
+//! (`00123`, `agentic_workload_rust_api.rs`) measured the *raw `Drevo` API* -
+//! the upper bound of "redb + our indexes, nothing on top" - this layer
 //! drives the **identical agentic query mix** through the full Cypher pipeline:
 //!
 //! ```text
@@ -13,12 +13,12 @@
 //! Subtracting the layer-1 number from the layer-2 number for each query class
 //! answers the one question this task exists for: **"what is the parser +
 //! executor overhead, per query class?"** Without it, a Cypher-path latency
-//! regression cannot be told apart from a storage regression — the wrong layer
+//! regression cannot be told apart from a storage regression - the wrong layer
 //! gets optimised. The numbers feed capacity planning for `00094` (RBAC) and
 //! `00096` (streaming ingestion), where the Cypher overhead must be a known,
 //! separable constant.
 //!
-//! ## The ten query classes — same names, same 70/20/10 mix as `00123`
+//! ## The ten query classes - same names, same 70/20/10 mix as `00123`
 //!
 //! The class names match `00123` 1:1 so the two reports diff mechanically.
 //! Each class maps to the closest Cypher expression of the layer-1 API call:
@@ -36,24 +36,24 @@
 //! | `update_props`   | write    | `MATCH (n {seq:$seq}) SET n.body = …, n.touched` |
 //! | `delete_node`    | write    | `MATCH (n {seq:$seq}) DETACH DELETE n`           |
 //!
-//! Two faithful-substitution notes — both of which are themselves findings the
+//! Two faithful-substitution notes - both of which are themselves findings the
 //! layer-1 vs layer-2 diff is meant to surface:
 //!
 //! * **`lookup_uuid`.** Cypher has no first-class uuid accessor, so the point
-//!   lookup uses a unique integer surrogate key (`seq`) stored as a property —
+//!   lookup uses a unique integer surrogate key (`seq`) stored as a property -
 //!   the Cypher analogue of "fetch one row by primary key". Unlike layer 1's
 //!   `get_node_by_uuid` (an O(1) index hit), the executor's `MATCH` is a *full
-//!   scan filtered by predicate* (see `executor::enumerate_nodes` — an indexed
+//!   scan filtered by predicate* (see `executor::enumerate_nodes` - an indexed
 //!   fast path lands with `00086`). The gap between the two is exactly the
 //!   "Cypher has no point-lookup index yet" cost.
 //! * **`fts_short` / `fts_phrase`.** Cypher exposes no fulltext function yet,
-//!   so the search classes use the `CONTAINS` substring predicate — again a
+//!   so the search classes use the `CONTAINS` substring predicate - again a
 //!   full scan, versus layer 1's indexed `search_fts`. The diff quantifies the
 //!   value of wiring FTS into Cypher.
 //!
 //! ## Test layout
 //!
-//! The expensive part — a 30+ minute, 10 k-node soak — lives behind `#[ignore]`
+//! The expensive part - a 30+ minute, 10 k-node soak - lives behind `#[ignore]`
 //! so the PR pipeline stays fast; it is meant for nightly CI and on-demand runs:
 //!
 //! ```text
@@ -65,7 +65,7 @@
 //! connectivity, every Cypher template parses + executes, RSS + growth metrics
 //! recorded) and run on every PR in well under a second.
 //!
-//! The harness is deliberately **self-contained** in this one file — matching
+//! The harness is deliberately **self-contained** in this one file - matching
 //! the project convention (see `agentic_workload_rust_api.rs`,
 //! `mcp_validation_e2e_tests.rs`) of keeping each integration test file
 //! independently grep-able rather than factoring a shared `tests/common/`
@@ -123,7 +123,7 @@ impl Rng {
 // Query classes + weighted selection
 // ---------------------------------------------------------------------------
 
-/// The ten independently-tracked query classes from the task spec — identical
+/// The ten independently-tracked query classes from the task spec - identical
 /// names to `00123` so the two reports diff column-for-column.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum QueryClass {
@@ -171,11 +171,11 @@ impl QueryClass {
 }
 
 /// Selection weights summing to 100, encoding the **70 % read / 20 % write /
-/// 10 % search** agentic mix from the cross-cutting acceptance criteria —
+/// 10 % search** agentic mix from the cross-cutting acceptance criteria -
 /// byte-for-byte the same split as `00123` so the workloads are comparable.
 ///
 /// Reads (70): five classes × 14. Search (10): two classes × 5. Writes (20):
-/// `create_node` 8, `update_props` 6, `delete_node` 6 — `create` is kept a
+/// `create_node` 8, `update_props` 6, `delete_node` 6 - `create` is kept a
 /// touch above `delete` so the live set grows modestly over a long run
 /// (exercising redb file growth) while never starving `delete` of targets.
 const WEIGHTS: [(QueryClass, u32); 10] = [
@@ -253,7 +253,7 @@ struct WorkloadConfig {
     /// Number of base nodes built before the workload loop. Base nodes are
     /// never deleted, so they remain valid traversal roots / lookup targets.
     corpus_size: usize,
-    /// RNG seed — fixes the entire run for reproducibility.
+    /// RNG seed - fixes the entire run for reproducibility.
     seed: u64,
     /// Target queries-per-minute throttle. `0` means run unthrottled (used by
     /// the fast tests).
@@ -347,7 +347,7 @@ const KINDS: [&str; 5] = ["note", "task", "person", "project", "bug"];
 /// corpus (`seq` `0..n`) and workload-created nodes (`seq >= n`) never collide.
 ///
 /// The unique `seq` is *also* stored as a node property so Cypher can do an
-/// equality point lookup on it (`MATCH (n {seq: $seq})`) — drevo storage has
+/// equality point lookup on it (`MATCH (n {seq: $seq})`) - drevo storage has
 /// no Cypher-visible uuid accessor, so `seq` is the surrogate primary key the
 /// `lookup_uuid` / traversal / mutation classes target.
 fn make_node(rng: &mut Rng, seq: u64) -> NewNode {
@@ -375,7 +375,7 @@ struct Corpus {
 
 /// Create `n` base nodes and a forward-link edge fabric (each node → +1/+2/+3
 /// mod n) so 2-hop / 3-hop traversals and depth-2 subgraphs return rich,
-/// non-trivial result sets. Built through the **raw API** — corpus
+/// non-trivial result sets. Built through the **raw API** - corpus
 /// construction is setup, not part of the measured Cypher workload.
 fn build_corpus(db: &NativeService, n: usize, rng: &mut Rng) -> Corpus {
     assert!(
@@ -418,7 +418,7 @@ fn build_corpus(db: &NativeService, n: usize, rng: &mut Rng) -> Corpus {
 
 /// Current resident set size in KB, or `None` if it cannot be determined.
 ///
-/// On Linux we read `/proc/self/statm` (resident pages × 4 KB — the standard
+/// On Linux we read `/proc/self/statm` (resident pages × 4 KB - the standard
 /// page size; an approximation that is more than adequate for a growth
 /// envelope). Elsewhere (notably macOS dev machines) we fall back to
 /// `ps -o rss= -p <pid>`, which already reports KB.
@@ -446,12 +446,12 @@ fn file_size(path: &Path) -> Option<u64> {
 }
 
 // ---------------------------------------------------------------------------
-// Workload driver — the Cypher-specific part
+// Workload driver - the Cypher-specific part
 // ---------------------------------------------------------------------------
 
 /// Mutable state threaded through the workload loop.
 struct WorkloadState {
-    /// `seq` values of nodes created during the loop and not yet deleted — the
+    /// `seq` values of nodes created during the loop and not yet deleted - the
     /// only nodes `delete_node` removes (base nodes stay, preserving
     /// connectivity for traversals).
     created: Vec<u64>,
@@ -475,7 +475,7 @@ fn build_query(
     let mut params = HashMap::new();
     match class {
         QueryClass::LookupUuid => {
-            // Point lookup by the unique integer surrogate key — the Cypher
+            // Point lookup by the unique integer surrogate key - the Cypher
             // analogue of layer 1's `get_node_by_uuid`, but via a full-scan
             // `MATCH` (no point-lookup index until `00086`).
             let seq = corpus.seqs[rng.index(corpus.seqs.len())];
@@ -507,7 +507,7 @@ fn build_query(
             )
         }
         QueryClass::Subgraph2 => {
-            // The depth-2 neighbourhood size — exercises the aggregation
+            // The depth-2 neighbourhood size - exercises the aggregation
             // engine (`count(DISTINCT …)`), distinguishing it from the bare
             // 2-hop traversal above which just streams reached nodes.
             let seq = corpus.seqs[rng.index(corpus.seqs.len())];
@@ -519,7 +519,7 @@ fn build_query(
         }
         QueryClass::FtsShort => {
             // Cypher has no fulltext function yet, so search is a `CONTAINS`
-            // full scan — the analogue of layer 1's indexed `search_fts`.
+            // full scan - the analogue of layer 1's indexed `search_fts`.
             let word = WORDS[rng.index(WORDS.len())].to_string();
             params.insert("word".to_string(), Value::String(word));
             (
@@ -562,7 +562,7 @@ fn build_query(
             )
         }
         QueryClass::UpdateProps => {
-            // Update a live node — either a base node or a created one. Both
+            // Update a live node - either a base node or a created one. Both
             // are guaranteed present. Touching `body` re-indexes FTS, the
             // realistic write cost we want in the number.
             let seq = if state.created.is_empty() || rng.below(2) == 0 {
@@ -598,14 +598,14 @@ fn build_query(
 }
 
 /// Execute exactly one query of the given class through the **full Cypher
-/// pipeline** — `parse → execute → result rows`. Both the parse and the
+/// pipeline** - `parse → execute → result rows`. Both the parse and the
 /// execute are inside the caller's timed region (that *is* the layer-2 number).
 ///
 /// `DeleteNode` against a `seq` that a prior delete already removed (only
 /// reachable if a created node was both queued for delete and selected as an
-/// update/create target — it isn't, by construction) would simply match zero
+/// update/create target - it isn't, by construction) would simply match zero
 /// rows; the query still parses and executes, so the latency sample is valid.
-/// Any parse/exec error is a hard failure — the soak's "no panic" guarantee is
+/// Any parse/exec error is a hard failure - the soak's "no panic" guarantee is
 /// exactly this `expect` surfacing a regression.
 fn execute_query(
     class: QueryClass,
@@ -674,7 +674,7 @@ fn run_workload(db: &NativeService, cfg: &WorkloadConfig) -> WorkloadReport {
             .record(nanos);
         total += 1;
 
-        // Sample RSS periodically — cheap enough but not per-query.
+        // Sample RSS periodically - cheap enough but not per-query.
         if total % 64 == 0 {
             if let Some(rss) = current_rss_kb() {
                 peak_rss_kb = Some(peak_rss_kb.map_or(rss, |p| p.max(rss)));
@@ -710,7 +710,7 @@ fn run_workload(db: &NativeService, cfg: &WorkloadConfig) -> WorkloadReport {
 }
 
 // ===========================================================================
-// Fast scaffolding tests — run on every PR
+// Fast scaffolding tests - run on every PR
 // ===========================================================================
 
 #[test]
@@ -750,7 +750,7 @@ fn query_weights_cover_all_ten_classes_and_sum_to_100() {
         );
     }
 
-    // 70 % read / 20 % write / 10 % search split — identical to `00123`.
+    // 70 % read / 20 % write / 10 % search split - identical to `00123`.
     let sum = |classes: &[QueryClass]| -> u32 {
         classes
             .iter()
@@ -856,7 +856,7 @@ fn every_query_template_parses_and_executes() {
     };
 
     for class in QueryClass::ALL {
-        // Re-seed nothing — drive each class once and assert it round-trips.
+        // Re-seed nothing - drive each class once and assert it round-trips.
         let (source, params) = build_query(class, &corpus, &mut state, &mut rng);
         let query =
             parse(&source).unwrap_or_else(|e| panic!("{} failed to parse: {e:?}", class.name()));
@@ -891,7 +891,7 @@ fn every_query_template_parses_and_executes() {
             QueryClass::FtsShort | QueryClass::FtsPhrase => {
                 // Search may legitimately return 0..=10 rows depending on the
                 // randomly chosen word(s); the contract is "parses, executes,
-                // honours LIMIT" — not a specific hit count.
+                // honours LIMIT" - not a specific hit count.
                 assert!(
                     result.rows.len() <= 10,
                     "{} must honour LIMIT 10",
@@ -980,5 +980,5 @@ fn rss_sampling_returns_a_value() {
 }
 
 // ===========================================================================
-// The soak — layer-2 number. Ignored by default; nightly CI + on demand.
+// The soak - layer-2 number. Ignored by default; nightly CI + on demand.
 // ===========================================================================

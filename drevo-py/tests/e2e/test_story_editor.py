@@ -8,11 +8,11 @@ Domain model:
 
 A novella editor needs three primary projections from the graph:
 
-1. Reading order — ``book → chapter → scene`` walked in insertion
+1. Reading order - ``book → chapter → scene`` walked in insertion
    order so the table of contents stays stable across saves.
-2. "Where does X appear?" — character → scene lookup so the writer
+2. "Where does X appear?" - character → scene lookup so the writer
    can audit a character's screen-time.
-3. Plot-arc traversal — every scene that advances a given arc, in
+3. Plot-arc traversal - every scene that advances a given arc, in
    ordered chains.
 
 The scenario constructs one short novella, asserts each projection,
@@ -104,7 +104,7 @@ def test_node_census_matches_novella_outline(disk_db: drevo.Drevo) -> None:
 
 def test_reading_order_walks_book_to_every_scene(disk_db: drevo.Drevo) -> None:
     """BFS from the book root, OUT direction, reaches both chapters and
-    all four scenes — the editor's table-of-contents projection.
+    all four scenes - the editor's table-of-contents projection.
     """
     n = _build_novella(disk_db)
     reached = disk_db.bfs(n["book"].id, max_depth=3, direction=drevo.Direction.OUT)

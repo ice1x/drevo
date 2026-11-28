@@ -15,8 +15,8 @@
 //!
 //! Handshakes run on their own tasks, so a client that connects and stays
 //! silent holds up nobody; one that has not finished within ten seconds is
-//! dropped. A failed handshake — a plain-text client, an unknown protocol
-//! version — is logged at DEBUG and the connection closed.
+//! dropped. A failed handshake - a plain-text client, an unknown protocol
+//! version - is logged at DEBUG and the connection closed.
 
 #![cfg(feature = "bolt-tls")]
 

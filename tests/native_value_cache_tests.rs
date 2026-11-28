@@ -1,6 +1,6 @@
 //! The [`NativeValueCache`] contract (RFC `docs/rfc-native-core.md`, #307):
-//! enumeration reuses each unchanged node's cached `NodeValue` projection —
-//! observable as `Arc` identity across queries — while a hit is validated
+//! enumeration reuses each unchanged node's cached `NodeValue` projection -
+//! observable as `Arc` identity across queries - while a hit is validated
 //! against the live record with `Arc::ptr_eq`, so a stale or never-resynced
 //! cache can only cost speed, never serve a wrong answer.
 

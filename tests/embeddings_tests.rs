@@ -10,7 +10,7 @@
 //! behind the `embeddings-proxy` feature.
 //!
 //! The security-relevant invariant asserted here (OWASP A10 / SSRF): the
-//! outbound destination is never taken from the request — a body carrying a
+//! outbound destination is never taken from the request - a body carrying a
 //! `url`/`base_url`/`endpoint` field cannot select an upstream (with no backend
 //! configured the request is refused with `503` before any outbound call). The
 //! passthrough of such a field to a *configured* upstream is covered in
@@ -91,7 +91,7 @@ async fn embeddings_accepts_string_and_array_input() {
 
 #[tokio::test]
 async fn embeddings_empty_input_is_rejected_400() {
-    // An empty batch has nothing to embed — a client error, checked before the
+    // An empty batch has nothing to embed - a client error, checked before the
     // backend so it is deterministic even with no backend configured.
     let app = make_app();
     let (status, body) = post_embeddings(&app, json!({ "model": "m", "input": [] })).await;
@@ -102,7 +102,7 @@ async fn embeddings_empty_input_is_rejected_400() {
 #[tokio::test]
 async fn embeddings_ignores_request_supplied_url_ssrf_guard() {
     // OWASP A10 / SSRF: the outbound upstream is configured server-side only.
-    // A body trying to smuggle a destination cannot select one — reaching the
+    // A body trying to smuggle a destination cannot select one - reaching the
     // 503 not-configured path proves no request field turned into an outbound
     // call. (Forwarding such a field to a *configured* upstream, harmlessly, is
     // covered by embeddings_proxy_tests.rs.)

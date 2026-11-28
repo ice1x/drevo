@@ -1,4 +1,4 @@
-//! Declarative vector search — the `SEARCH … IN (VECTOR INDEX …) SCORE AS …`
+//! Declarative vector search - the `SEARCH … IN (VECTOR INDEX …) SCORE AS …`
 //! Cypher clause (issue #430), lowered to the same cosine scan as
 //! `CALL drevo.vector.query`.
 //!
@@ -83,7 +83,7 @@ fn search_returns_top_k_ordered_by_similarity_with_score() {
 #[test]
 fn search_limit_bounds_cardinality_not_multiplied_by_match() {
     // MATCH (n:Movie) binds 3 rows; SEARCH … LIMIT 2 must yield 2 rows total,
-    // not 2 × 3 — the search variable is overwritten, not cross-joined.
+    // not 2 × 3 - the search variable is overwritten, not cross-joined.
     let d = seeded();
     let q = parse(
         "MATCH (n:Movie) \

@@ -1,4 +1,4 @@
-//! Cypher executor — Phase 10 tasks `00063` (CREATE / MATCH / RETURN),
+//! Cypher executor - Phase 10 tasks `00063` (CREATE / MATCH / RETURN),
 //! `00064` (mutations: SET, DELETE, MERGE, REMOVE), `00065` (WHERE on
 //! `MATCH`), `00066` (aggregations), `00067` (`OPTIONAL MATCH`),
 //! `00068` (`WITH` query pipelining), and `00069` (variable-length
@@ -7,9 +7,9 @@
 //! The executor consumes the [`crate::cypher::ast::Query`] produced by
 //! [`crate::cypher::parser::parse`] and runs it against the underlying
 //! `Drevo` handle. The current cut covers the README
-//! "critical path" prefix — `CREATE`, `MATCH`, `RETURN`, the full
+//! "critical path" prefix - `CREATE`, `MATCH`, `RETURN`, the full
 //! mutation surface, `WHERE` predicates on `MATCH`, and aggregation
-//! functions in `RETURN` — with enough expression evaluation to make
+//! functions in `RETURN` - with enough expression evaluation to make
 //! `RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `DISTINCT`, inline property
 //! filters, `SET` / `REMOVE` / `DELETE` (incl. `DETACH DELETE`),
 //! `MERGE` (with `ON CREATE` / `ON MATCH` actions), `WHERE` boolean /
@@ -24,7 +24,7 @@
 //! equal group keys are folded into one output row, with the
 //! aggregation columns reduced across the group. A pure-aggregation
 //! query (no group keys) always yields exactly one row, even on zero
-//! input rows — `COUNT(*)` returns `0`, `MIN` / `MAX` / `AVG` return
+//! input rows - `COUNT(*)` returns `0`, `MIN` / `MAX` / `AVG` return
 //! `NULL`. Aggregations skip `NULL` per Cypher semantics; the
 //! `DISTINCT` modifier inside an aggregation deduplicates per-row
 //! argument values before folding.
@@ -47,10 +47,10 @@
 //! `WITH` is the query-pipelining boundary. Like `RETURN` it projects
 //! a set of expressions with optional aliases, applies `DISTINCT` /
 //! `ORDER BY` / `SKIP` / `LIMIT`, and supports aggregation. Unlike
-//! `RETURN` it isn't terminal — it converts the projected rows back
+//! `RETURN` it isn't terminal - it converts the projected rows back
 //! into bindings keyed by the column names, so the *next* clause
 //! sees only the projected aliases (pattern variables that weren't
-//! projected are dropped — `WITH` is the only point at which the
+//! projected are dropped - `WITH` is the only point at which the
 //! variable scope can be reshaped).
 //!
 //! `WITH` accepts a trailing `WHERE` that filters *after* projection
@@ -59,7 +59,7 @@
 //! count(*) AS c WHERE c >= 2 RETURN team, c`.
 //!
 //! Cypher requires every non-variable projection in `WITH` to have an
-//! `AS alias` — otherwise downstream clauses have no name to
+//! `AS alias` - otherwise downstream clauses have no name to
 //! reference. We surface that as `ExecError::InvalidMutation` with a
 //! "use `expr AS name`" pointer.
 //!
@@ -69,11 +69,11 @@
 //! `a` through edges matching the relationship pattern at depths
 //! `N..=M` inclusive. Forms supported:
 //!
-//! * `[*]` — one or more hops (capped at `VARLEN_DEFAULT_UPPER`
+//! * `[*]` - one or more hops (capped at `VARLEN_DEFAULT_UPPER`
 //!   when unbounded above).
-//! * `[*N]` — exactly `N` hops.
-//! * `[*N..M]` / `[*..M]` / `[*N..]` — bounded range.
-//! * `[*0..M]` — includes the zero-hop "source = target" case.
+//! * `[*N]` - exactly `N` hops.
+//! * `[*N..M]` / `[*..M]` / `[*N..]` - bounded range.
+//! * `[*0..M]` - includes the zero-hop "source = target" case.
 //!
 //! **Cypher trail uniqueness** is enforced: within a single path no
 //! relationship is traversed twice (nodes may repeat). If the
@@ -81,25 +81,25 @@
 //! a [`Value::List`](crate::cypher::executor::Value::List) of the
 //! traversed relationships in source order.
 //!
-//! Variable-length paths in `CREATE` are rejected — they have no
+//! Variable-length paths in `CREATE` are rejected - they have no
 //! semantic meaning there (how many edges to create?).
 //!
 //! `UNION` / `UNION ALL` combine the result rows of two or more arms as
 //! of task `00136`: `UNION ALL` concatenates every arm's rows in arm
 //! order, `UNION` additionally removes duplicate rows across the combined
 //! set. Every arm must project the same column names in the same order,
-//! and a query may not mix the two operators — both cases surface as
+//! and a query may not mix the two operators - both cases surface as
 //! [`ExecError::UnionMismatch`](crate::cypher::executor::ExecError::UnionMismatch).
 //!
 //! `EXISTS { [MATCH] pattern [WHERE predicate] }` is an existential
-//! subquery as of task `00152` — `true` iff at least one match of the
+//! subquery as of task `00152` - `true` iff at least one match of the
 //! enclosed pattern survives the optional inner `WHERE`, relative to the
 //! current row. The brace-delimited, richer sibling of the bare pattern
 //! predicate (`00151`): the braces let a single node (`EXISTS { (n) }`)
 //! be a subquery rather than grouping, an optional leading `MATCH`
 //! keyword is accepted, and the inner `WHERE` filters matches before the
 //! existence test. (The deprecated `exists(n.prop)` *function* form is
-//! not supported — `n.prop IS NOT NULL`, shipped in `00065`, replaces it.)
+//! not supported - `n.prop IS NOT NULL`, shipped in `00065`, replaces it.)
 //!
 //! Anything still unsupported surfaces as
 //! [`ExecError::Unsupported`](crate::cypher::executor::ExecError::Unsupported)
@@ -147,7 +147,7 @@ use std::sync::Arc;
 /// with cycles the frontier can still grow exponentially before the
 /// invariant kicks in. drevo is an in-memory store run from CLI / MCP /
 /// agentic workloads, so we cap the search depth at this value when the
-/// pattern is unbounded above — the cap is deliberately small relative
+/// pattern is unbounded above - the cap is deliberately small relative
 /// to Neo4j's default (which is effectively unlimited) so the
 /// `agentic_workload_*` suites stay fast. Bounded patterns
 /// (`[*1..N]` / `[*N]`) honour the user's stated upper bound verbatim.
@@ -197,7 +197,7 @@ use crate::vector::cosine_similarity;
 /// cheaply across pattern bindings, ORDER BY keys, and RETURN rows.
 #[derive(Debug, Clone)]
 pub enum Value {
-    /// The Cypher `NULL` literal — also the result of a missing property
+    /// The Cypher `NULL` literal - also the result of a missing property
     /// or an unresolved optional binding.
     Null,
     /// `TRUE` / `FALSE`.
@@ -208,7 +208,7 @@ pub enum Value {
     Float(f64),
     /// UTF-8 string.
     String(String),
-    /// Ordered list — order is preserved across all operations.
+    /// Ordered list - order is preserved across all operations.
     List(Vec<Value>),
     /// Sorted-by-key map. Deterministic ordering keeps RETURN output
     /// stable across runs, which the parser-e2e suite relies on.
@@ -217,7 +217,7 @@ pub enum Value {
     Node(Arc<NodeValue>),
     /// A bound relationship.
     Relationship(Arc<RelationshipValue>),
-    /// A bound path — an alternating node / relationship sequence produced by
+    /// A bound path - an alternating node / relationship sequence produced by
     /// a named pattern (`MATCH p = (a)-->(b)`). See [`PathValue`].
     Path(Arc<PathValue>),
     /// A date, a datetime or a duration (`date('2026-11-27')`,
@@ -228,7 +228,7 @@ pub enum Value {
 
 /// A node as seen by the Cypher runtime.
 ///
-/// Carries the labels and properties surfaced by Cypher — the drevo
+/// Carries the labels and properties surfaced by Cypher - the drevo
 /// [`Node`] beneath is captured via `id` + `uuid` so callers can look it
 /// up again.
 #[derive(Debug, Clone, PartialEq)]
@@ -237,14 +237,14 @@ pub struct NodeValue {
     pub id: u64,
     /// UUID v7 (matches [`crate::model::Node::uuid`]).
     pub uuid: [u8; 16],
-    /// Cypher labels — one entry until `00064` lands multi-label nodes.
+    /// Cypher labels - one entry until `00064` lands multi-label nodes.
     pub labels: Vec<String>,
     /// Property map sourced from [`crate::model::Node::properties`]
     /// plus the synthesised `title` / `body` aliases (see module docs).
     pub properties: BTreeMap<String, Value>,
 }
 
-/// A path as seen by the Cypher runtime — the value bound by a named pattern
+/// A path as seen by the Cypher runtime - the value bound by a named pattern
 /// such as `MATCH p = (a)-[:R]->(b)`.
 ///
 /// A path is an alternating sequence of nodes and relationships captured in
@@ -263,7 +263,7 @@ pub struct PathValue {
 }
 
 impl PathValue {
-    /// The number of relationships (hops) in the path — Cypher's `length(p)`.
+    /// The number of relationships (hops) in the path - Cypher's `length(p)`.
     pub fn length(&self) -> usize {
         self.relationships.len()
     }
@@ -361,11 +361,11 @@ pub enum ExecError {
     #[error("invalid CREATE pattern: {0}")]
     InvalidCreate(String),
     /// A mutation clause (`SET` / `REMOVE` / `DELETE` / `MERGE`) saw a
-    /// structurally invalid target — e.g. `SET` on a literal, `DELETE`
+    /// structurally invalid target - e.g. `SET` on a literal, `DELETE`
     /// of a connected node without `DETACH`.
     #[error("invalid mutation: {0}")]
     InvalidMutation(String),
-    /// A scalar function call was structurally invalid — wrong arity, an
+    /// A scalar function call was structurally invalid - wrong arity, an
     /// argument of the wrong type, or (for `similar`) an underlying vector
     /// math error such as a dimension mismatch or zero-magnitude operand.
     #[error("invalid call to `{name}`: {message}")]
@@ -460,7 +460,7 @@ pub enum ExecError {
     /// The arms of a `UNION` are incompatible. Either the projected
     /// column names differ between arms (Neo4j requires every arm of a
     /// `UNION` to return the same column names in the same order), or a
-    /// single query mixed `UNION` and `UNION ALL` (forbidden — a query
+    /// single query mixed `UNION` and `UNION ALL` (forbidden - a query
     /// must pick one or the other).
     #[error("invalid UNION: {message}")]
     UnionMismatch {
@@ -527,7 +527,7 @@ pub enum ExecError {
 /// A [`GraphEngine`] method returns the storage-agnostic
 /// [`drevo_core::error::CoreError`] (Phase 7 slice 6). Lift it into the
 /// executor's [`ExecError::Storage`] arm the same way an inherent KV
-/// [`DrevoError`] is — the shared graph variants map through structurally (via
+/// [`DrevoError`] is - the shared graph variants map through structurally (via
 /// `From<CoreError> for DrevoError`), and `ExecError::Storage(_)` is the outer
 /// arm the Bolt layer keys its status code on, so routing engine errors here is
 /// behaviour-identical to the pre-seam `#[from] DrevoError` path.
@@ -993,7 +993,7 @@ impl ClientDeadline {
 }
 
 /// One discovered path as `(relationships, nodes-after-source)`, both in
-/// traversal order — the shape [`Executor::bfs_shortest_paths`] returns.
+/// traversal order - the shape [`Executor::bfs_shortest_paths`] returns.
 type ShortestPath = (Vec<Arc<RelationshipValue>>, Vec<Arc<NodeValue>>);
 
 // ===== Value helpers ========================================================
@@ -1014,7 +1014,7 @@ impl PartialEq for Value {
             (Self::Node(a), Self::Node(b)) => a.id == b.id,
             (Self::Relationship(a), Self::Relationship(b)) => a.id == b.id,
             // Two paths are equal when they traverse the same relationships in
-            // the same order — the relationship ids fix the node sequence too.
+            // the same order - the relationship ids fix the node sequence too.
             (Self::Path(a), Self::Path(b)) => {
                 a.relationships.len() == b.relationships.len()
                     && a.nodes.first().map(|n| n.id) == b.nodes.first().map(|n| n.id)
@@ -1120,7 +1120,7 @@ pub(crate) fn value_to_json(v: &Value) -> Option<serde_json::Value> {
             }
             serde_json::Value::Object(out)
         }
-        // Nodes, relationships, and paths round-trip as opaque structures —
+        // Nodes, relationships, and paths round-trip as opaque structures -
         // storing a bound graph value into a property map would be a
         // programming error and is rejected by InvalidCreate at the call site.
         Value::Node(_) | Value::Relationship(_) | Value::Path(_) => return None,
@@ -1129,8 +1129,8 @@ pub(crate) fn value_to_json(v: &Value) -> Option<serde_json::Value> {
     })
 }
 
-// The `_labels` secondary-label convention — the `SECONDARY_LABELS_KEY` constant
-// and the `secondary_labels` parser — was extracted to the `drevo-core` crate
+// The `_labels` secondary-label convention - the `SECONDARY_LABELS_KEY` constant
+// and the `secondary_labels` parser - was extracted to the `drevo-core` crate
 // (Phase 7 slice 5) so the native label index (also moving to core) shares the
 // exact same source of truth. Re-exported here so the executor's many
 // `SECONDARY_LABELS_KEY` / `secondary_labels(...)` call sites resolve unchanged.
@@ -1209,7 +1209,7 @@ fn seed_path(row: &mut Bindings, head: Arc<NodeValue>) {
     );
 }
 
-/// Extend the path accumulator in `row` by one hop — relationship `rel`
+/// Extend the path accumulator in `row` by one hop - relationship `rel`
 /// reaching `node`. A no-op when no accumulator is present.
 fn extend_path(row: &mut Bindings, rel: Arc<RelationshipValue>, node: Arc<NodeValue>) {
     if let Some(Value::Path(p)) = row.get(PATH_ACCUM_KEY) {
@@ -1227,7 +1227,7 @@ fn extend_path(row: &mut Bindings, rel: Arc<RelationshipValue>, node: Arc<NodeVa
     }
 }
 
-/// Extend the path accumulator in `row` by several hops at once — used by the
+/// Extend the path accumulator in `row` by several hops at once - used by the
 /// variable-length expander, where `rels[i]` reaches `nodes[i]`. The two
 /// slices must be the same length. A no-op when no accumulator is present.
 fn extend_path_multi(
@@ -1252,14 +1252,14 @@ fn extend_path_multi(
 
 // ===== Public entry point ===================================================
 
-/// Execute a Cypher query over **any** [`GraphEngine`] — the native
-/// `drevo-core` engine or the KV `Drevo` — without a KV secondary
+/// Execute a Cypher query over **any** [`GraphEngine`] - the native
+/// `drevo-core` engine or the KV `Drevo` - without a KV secondary
 /// store (RFC `docs/rfc-native-core.md`, #307, Phase 6).
 ///
 /// Core graph work (node/edge/adjacency CRUD, MATCH, MERGE, SET, DELETE,
 /// traversal) runs directly on `engine`. Queries that reach for a KV-only
-/// secondary subsystem — full-text search, vector/semantic similarity, recency
-/// scans, keyword extraction — fail with [`ExecError::EngineCapability`]
+/// secondary subsystem - full-text search, vector/semantic similarity, recency
+/// scans, keyword extraction - fail with [`ExecError::EngineCapability`]
 /// because those indexes are not (yet) fed to a non-KV engine.
 ///
 /// # Errors
@@ -1300,7 +1300,7 @@ pub fn execute_on_engine_with_fts(
 /// Like [`execute_on_engine`], but with the native secondary indexes so
 /// `CALL fts.search(...)`, `MATCH (n:Label)`, and `MATCH (n {key: value})` are
 /// all served on the native engine without falling back to a full node scan
-/// (RFC `docs/rfc-native-core.md`, #307, Phases 6.6–6.7).
+/// (RFC `docs/rfc-native-core.md`, #307, Phases 6.6-6.7).
 ///
 /// The caller owns the indexes and is responsible for keeping them synced with
 /// the engine's change-feed (call each one's `sync` before querying for
@@ -1367,12 +1367,12 @@ pub fn execute_on_engine_with_indexes_and_values(
 /// signature stays feature-free.
 #[cfg(feature = "http")]
 pub type QueryEmbedder<'a> = &'a std::sync::Arc<dyn crate::embeddings::TextEmbedder>;
-/// Feature-off placeholder — uninhabited, so the option is always `None`.
+/// Feature-off placeholder - uninhabited, so the option is always `None`.
 #[cfg(not(feature = "http"))]
 pub type QueryEmbedder<'a> = &'a std::convert::Infallible;
 
 /// Everything a non-KV engine can attach to a query: the native index stack
-/// plus an optional server-side embedder (RFC #307 — the param-object form of
+/// plus an optional server-side embedder (RFC #307 - the param-object form of
 /// the `execute_on_engine_with_*` family).
 #[derive(Default)]
 pub struct NativeQueryContext<'a> {
@@ -1392,11 +1392,11 @@ pub struct NativeQueryContext<'a> {
     pub points: Option<&'a crate::native_point_index::NativePointIndex>,
     /// `NodeValue` projection cache.
     pub values: Option<&'a crate::native_value_cache::NativeValueCache>,
-    /// Server-side text embedder — lets `drevo.semantic.embed` /
+    /// Server-side text embedder - lets `drevo.semantic.embed` /
     /// `drevo.semantic.query` / `drevo.semantic.queryRel` run without a KV
     /// secondary store.
     pub embedder: Option<QueryEmbedder<'a>>,
-    /// The native semantic control plane — lets `drevo.semantic.register` /
+    /// The native semantic control plane - lets `drevo.semantic.register` /
     /// `.registerRel` / `.status` manage the native registry without a KV
     /// secondary (issue #447).
     pub semantic: Option<&'a crate::native_service::NativeService>,
@@ -1444,9 +1444,9 @@ pub enum Access {
 
 /// The procedures a READ session or transaction may call (#825): they read
 /// the graph or the server's state and act on nothing outside the
-/// transaction. Every other procedure — one that writes, changes the schema,
+/// transaction. Every other procedure - one that writes, changes the schema,
 /// calls a chat model, posts events, changes triggers, sequences, prepared
-/// transactions or connections — is refused, and so is any procedure added
+/// transactions or connections - is refused, and so is any procedure added
 /// later until it is listed here. A listed procedure that would embed text
 /// through the embedding service is refused when it tries to.
 pub const READ_PROCEDURES: &[&str] = &[
@@ -1728,7 +1728,7 @@ impl Restriction<'_> {
     }
 }
 
-/// Execute over any engine with a [`NativeQueryContext`] attached — the
+/// Execute over any engine with a [`NativeQueryContext`] attached - the
 /// durable-native serving entry (RFC #307 Phase 4/7).
 ///
 /// # Errors
@@ -1762,7 +1762,7 @@ fn execute_inner(
     ctx: &NativeQueryContext<'_>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    // Fast path — a query with no `UNION` is a single arm, executed
+    // Fast path - a query with no `UNION` is a single arm, executed
     // directly with no row combination.
     if query.parts.len() == 1 {
         return execute_single(&query.parts[0].query, engine, ctx, params);
@@ -1787,7 +1787,7 @@ fn execute_inner(
             Some(expected) if *expected != arm.columns => {
                 return Err(ExecError::UnionMismatch {
                     message: format!(
-                        "all arms of a UNION must return the same columns — \
+                        "all arms of a UNION must return the same columns - \
                          expected {expected:?}, this arm returns {:?}",
                         arm.columns
                     ),
@@ -1860,8 +1860,8 @@ fn union_kind(query: &Query) -> ExecResultT<Option<UnionKind>> {
 /// The count pushdown (RFC `docs/rfc-native-core.md` #307): recognise
 /// exactly `MATCH (n)` / `MATCH (n:Label)` followed by a single
 /// non-`DISTINCT` `RETURN count(*)` (or `count(n)` of the matched, never
-/// `NULL`, node) — with no `OPTIONAL`, no `WHERE`, no inline properties, no
-/// relationship legs, and no `ORDER BY` / `SKIP` / `LIMIT` — and answer it
+/// `NULL`, node) - with no `OPTIONAL`, no `WHERE`, no inline properties, no
+/// relationship legs, and no `ORDER BY` / `SKIP` / `LIMIT` - and answer it
 /// from cardinalities instead of enumerating the graph.
 ///
 /// Anything the detector does not recognise returns `Ok(None)` and takes
@@ -1870,7 +1870,7 @@ fn union_kind(query: &Query) -> ExecResultT<Option<UnionKind>> {
 ///
 /// The unlabelled form is answered by
 /// [`GraphEngine::count_nodes`] on **any** engine. The labelled form needs
-/// the full label semantics — primary kind **or** secondary `_labels` — so
+/// the full label semantics - primary kind **or** secondary `_labels` - so
 /// it is answered only when a [`crate::native_label_index::NativeLabelIndex`]
 /// is present (kind-bucket cardinality plus the index's extra ids,
 /// deduplicated); the KV path has no complete label index and keeps its
@@ -1918,7 +1918,7 @@ fn try_count_pushdown(
         return Ok(None);
     }
     match &args[0] {
-        // `count(*)`, or `count(n)` of the matched node — which a
+        // `count(*)`, or `count(n)` of the matched node - which a
         // non-OPTIONAL match never binds to NULL, so the two agree.
         Expression::Star(_) => {}
         Expression::Variable(v, _) if Some(v) == node.variable.as_ref() => {}
@@ -1961,14 +1961,14 @@ fn execute_single(
     ctx: &NativeQueryContext<'_>,
     params: HashMap<String, Value>,
 ) -> ExecResultT<ExecResult> {
-    // Upfront sweep — surface unsupported constructs before any side
+    // Upfront sweep - surface unsupported constructs before any side
     // effects run, so a query that would eventually fail on a varlen
     // path or a function call gets the deterministic error even when
     // the underlying graph is empty.
     validate_clauses_supported(&single.clauses)?;
 
     // Count pushdown (RFC #307): a bare `MATCH (n[:L]) RETURN count(*)`
-    // needs no enumeration, no projection, and no row machinery — answer it
+    // needs no enumeration, no projection, and no row machinery - answer it
     // from the engine's cardinality (and the label index's) directly.
     // Not for a user who may not see everything: the count would include
     // what they cannot see (#636).
@@ -2000,7 +2000,7 @@ fn execute_single(
     Ok(executor.take_result())
 }
 
-/// Sum two [`ExecStats`] field-by-field — used to aggregate the mutation
+/// Sum two [`ExecStats`] field-by-field - used to aggregate the mutation
 /// counters of every arm of a `UNION` into one summary.
 fn add_stats(a: ExecStats, b: ExecStats) -> ExecStats {
     ExecStats {
@@ -2161,7 +2161,7 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
                     ProjectionItem::Star => {}
                     ProjectionItem::Expression { expr, alias, .. } => {
                         // Cypher requires an alias for every projection
-                        // in WITH that isn't a bare variable — otherwise
+                        // in WITH that isn't a bare variable - otherwise
                         // the projected column has no name downstream
                         // clauses can reference.
                         if alias.is_none() && !matches!(expr, Expression::Variable(..)) {
@@ -2199,13 +2199,13 @@ fn validate_clause_supported(clause: &Clause) -> ExecResultT<()> {
             }
             // Resolve the procedure upfront so an unknown name, wrong
             // arity, or a `YIELD` of a non-existent column is reported
-            // deterministically before any side effects run — even on an
+            // deterministically before any side effects run - even on an
             // empty graph.
             let name = c.name.join(".");
             let columns =
                 procedure_columns(&name).ok_or_else(|| ExecError::InvalidProcedureCall {
                     name: name.clone(),
-                    message: "no such procedure — built-in procedures are \
+                    message: "no such procedure - built-in procedures are \
                           db.labels, db.relationshipTypes, db.propertyKeys, \
                           drevo.vector.query, drevo.semantic.query, \
                           drevo.semantic.embed, \
@@ -2557,7 +2557,7 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
         // A list comprehension is supported as long as its sub-expressions
         // are. Aggregations are *not* allowed inside a comprehension (the
         // loop variable is per-element, not per-group), so every part is
-        // checked with the non-aggregation validator — `collect(x)` inside a
+        // checked with the non-aggregation validator - `collect(x)` inside a
         // comprehension stays `Unsupported` rather than silently misfolding.
         Expression::ListComprehension {
             list,
@@ -2609,7 +2609,7 @@ fn validate_expr_supported(expr: &Expression) -> ExecResultT<()> {
             Ok(())
         }
         // A pattern comprehension loops a per-match binding scope, so (like the
-        // comprehension family) an aggregation inside it is not meaningful — its
+        // comprehension family) an aggregation inside it is not meaningful - its
         // optional predicate and mandatory projection use the non-aggregation
         // validator. The pattern itself is matched at runtime, exactly like a
         // `MATCH` pattern, so it needs no expression-level validation here.
@@ -2711,7 +2711,7 @@ fn is_aggregation_name(name: &[String]) -> bool {
 }
 
 /// `true` when `lower` (an already-lowercased aggregation name) is one of the
-/// two-argument percentile aggregations — `percentileCont` / `percentileDisc`,
+/// two-argument percentile aggregations - `percentileCont` / `percentileDisc`,
 /// which take `(value, fraction)`. Every other aggregation takes exactly one
 /// argument (or `count(*)`).
 fn is_percentile_aggregation(lower: &str) -> bool {
@@ -2720,10 +2720,10 @@ fn is_percentile_aggregation(lower: &str) -> bool {
 
 /// The supported scalar (non-aggregation) functions: the built-in
 /// string / numeric / list library ([`is_builtin_scalar_function`],
-/// task `00138`), plus drevo's two domain extensions — `similar(...)`,
+/// task `00138`), plus drevo's two domain extensions - `similar(...)`,
 /// the joint graph+vector predicate (`00077`), and `keywords(...)`,
 /// BM25-IDF keyword extraction (`00132`).
-/// Which end of a relationship [`Executor::eval_endpoint_node`] resolves —
+/// Which end of a relationship [`Executor::eval_endpoint_node`] resolves -
 /// the tail (`startNode`) or the head (`endNode`). Issue #232.
 #[derive(Clone, Copy)]
 enum Endpoint {
@@ -2740,8 +2740,8 @@ fn is_scalar_function_name(name: &[String]) -> bool {
     }
     let lower = name[0].to_ascii_lowercase();
     // `startnode` / `endnode` (issue #232) are DB-aware like `similar` /
-    // `keywords` — they resolve a relationship's endpoint *id* to the actual
-    // node — so they are evaluated in the executor, not `call_scalar`, but
+    // `keywords` - they resolve a relationship's endpoint *id* to the actual
+    // node - so they are evaluated in the executor, not `call_scalar`, but
     // must still be recognised here as valid scalar function names.
     lower == "similar"
         || lower == "keywords"
@@ -3149,7 +3149,7 @@ fn order_by_over_projection(
 /// function calls (`count` / `sum` / `avg` / `min` / `max` / `collect`)
 /// are allowed, and `*` is allowed only as the sole argument of `count`.
 /// Non-aggregation function calls are accepted when they name a built-in
-/// scalar function (`size`, `toLower`, … — `00138`) or a drevo extension
+/// scalar function (`size`, `toLower`, … - `00138`) or a drevo extension
 /// (`similar` / `keywords`); every other name is rejected with a pointer to
 /// the future scalar-function task.
 fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
@@ -3213,7 +3213,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
                     )));
                 }
             }
-            // Every argument must be a plain expression — no bare `*`.
+            // Every argument must be a plain expression - no bare `*`.
             for arg in args {
                 validate_expr_supported(arg)?;
             }
@@ -3256,7 +3256,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
         } => {
             // CASE sub-expressions are validated with the *projection*
             // validator so that an aggregation nested inside any arm
-            // (scrutinee, WHEN, THEN, or ELSE) is accepted — `eval_with_agg`
+            // (scrutinee, WHEN, THEN, or ELSE) is accepted - `eval_with_agg`
             // folds it over the group (`00142`). The projection validator
             // still rejects an aggregation nested *inside another*
             // aggregation, matching Neo4j.
@@ -3320,7 +3320,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             validate_expr_supported_in_projection(list)?;
             validate_expr_supported(expr)
         }
-        // A map projection is a group key (it never *contains* an aggregation —
+        // A map projection is a group key (it never *contains* an aggregation -
         // see `validate_expr_supported`); its base and literal-entry
         // sub-expressions use the non-aggregation validator, mirroring the
         // comprehension / Index / Slice handling above.
@@ -3336,7 +3336,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             Ok(())
         }
         // A pattern comprehension is a group key (it never *contains* an
-        // aggregation — see `validate_expr_supported`); its predicate and
+        // aggregation - see `validate_expr_supported`); its predicate and
         // projection use the non-aggregation validator, mirroring the
         // comprehension / map-projection handling above.
         Expression::PatternComprehension {
@@ -3350,7 +3350,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             validate_expr_supported(projection)
         }
         // A pattern predicate is a group key (it never *contains* an
-        // aggregation — its match is a runtime existence test), so it needs no
+        // aggregation - its match is a runtime existence test), so it needs no
         // recursion, mirroring the comprehension / map-projection handling.
         Expression::PatternPredicate { .. } => Ok(()),
         // An existential subquery is likewise a group key (it never *contains*
@@ -3363,7 +3363,7 @@ fn validate_expr_supported_in_projection(expr: &Expression) -> ExecResultT<()> {
             Ok(())
         }
         // A counting subquery is likewise a group key (it never *contains* an
-        // aggregation — its `count` is a per-row match tally, not a fold over
+        // aggregation - its `count` is a per-row match tally, not a fold over
         // the outer rows); its optional inner `WHERE` uses the non-aggregation
         // validator, mirroring the existential subquery.
         Expression::CountSubquery { predicate, .. } => {
@@ -3419,7 +3419,7 @@ fn first_clause_span(clauses: &[Clause]) -> Span {
 
 // ===== Executor state =======================================================
 
-/// A row of variable bindings — column name to value.
+/// A row of variable bindings - column name to value.
 type Bindings = HashMap<String, Value>;
 
 /// A materialised projection row paired with the binding it came from.
@@ -3539,7 +3539,7 @@ struct ElementView {
 }
 
 struct Executor<'a> {
-    /// The graph store viewed through the [`GraphEngine`] seam — the KV-backed
+    /// The graph store viewed through the [`GraphEngine`] seam - the KV-backed
     /// `Drevo` or the native `drevo-core`. All node/edge/adjacency
     /// work goes through this.
     engine: &'a dyn GraphEngine,
@@ -3693,7 +3693,7 @@ impl<'a> Executor<'a> {
     }
 }
 
-// Default initial result fields — Rust struct init helper.
+// Default initial result fields - Rust struct init helper.
 impl<'a> Executor<'a> {
     /// `nv` as the signed-in user may see it (#636): `None` when the user may
     /// not traverse it, otherwise without the properties the user may not
@@ -4063,7 +4063,7 @@ impl<'a> Executor<'a> {
 
     /// The capability error raised when a query reaches for a secondary
     /// subsystem (FTS, vector/semantic, keyword extraction) that the active
-    /// engine does not carry — i.e. no native index/service was attached for
+    /// engine does not carry - i.e. no native index/service was attached for
     /// it. Since the retirement of the KV executor entry there is no KV
     /// fallback: the durable-native serving layer supplies these through its
     /// native index stack, and every other engine fails deterministically here
@@ -4077,7 +4077,7 @@ impl<'a> Executor<'a> {
     /// The best `limit` full-text matches of `query` among the nodes this
     /// statement sees, as `(id, BM25 score)`, best first: the committed
     /// index, completed with what the statement's transaction has changed so
-    /// far — the hits and scores the search gives once it commits.
+    /// far - the hits and scores the search gives once it commits.
     fn full_text_nodes(
         &self,
         feature: &str,
@@ -4172,7 +4172,7 @@ impl<'a> Executor<'a> {
     }
 
     /// Embed query text server-side through the native path's attached
-    /// embedder. Without one, surfaces the engine-capability error — there is
+    /// embedder. Without one, surfaces the engine-capability error - there is
     /// no KV secondary embedder to fall back to.
     #[cfg(feature = "http")]
     fn embed_query_text(&self, proc_name: &str, text: &str, span: Span) -> ExecResultT<Vec<f32>> {
@@ -4662,8 +4662,8 @@ impl<'a> Executor<'a> {
     fn run_match(&mut self, m: &MatchClause) -> ExecResultT<()> {
         // Lift conjunctive equality / IN constraints out of this MATCH's WHERE so
         // the head-node scan can push them into the native property index (see
-        // `native_property_candidates`). Recomputed per MATCH — empty when there
-        // is no WHERE — so it never leaks into a later clause. This only narrows
+        // `native_property_candidates`). Recomputed per MATCH - empty when there
+        // is no WHERE - so it never leaks into a later clause. This only narrows
         // candidates; the full WHERE below still runs as the exact filter.
         let mut pushdown = HashMap::new();
         if let Some(expr) = &m.where_clause {
@@ -4673,7 +4673,7 @@ impl<'a> Executor<'a> {
 
         // Process each prior binding independently so OPTIONAL MATCH
         // can fall back to a single all-null row per input when no
-        // pattern matches (Cypher's left-join semantics — see
+        // pattern matches (Cypher's left-join semantics - see
         // `synthesise_null_row` below).
         let mut new_bindings: Vec<Bindings> = Vec::new();
         let prior = std::mem::take(&mut self.bindings);
@@ -4772,7 +4772,7 @@ impl<'a> Executor<'a> {
                 current = next;
             }
 
-            // WHERE is applied *per input row* — for OPTIONAL MATCH
+            // WHERE is applied *per input row* - for OPTIONAL MATCH
             // a row whose pattern matched but failed WHERE is treated
             // as "no match", which then triggers the null-row
             // synthesis below (Cypher spec: WHERE on OPTIONAL MATCH
@@ -4853,7 +4853,7 @@ impl<'a> Executor<'a> {
     /// The wrapped pattern is a single variable-length leg `(a)-[*]-(b)`
     /// (validated upfront by [`validate_shortest_supported`], re-checked here
     /// defensively). Both endpoints are resolved exactly like an ordinary
-    /// MATCH — a bound variable is reused, an unbound one is enumerated — then
+    /// MATCH - a bound variable is reused, an unbound one is enumerated - then
     /// a breadth-first search finds the shortest connecting path(s). For
     /// `shortestPath` the first path at the minimum length is returned; for
     /// `allShortestPaths` every path of that minimum length yields a row.
@@ -4974,16 +4974,16 @@ impl<'a> Executor<'a> {
     }
 
     /// One breadth-first pass from `source` answering **every** target in
-    /// `wanted` at once (#546) — the fast path of
+    /// `wanted` at once (#546) - the fast path of
     /// [`match_shortest_pattern`](Self::match_shortest_pattern).
     ///
     /// A node-visited BFS is exact here: a minimum-length connecting path
     /// never repeats a node, so the trail enumeration of
     /// [`bfs_shortest_paths`](Self::bfs_shortest_paths) (`O(deg^depth)` per
     /// pair) finds nothing a layered BFS (`O(V + E)` per source) does not.
-    /// Every node records its predecessors one layer closer to the source —
+    /// Every node records its predecessors one layer closer to the source -
     /// all of them for [`ShortestKind::All`] (parallel relationships are
-    /// distinct paths), the first for [`ShortestKind::Single`] — and paths are
+    /// distinct paths), the first for [`ShortestKind::Single`] - and paths are
     /// rebuilt backwards from each reached target. The search stops early
     /// once every wanted target is reached (after finishing that layer, so
     /// `All` sees every tie).
@@ -5108,7 +5108,7 @@ impl<'a> Executor<'a> {
     ///
     /// Returns the traversed `(relationships, intermediate-and-target nodes)`
     /// of each shortest path (the source node is *not* included in the node
-    /// list — the caller prepends it). Cypher "trail" uniqueness applies (no
+    /// list - the caller prepends it). Cypher "trail" uniqueness applies (no
     /// relationship is reused within one path). BFS expands one hop per
     /// level, so the first level (at or above `lower`) that reaches `target`
     /// is the minimum length: [`ShortestKind::Single`] returns the first such
@@ -5237,7 +5237,7 @@ impl<'a> Executor<'a> {
         // Each in-progress row carries the *actual* endpoint node reached so
         // far, threaded forward directly rather than re-derived from the
         // bindings. This is what lets an **anonymous** head or intermediate
-        // node — which binds no variable to look up later — still chain into
+        // node - which binds no variable to look up later - still chain into
         // the next segment: `match_head` hands back the head node it just
         // matched, and every segment returns its target node as the new
         // endpoint. (Pattern lengths are short, so the extra `Arc` clone per
@@ -5260,7 +5260,7 @@ impl<'a> Executor<'a> {
         build_path: bool,
     ) -> ExecResultT<Vec<(Bindings, Arc<NodeValue>)>> {
         // If the head's variable is already bound, just verify it
-        // matches the requested label/properties — otherwise enumerate.
+        // matches the requested label/properties - otherwise enumerate.
         // Each returned row is paired with the head node it matched so the
         // caller can thread it into the next segment.
         if let Some(name) = &head.variable {
@@ -5326,14 +5326,14 @@ impl<'a> Executor<'a> {
         // per-candidate `node_matches_pattern` filter below does the exact test.
         // Pick the most selective correct source available:
         //
-        //  * KV engine — a full id-ascending scan (`collect_all_nodes`), which
+        //  * KV engine - a full id-ascending scan (`collect_all_nodes`), which
         //    surfaces secondary-label nodes too. This deliberately matches the
         //    native engine's scan order, so an unordered `MATCH` enumerates
-        //    rows identically on both engines — the row-order convergence the
+        //    rows identically on both engines - the row-order convergence the
         //    `DREVO_ENGINE` flip depends on (Cypher leaves order unspecified
         //    without `ORDER BY`, so equalising it is allowed; it also drops
         //    the per-scan `updated_at` sort `list_recent` paid).
-        //  * Native engine — up to two index-derived candidate sets:
+        //  * Native engine - up to two index-derived candidate sets:
         //      - by **label** (`nodes_by_kind(label) ∪ NativeLabelIndex`, a
         //        complete superset), available when a label index is present;
         //      - by **property** (`native_property_candidates`, the intersection
@@ -5346,7 +5346,7 @@ impl<'a> Executor<'a> {
         //    the seam.
         // Engine-independent id seek FIRST: a conjunctive `WHERE id(var) = X` /
         // `id(var) IN [...]` resolves through `get_node` point lookups on any
-        // engine — no scan, no index. The exact filter below still enforces
+        // engine - no scan, no index. The exact filter below still enforces
         // labels, inline properties, and the full WHERE.
         if let Some(seeked) = self.id_seek_candidates(pattern, row)? {
             for node in &seeked {
@@ -5374,7 +5374,7 @@ impl<'a> Executor<'a> {
         // Neither index may be trusted once THIS statement has written: the
         // indexes are synced from the change-feed between statements, so a
         // candidate set narrowed through them can be missing this statement's own
-        // writes — a false negative that would drop rows. Falling back to the scan
+        // writes - a false negative that would drop rows. Falling back to the scan
         // + exact filter (which reads the live engine) keeps a stale index costing
         // only speed, never answers.
         let indexes_trusted = !self.statement_has_written();
@@ -5437,7 +5437,7 @@ impl<'a> Executor<'a> {
         Ok(nodes)
     }
 
-    /// `true` once this statement has performed any write — the point after
+    /// `true` once this statement has performed any write - the point after
     /// which the pre-statement index snapshots may be missing this
     /// statement's own effects and must not narrow candidate sets.
     fn statement_has_written(&self) -> bool {
@@ -5451,7 +5451,7 @@ impl<'a> Executor<'a> {
             || s.labels_removed > 0
     }
 
-    /// The `NodeValue` projection of a live record — served from the value
+    /// The `NodeValue` projection of a live record - served from the value
     /// cache when its `Arc::ptr_eq` validity check passes, rebuilt otherwise.
     fn project_node(&self, node: &Arc<Node>) -> Arc<NodeValue> {
         if let Some(cache) = self.native_values {
@@ -5462,7 +5462,7 @@ impl<'a> Executor<'a> {
         node_to_value(node)
     }
 
-    /// Candidate nodes carrying `label` on the native engine —
+    /// Candidate nodes carrying `label` on the native engine -
     /// `nodes_by_kind(label) ∪ NativeLabelIndex::node_ids(label)`, i.e. every
     /// node with the label as its primary kind or a secondary label. A
     /// *complete* superset of the label matches (RFC `docs/rfc-native-core.md`,
@@ -5485,7 +5485,7 @@ impl<'a> Executor<'a> {
     }
 
     /// Candidate nodes for an equality pattern narrowed through the native
-    /// property index (RFC `docs/rfc-native-core.md`, #307, Phases 6.7–6.9).
+    /// property index (RFC `docs/rfc-native-core.md`, #307, Phases 6.7-6.9).
     ///
     /// Two constraint sources are intersected: the pattern's **inline**
     /// properties `MATCH (n {key: value})` and the conjunctive equality terms
@@ -5493,16 +5493,16 @@ impl<'a> Executor<'a> {
     /// [`pushdown_eq`](Self::pushdown_eq) for this pattern's variable
     /// (`WHERE n.key = value`).
     ///
-    /// Returns `Ok(None)` when the index cannot narrow the pattern — no index
-    /// present, or no indexable equality constraint from either source — so the
+    /// Returns `Ok(None)` when the index cannot narrow the pattern - no index
+    /// present, or no indexable equality constraint from either source - so the
     /// caller uses another source (label candidates, or a full scan). Otherwise
     /// the returned nodes are the intersection of the indexable pairs' postings:
     /// a *superset* of the real matches (only the indexable equality constraints
     /// are applied here), which the exact `node_matches_pattern` / `WHERE` filter
-    /// then narrows to the precise set — including any non-indexable constraints.
+    /// then narrows to the precise set - including any non-indexable constraints.
     /// Candidate nodes for `pattern` resolved through **storage-id point
     /// seeks** (`WHERE id(var) = X` / `id(var) IN [...]` pushdown), on any
-    /// engine. Returns `None` when no id constraint can narrow — an eval
+    /// engine. Returns `None` when no id constraint can narrow - an eval
     /// failure, a non-integer value, or a list with a non-integer element all
     /// *skip* narrowing (never fabricate an empty set), so the ordinary path
     /// reproduces the exact semantics, errors included. A genuine integer id
@@ -5528,13 +5528,13 @@ impl<'a> Executor<'a> {
                         continue;
                     };
                     match value {
-                        // A negative id can never match — an empty set is exact.
+                        // A negative id can never match - an empty set is exact.
                         Value::Integer(i) if i >= 0 => std::iter::once(i as u64).collect(),
                         Value::Integer(_) => std::collections::BTreeSet::new(),
                         // An element id (`elementId(n) = '42'`): the id as text.
                         Value::String(s) => element_id_number(&s).into_iter().collect(),
                         // Non-integer comparison semantics belong to the exact
-                        // WHERE — skip narrowing entirely.
+                        // WHERE - skip narrowing entirely.
                         _ => continue,
                     }
                 }
@@ -5644,7 +5644,7 @@ impl<'a> Executor<'a> {
 
         // WHERE-pushdown constraints (equality and `IN`) on this pattern's
         // variable. An eval failure or a constraint the index cannot represent is
-        // *skipped*, not abandoned — the full WHERE predicate runs afterwards and
+        // *skipped*, not abandoned - the full WHERE predicate runs afterwards and
         // surfaces any error, so a term we cannot push simply does not narrow.
         if let Some(var) = &pattern.variable {
             if let Some(constraints) = self.pushdown.get(var) {
@@ -5845,14 +5845,14 @@ impl<'a> Executor<'a> {
 
     /// BFS expansion for a variable-length path segment `[*lo..hi]`.
     ///
-    /// Cypher "trail" uniqueness applies — no relationship is traversed
+    /// Cypher "trail" uniqueness applies - no relationship is traversed
     /// twice within a single path; nodes may repeat. If the rel pattern
     /// has a variable, it's bound to a [`Value::List`] of the
     /// traversed relationships (one element per hop, source-order).
     ///
     /// When `hi == None` (unbounded above), we cap expansion at
     /// [`VARLEN_DEFAULT_UPPER`] to keep runaway cycles bounded even
-    /// after trail-uniqueness — Neo4j's actual cap is much higher but
+    /// after trail-uniqueness - Neo4j's actual cap is much higher but
     /// drevo runs in-memory and the agentic-workload suite must stay
     /// fast. Tests can lower this with the dedicated unit covering
     /// trail uniqueness.
@@ -5870,7 +5870,7 @@ impl<'a> Executor<'a> {
         let upper = hi.map(|h| h as usize).unwrap_or(VARLEN_DEFAULT_UPPER);
         let lower = lo.max(0) as usize;
 
-        // BFS frontier entries — each represents one in-progress path
+        // BFS frontier entries - each represents one in-progress path
         // ending at `node`, with the relationships already traversed
         // recorded for trail-uniqueness and for the optional rel
         // variable binding. `used_nodes` mirrors `used_edges` (the node
@@ -5906,7 +5906,7 @@ impl<'a> Executor<'a> {
                             .collect();
                         if let Some(existing_val) = existing.get(name) {
                             // Pre-bound varlen rel variable would be
-                            // exotic — keep behaviour deterministic by
+                            // exotic - keep behaviour deterministic by
                             // rejecting (mirrors single-hop logic
                             // returning `continue` on mismatch).
                             if let Value::List(prev) = existing_val {
@@ -6021,8 +6021,8 @@ impl<'a> Executor<'a> {
         // CREATE multiplies every current driving row by the created pattern.
         // The query begins with a single empty driving row (seeded in
         // `execute_single`), so a standalone `CREATE` still runs once. When a
-        // prior clause produced ZERO rows — `UNWIND [] AS x`, or a MATCH with
-        // no results — the driving table is legitimately empty and CREATE must
+        // prior clause produced ZERO rows - `UNWIND [] AS x`, or a MATCH with
+        // no results - the driving table is legitimately empty and CREATE must
         // run zero times. Resurrecting an empty row here (as an earlier guard
         // did) instead evaluated the now-unbound loop variable and raised
         // "unbound variable" (issue #300); iterate whatever rows exist.
@@ -6067,7 +6067,7 @@ impl<'a> Executor<'a> {
         row: &mut Bindings,
     ) -> ExecResultT<Arc<NodeValue>> {
         // If the node already has a binding (e.g. it was matched in a
-        // prior MATCH), reuse it — Cypher CREATE on a bound variable
+        // prior MATCH), reuse it - Cypher CREATE on a bound variable
         // does NOT re-create the node.
         if let Some(name) = &pattern.variable {
             if let Some(value) = row.get(name) {
@@ -6250,7 +6250,7 @@ impl<'a> Executor<'a> {
 
     fn run_set(&mut self, s: &crate::cypher::ast::SetClause) -> ExecResultT<()> {
         use crate::cypher::ast::SetItem;
-        // If no MATCH preceded the SET, the binding set is empty — Cypher
+        // If no MATCH preceded the SET, the binding set is empty - Cypher
         // semantics say SET is a per-row mutation, so it does nothing.
         let bindings = std::mem::take(&mut self.bindings);
         let mut updated_bindings = Vec::with_capacity(bindings.len());
@@ -6299,7 +6299,7 @@ impl<'a> Executor<'a> {
     }
 
     fn run_delete(&mut self, d: &crate::cypher::ast::DeleteClause) -> ExecResultT<()> {
-        // Collect ids first, then delete — this avoids issues if the
+        // Collect ids first, then delete - this avoids issues if the
         // same node is bound under different variable names across rows.
         let mut node_ids: Vec<u64> = Vec::new();
         let mut rel_ids: Vec<u64> = Vec::new();
@@ -6349,7 +6349,7 @@ impl<'a> Executor<'a> {
                 let connected = self.engine().edges_of(*id, ModelDirection::Both)?;
                 if !d.detach && !connected.is_empty() {
                     return Err(ExecError::InvalidMutation(format!(
-                        "cannot DELETE node {} — it has {} connected relationship(s); use DETACH DELETE",
+                        "cannot DELETE node {} - it has {} connected relationship(s); use DETACH DELETE",
                         id, connected.len()
                     )));
                 }
@@ -6387,7 +6387,7 @@ impl<'a> Executor<'a> {
                     new_bindings.push(row);
                 }
             } else {
-                // No match — CREATE the pattern and run ON CREATE actions.
+                // No match - CREATE the pattern and run ON CREATE actions.
                 let mut row = existing.clone();
                 let created = self.create_path(&m.pattern.path, &mut row)?;
                 if let Some(var) = path_var {
@@ -6660,7 +6660,7 @@ impl<'a> Executor<'a> {
         for label in labels {
             if &stored.kind == label {
                 return Err(ExecError::InvalidMutation(format!(
-                    "cannot REMOVE primary label `{}` — drevo nodes always carry their `kind`",
+                    "cannot REMOVE primary label `{}` - drevo nodes always carry their `kind`",
                     label
                 )));
             }
@@ -6819,7 +6819,7 @@ impl<'a> Executor<'a> {
             .get_node(nv.id)?
             .ok_or_else(|| ExecError::InvalidMutation(format!("node {} not found", nv.id)))?;
         // Start either from existing storage props (merge) or empty (replace).
-        // Always preserve the reserved `_labels` key — it carries Cypher
+        // Always preserve the reserved `_labels` key - it carries Cypher
         // labels orthogonal to user properties.
         let mut next_props = if merge {
             stored.properties.clone()
@@ -7087,17 +7087,17 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    /// Run a `WITH` projection — the query-pipelining boundary.
+    /// Run a `WITH` projection - the query-pipelining boundary.
     ///
     /// Mirrors `run_return` for the projection / ORDER BY / SKIP /
     /// LIMIT / DISTINCT pipeline, then:
     ///
-    /// 1. Applies the trailing `WHERE` (post-projection filter — this
+    /// 1. Applies the trailing `WHERE` (post-projection filter - this
     ///    is how aggregation-before-filter works: `WITH count(*) AS c
     ///    WHERE c >= 2 …`).
     /// 2. Converts each surviving projected row back into a binding
     ///    keyed by the projection column names, so downstream clauses
-    ///    see only the projected aliases — pattern variables that
+    ///    see only the projected aliases - pattern variables that
     ///    weren't projected are dropped, matching Cypher's "WITH is
     ///    the only point at which the variable scope can be reshaped"
     ///    rule.
@@ -7155,7 +7155,7 @@ impl<'a> Executor<'a> {
             new_bindings.push(scope);
         }
 
-        // Post-projection WHERE — references aliased columns, applied
+        // Post-projection WHERE - references aliased columns, applied
         // *after* aggregation so `WITH count(*) AS c WHERE c >= 2` is
         // the canonical aggregation-then-filter.
         if let Some(expr) = &w.where_clause {
@@ -7183,7 +7183,7 @@ impl<'a> Executor<'a> {
 
     // ----- UNWIND ----------------------------------------------------------
 
-    /// `UNWIND list AS x` — expand a list expression into one binding
+    /// `UNWIND list AS x` - expand a list expression into one binding
     /// row per element, carrying every existing binding forward and
     /// adding `x` bound to the element.
     ///
@@ -7192,7 +7192,7 @@ impl<'a> Executor<'a> {
     ///   preserving element order.
     /// - `UNWIND [] AS x` drops the input row (zero elements → zero
     ///   rows).
-    /// - `UNWIND null AS x` likewise yields zero rows — `null` is the
+    /// - `UNWIND null AS x` likewise yields zero rows - `null` is the
     ///   empty expansion, not a type error.
     /// - A non-list, non-null value is an [`ExecError::TypeMismatch`].
     ///
@@ -7233,7 +7233,7 @@ impl<'a> Executor<'a> {
     /// Invokes a built-in read-only procedure and folds its output rows
     /// into the binding stream. With `YIELD`, each yielded column is bound
     /// (under its `AS` alias when present) as the cross-product of the
-    /// prior rows with the procedure output — exactly like `UNWIND` — and
+    /// prior rows with the procedure output - exactly like `UNWIND` - and
     /// an optional `WHERE` filters the result. Without `YIELD`, the call
     /// is a standalone query whose result columns are the procedure's full
     /// output signature.
@@ -7358,7 +7358,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// `CALL drevo.events.post(name, payload) [YIELD name]` — post a named
+    /// `CALL drevo.events.post(name, payload) [YIELD name]` - post a named
     /// application event, once per row, published when the statement (or
     /// its explicit transaction) commits. The arguments may use the row's
     /// variables; the payload is any value but a node, relationship or path.
@@ -7431,7 +7431,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    /// `CALL drevo.path.weighted(start, end, options) YIELD path, cost` — the
+    /// `CALL drevo.path.weighted(start, end, options) YIELD path, cost` - the
     /// lowest-cost path from `start` to `end`, once per row, so both ends may
     /// come from the row (`MATCH (a …), (b …) CALL drevo.path.weighted(a, b,
     /// {…})`). A row with a `null` end, or whose ends are not connected within
@@ -7494,7 +7494,7 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
-    /// `CALL drevo.path.reachable(start, options) YIELD node, cost, path` —
+    /// `CALL drevo.path.reachable(start, options) YIELD node, cost, path` -
     /// every node within the options' `maxCost` of `start`, cheapest first,
     /// once per row; `path` is `null` unless the options ask for it. A row
     /// with a `null` start yields nothing. The options map is described at
@@ -7511,7 +7511,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.graph.expand(seeds[, config]) YIELD node, distance, via,
-    /// truncated` — the seeds and every node within the config's `hops` of
+    /// truncated` - the seeds and every node within the config's `hops` of
     /// them, each once at its shortest distance, with the relationship that
     /// first reached it ([`crate::traversal::expand_bfs`]); once per input
     /// row, so the seeds may come from the row. No seeds give no rows. Nodes
@@ -7606,7 +7606,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.spatial.nearest(label, {lat, lon}[, options]) YIELD node,
-    /// meters` — the nodes with `label` nearest to a point, nearest first;
+    /// meters` - the nodes with `label` nearest to a point, nearest first;
     /// once per input row. A `null` label or point gives no rows. The options
     /// are described at [`nearest_options`].
     fn run_nearest(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
@@ -7733,9 +7733,9 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.path.timetable(starts, ends, options) YIELD arriveAt,
-    /// departAt, transfers, legs` — public-transport journeys from any of
+    /// departAt, transfers, legs` - public-transport journeys from any of
     /// `starts` to any of `ends`, one row per journey that arrives earlier
-    /// than every journey with fewer transfers, ordered by arrival — or, with
+    /// than every journey with fewer transfers, ordered by arrival - or, with
     /// `arriveBy`, that leaves later, the latest first; once per input row. `starts` and `ends` are lists of `{node, cost}` maps; the
     /// options map is described at
     /// [`timetable_options`].
@@ -7999,14 +7999,14 @@ impl<'a> Executor<'a> {
     }
 
     /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
-    /// LIMIT k) [SCORE AS alias]` — declarative vector search (issue #430),
+    /// LIMIT k) [SCORE AS alias]` - declarative vector search (issue #430),
     /// lowered to the same cosine [`vector_scan`](Self::vector_scan) the
     /// `drevo.vector.query` procedure uses.
     ///
     /// The search variable is overwritten by the scan results, so input rows
     /// that differ *only* in that variable collapse into one search group (one
-    /// scan). This yields the correct cardinality — `MATCH (n:Movie) SEARCH n IN
-    /// (… LIMIT k)` returns `k` rows, not `k × |Movie|` — while still running a
+    /// scan). This yields the correct cardinality - `MATCH (n:Movie) SEARCH n IN
+    /// (… LIMIT k)` returns `k` rows, not `k × |Movie|` - while still running a
     /// separate scan for each distinct combination of the *other* bound
     /// variables (whose `query_vector` may differ).
     fn run_search(&mut self, s: &SearchClause) -> ExecResultT<()> {
@@ -8058,7 +8058,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.vector.query(label, property, query, k) YIELD node, score`
-    /// (issue #202) — the top-`k` nodes of `label` ranked by cosine
+    /// (issue #202) - the top-`k` nodes of `label` ranked by cosine
     /// similarity between their `property` embedding and the `query` vector.
     ///
     /// Emits `(node, score)` rows (a `Value::Node` and a `Value::Float` in
@@ -8067,7 +8067,7 @@ impl<'a> Executor<'a> {
     /// `RETURN … ORDER BY score DESC`.
     ///
     /// Semantics: this is a brute-force scan (score every `label` node that
-    /// carries the `property`) — correct and sub-millisecond at per-book
+    /// carries the `property`) - correct and sub-millisecond at per-book
     /// scale, per the issue. Nodes without the property, whose property is
     /// not a numeric list, or whose dimensionality does not match the query
     /// are skipped (like a `WHERE c.embedding IS NOT NULL` guard). The
@@ -8081,8 +8081,8 @@ impl<'a> Executor<'a> {
     /// `CALL drevo.cypher.fromText(prompt) YIELD cypher` (issue #429).
     ///
     /// Translates a natural-language `prompt` into a Cypher query by forwarding
-    /// it — with the live graph schema (labels / relationship types / property
-    /// keys) — to the process-global text-to-Cypher generator
+    /// it - with the live graph schema (labels / relationship types / property
+    /// keys) - to the process-global text-to-Cypher generator
     /// ([`crate::text2cypher`]), installed at server startup from
     /// `DREVO_TEXT2CYPHER_*`. Returns the generated query text as one `cypher`
     /// row; it is **not** executed here (the client decides). When no generator
@@ -8188,7 +8188,7 @@ impl<'a> Executor<'a> {
     }
 
     /// [`Self::vector_scan`] restricted to the `label` nodes for which `keep`
-    /// holds — the predicate runs before scoring, so a scoped scan (e.g. one
+    /// holds - the predicate runs before scoring, so a scoped scan (e.g. one
     /// agent-memory session) ranks only its own candidates and `k` counts only
     /// kept nodes.
     fn vector_scan_where(
@@ -8210,15 +8210,15 @@ impl<'a> Executor<'a> {
                 continue;
             }
             let Some(embedding_val) = nv.properties.get(property) else {
-                continue; // no embedding on this node — skip
+                continue; // no embedding on this node - skip
             };
             let Ok(embedding) =
                 similar_operand(embedding_val, "drevo.vector.query", "embedding", span)
             else {
-                continue; // property is not a numeric list — skip
+                continue; // property is not a numeric list - skip
             };
             let Ok(score) = cosine_similarity(&embedding, query) else {
-                continue; // dimension mismatch / zero vector — skip
+                continue; // dimension mismatch / zero vector - skip
             };
             scored.push((score, nv));
         }
@@ -8238,7 +8238,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL db.index.vector.queryNodes(indexName, k, queryVector) YIELD node,
-    /// score` (issue #532) — the Neo4j-compatible spelling of `drevo.vector.query`.
+    /// score` (issue #532) - the Neo4j-compatible spelling of `drevo.vector.query`.
     ///
     /// Resolves the **named** index to the `(label, property)` it was created for
     /// (`CREATE VECTOR INDEX`), then runs the same cosine [`Self::vector_scan`].
@@ -8287,7 +8287,7 @@ impl<'a> Executor<'a> {
         };
         let index = svc.vector_index_get(name).ok_or_else(|| {
             err(format!(
-                "no vector index named `{name}` — create it with \
+                "no vector index named `{name}` - create it with \
                  `CREATE VECTOR INDEX {name} FOR (n:Label) ON (n.property)`"
             ))
         })?;
@@ -8299,14 +8299,14 @@ impl<'a> Executor<'a> {
                 }
             };
             return Err(err(format!(
-                "`{name}` is a {kind} vector index — query it with {other}"
+                "`{name}` is a {kind} vector index - query it with {other}"
             )));
         }
         Ok(index)
     }
 
     /// `CALL db.index.vector.queryRelationships(indexName, k, queryVector)
-    /// YIELD relationship, score` (issue #532) — the relationship counterpart
+    /// YIELD relationship, score` (issue #532) - the relationship counterpart
     /// of `queryNodes`: resolves a relationship vector index (`CREATE VECTOR
     /// INDEX … FOR ()-[r:TYPE]-() ON (r.property)`) and cosine-ranks the edges
     /// of that type. What neo4j-graphrag calls for relationship embeddings.
@@ -8693,7 +8693,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL db.index.fulltext.queryNodes(indexName, queryString) YIELD node,
-    /// score` (issue #532) — the Neo4j-compatible spelling over drevo's
+    /// score` (issue #532) - the Neo4j-compatible spelling over drevo's
     /// full-text index.
     ///
     /// drevo maintains a single global full-text index over node title/body
@@ -8710,7 +8710,7 @@ impl<'a> Executor<'a> {
         // Arity (2) is already enforced by the upfront validation sweep.
         const DEFAULT_FULLTEXT_LIMIT: usize = 100;
         let empty = Bindings::new();
-        // Index name accepted but unused — drevo's FTS is a single global index.
+        // Index name accepted but unused - drevo's FTS is a single global index.
         let _index_name = self.eval(&args[0], &empty)?.as_string(span)?.to_string();
         let query = self.eval(&args[1], &empty)?.as_string(span)?.to_string();
 
@@ -8733,11 +8733,11 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.recall(session, query, k) YIELD node, score` (issue
-    /// #533) — session-scoped agent-memory recall.
+    /// #533) - session-scoped agent-memory recall.
     ///
     /// The top-`k` `:Message` nodes of `session` whose text best matches `query`
     /// by BM25, ranked best-first. Reuses the full-text index (`fts.search`),
-    /// then keeps only messages in `session` — so an agent recalls what *this*
+    /// then keeps only messages in `session` - so an agent recalls what *this*
     /// conversation said about something, server-side in one call. Read-only;
     /// the short-term memory chain it reads is written via `add_message`
     /// (drevo-mcp) / Cypher today, and a native `drevo.memory.addMessage` write
@@ -8795,7 +8795,7 @@ impl<'a> Executor<'a> {
             .unwrap_or_else(|| "embedding".to_string())
     }
 
-    /// Cosine-rank `session`'s `:Message` nodes against `query` — the shared
+    /// Cosine-rank `session`'s `:Message` nodes against `query` - the shared
     /// core of `recallVector` / `recallSemantic`.
     fn memory_vector_recall(
         &self,
@@ -8816,7 +8816,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.recallVector(session, vector, k) YIELD node, score`
-    /// (issue #533) — session-scoped agent-memory recall by **meaning**, with a
+    /// (issue #533) - session-scoped agent-memory recall by **meaning**, with a
     /// caller-supplied query vector.
     ///
     /// The top-`k` `:Message` nodes of `session` by cosine similarity between
@@ -8840,7 +8840,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.recallSemantic(session, text, k) YIELD node, score`
-    /// (issue #533) — [`Self::proc_memory_recall_vector`] with the query
+    /// (issue #533) - [`Self::proc_memory_recall_vector`] with the query
     /// **text** embedded server-side (the same embedder as
     /// `drevo.semantic.query`), so an agent recalls by meaning without hosting
     /// an embedder. Errors with the engine-capability "semantic embedding"
@@ -8949,7 +8949,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.addMessage(session, role, text) YIELD node` (issue
-    /// #533) — append a turn to a session's short-term memory chain.
+    /// #533) - append a turn to a session's short-term memory chain.
     ///
     /// Creates `:Message { id, session, seq, role, text, body, created_at }`
     /// with `seq = latest + 1` (1 for a new session) and `body = text` (so the
@@ -8991,7 +8991,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.recordReasoning(session, step, tool, outcome) YIELD
-    /// node` (issue #533) — persist a reasoning/decision trace.
+    /// node` (issue #533) - persist a reasoning/decision trace.
     ///
     /// Creates `:ReasoningTrace { id, session, step, tool, outcome, created_at }`
     /// (`tool` / `outcome` may be `null`) linked `:INITIATED_BY` to the
@@ -9060,7 +9060,7 @@ impl<'a> Executor<'a> {
             0 => Err(ExecError::InvalidProcedureCall {
                 name: proc_name.to_string(),
                 message: format!(
-                    "no memory entity named `{name}` — create it first with \
+                    "no memory entity named `{name}` - create it first with \
                      drevo.memory.rememberEntity"
                 ),
                 span,
@@ -9136,7 +9136,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.rememberEntity(session, name, type, description)
-    /// YIELD node` (issue #533) — long-term memory: upsert a POLE+O entity.
+    /// YIELD node` (issue #533) - long-term memory: upsert a POLE+O entity.
     ///
     /// `type` is one of `PERSON`, `OBJECT`, `LOCATION`, `EVENT`,
     /// `ORGANIZATION` (case-insensitive). The entity is
@@ -9184,7 +9184,7 @@ impl<'a> Executor<'a> {
             .ok_or_else(|| ExecError::InvalidProcedureCall {
                 name: "drevo.memory.rememberEntity".to_string(),
                 message: format!(
-                    "`{raw_type}` is not a POLE+O entity type — use one of PERSON, \
+                    "`{raw_type}` is not a POLE+O entity type - use one of PERSON, \
                      OBJECT, LOCATION, EVENT, ORGANIZATION"
                 ),
                 span,
@@ -9382,14 +9382,14 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.assertFact(subject, relation, object, exclusive)
-    /// YIELD rel` (issue #533) — long-term memory: a fact that holds from now.
+    /// YIELD rel` (issue #533) - long-term memory: a fact that holds from now.
     ///
     /// `subject` / `object` name existing memory entities. The fact is
     /// `(subject)-[:RELATED_TO { id, type: relation, valid_from, created_at }]->(object)`,
     /// neo4j-agent-memory's schema. Asserting a fact that currently holds is a
     /// no-op that yields it. With `exclusive = true` the subject's other
     /// currently-valid facts of the same `relation` are closed
-    /// (`valid_until = now`) first — a supersession ("works at Globex" ends
+    /// (`valid_until = now`) first - a supersession ("works at Globex" ends
     /// "works at Acme") that keeps the old fact as history for
     /// `drevo.memory.factsAt`.
     ///
@@ -9620,7 +9620,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.retractFact(subject, relation, object) YIELD rel`
-    /// (issue #533) — end a fact: every currently-valid `subject -relation->
+    /// (issue #533) - end a fact: every currently-valid `subject -relation->
     /// object` fact gets `valid_until = now`. Yields the closed facts (none if
     /// nothing held). The facts stay as history for `drevo.memory.factsAt`.
     fn proc_memory_retract_fact(
@@ -9649,7 +9649,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.factsAt(name, asOf) YIELD subject, relation, object,
-    /// valid_from, valid_until, source, quote` (issue #533) — what long-term
+    /// valid_from, valid_until, source, quote` (issue #533) - what long-term
     /// memory held about an entity at a point in time.
     ///
     /// Every `RELATED_TO` fact touching the entity `name` (either direction)
@@ -9772,7 +9772,7 @@ impl<'a> Executor<'a> {
             memory_refusal(
                 proc_name,
                 format!(
-                    "no source `{id}` — add it first with drevo.memory.addSource, or pass \
+                    "no source `{id}` - add it first with drevo.memory.addSource, or pass \
                      {{id, uri, title, kind}}"
                 ),
                 span,
@@ -10021,7 +10021,7 @@ impl<'a> Executor<'a> {
                     memory_refusal(
                         proc_name,
                         format!(
-                            "no chunk `{id}` — add it first with drevo.memory.addChunks, or \
+                            "no chunk `{id}` - add it first with drevo.memory.addChunks, or \
                              pass {{id, order, offset, length, text}} with its source"
                         ),
                         span,
@@ -10122,7 +10122,7 @@ impl<'a> Executor<'a> {
         })
     }
 
-    /// `CALL drevo.memory.addSource(id, uri, title, kind) YIELD node` — upsert
+    /// `CALL drevo.memory.addSource(id, uri, title, kind) YIELD node` - upsert
     /// the `:Source {id, uri, title, kind, created_at}` that chunks and facts
     /// cite, keyed on `id`. A known source keeps the fields given as `null`.
     fn proc_memory_add_source(
@@ -10168,7 +10168,7 @@ impl<'a> Executor<'a> {
         Ok(vec![vec![Value::Node(source)]])
     }
 
-    /// `CALL drevo.memory.addChunks(sourceId, chunks) YIELD node` — upsert the
+    /// `CALL drevo.memory.addChunks(sourceId, chunks) YIELD node` - upsert the
     /// passages of a source. Each entry `{id?, order, offset?, length?, text}`
     /// becomes `:Chunk {id, source_id, order, offset, length, text, body,
     /// created_at}` (`body = text`, so full-text search reaches it)
@@ -10234,7 +10234,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.evidence(name, k) YIELD chunk, quote, offset, source,
-    /// fact` — the passages behind a memory entity: the chunks it is
+    /// fact` - the passages behind a memory entity: the chunks it is
     /// `MENTIONED_IN` and the chunks its facts (either direction) cite.
     ///
     /// A cited fact gives one row with the fact's `quote` / `offset` and the
@@ -10387,10 +10387,10 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.memory.getConversation(session, limit) YIELD node` (issue
-    /// #533) — replay a session's short-term memory in chronological order.
+    /// #533) - replay a session's short-term memory in chronological order.
     ///
     /// The most recent `limit` `:Message` nodes of `session`, oldest-first (by
-    /// `seq`) — the running transcript to reload as context. Read-only.
+    /// `seq`) - the running transcript to reload as context. Read-only.
     fn proc_memory_get_conversation(
         &self,
         args: &[Expression],
@@ -10431,7 +10431,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.semantic.query(label, property, text, k) YIELD node, score`
-    /// (#251 slice 3) — the top-`k` nodes of `label` ranked by cosine
+    /// (#251 slice 3) - the top-`k` nodes of `label` ranked by cosine
     /// similarity between their `property` embedding and the **query text**,
     /// which is embedded **server-side** using the handle's configured
     /// embedder.
@@ -10462,13 +10462,13 @@ impl<'a> Executor<'a> {
         self.vector_scan(&label, &property, &query, k, span)
     }
 
-    /// `CALL drevo.semantic.embed(text) YIELD vector` (#272) — embed one string
+    /// `CALL drevo.semantic.embed(text) YIELD vector` (#272) - embed one string
     /// server-side and return the resulting vector as a Cypher list of floats.
     ///
     /// This exposes the same server-side embedding step as
     /// [`Self::proc_semantic_query`], but *without* the fused brute-force scan:
-    /// the caller gets the query vector back and runs its **own** Cypher —
-    /// crucially, its own **filtered** Cypher — e.g.
+    /// the caller gets the query vector back and runs its **own** Cypher -
+    /// crucially, its own **filtered** Cypher - e.g.
     /// `WITH vector MATCH (n:Entity) WHERE n.group_id IN $g AND n.embedding IS
     /// NOT NULL WITH n, cosine_similarity(n.embedding, vector) AS score ...`.
     /// `drevo.semantic.query` cannot serve that case because it drops all
@@ -10549,7 +10549,7 @@ impl<'a> Executor<'a> {
     /// Lists both node targets and relationship targets (#266); `target_kind`
     /// distinguishes them and `label` holds the node label or relationship type.
     /// One row per registered semantic-index target, so a client can introspect
-    /// the control plane — detect that server-side auto-embedding is available
+    /// the control plane - detect that server-side auto-embedding is available
     /// and branch (fall back to an external embedder when the procedure is
     /// absent).
     ///
@@ -10865,7 +10865,7 @@ impl<'a> Executor<'a> {
         Ok(vec![vec![Value::Bool(svc.secondary_indexes())]])
     }
 
-    /// `CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount` (#556) —
+    /// `CALL drevo.tx.listPrepared() YIELD gid, preparedAt, opCount` (#556) -
     /// the prepared, unresolved two-phase-commit transactions, by ascending
     /// gid; `preparedAt` is ISO-8601 UTC.
     fn proc_tx_list_prepared(&self, span: Span) -> ExecResultT<Vec<Vec<Value>>> {
@@ -10886,7 +10886,7 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
-    /// `CALL drevo.tx.heuristicRollback($gid) YIELD gid` (#556) — an operator
+    /// `CALL drevo.tx.heuristicRollback($gid) YIELD gid` (#556) - an operator
     /// rolls back an abandoned prepared transaction *heuristically*: unlike
     /// `rollbackPrepared`, the outcome is remembered, so the coordinator's late
     /// `commitPrepared` is told its decision was overridden.
@@ -10917,7 +10917,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.tx.commitPrepared($gid)` / `drevo.tx.rollbackPrepared($gid)
-    /// YIELD gid` (#556) — resolve a prepared transaction from any session.
+    /// YIELD gid` (#556) - resolve a prepared transaction from any session.
     fn proc_tx_resolve(
         &self,
         name: &str,
@@ -10951,13 +10951,13 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.semantic.info() YIELD embedder_present, model, dimension,
-    /// upstream` (#267) — capability introspection for the server-side embedder.
+    /// upstream` (#267) - capability introspection for the server-side embedder.
     ///
     /// One row. `embedder_present` says whether an embedder is actually
     /// installed (not merely whether the procedures exist); `model` / `dimension`
     /// let a client verify a server-side embedder is compatible with vectors it
     /// may write itself (e.g. via an external fallback embedder), failing fast on
-    /// a model/dimension mismatch. `upstream` is the configured endpoint — never
+    /// a model/dimension mismatch. `upstream` is the configured endpoint - never
     /// the API key. All but `embedder_present` are `null` when no embedder is
     /// configured.
     fn proc_semantic_info(
@@ -10981,7 +10981,7 @@ impl<'a> Executor<'a> {
             ]]);
         }
         // With no server-side embedder attached, introspection reports "absent"
-        // rather than erroring — `semantic.info` needs no embedder to answer, and
+        // rather than erroring - `semantic.info` needs no embedder to answer, and
         // a client uses it precisely to learn that none is configured.
         Ok(vec![vec![
             Value::Bool(false),
@@ -10995,12 +10995,12 @@ impl<'a> Executor<'a> {
     ///
     /// One row of build/version metadata so a Bolt client can learn which drevo
     /// it is talking to and assert a minimum-compatible version. Read-only, no
-    /// arguments, no auth, no side effects — safe to call on connect. `version`
+    /// arguments, no auth, no side effects - safe to call on connect. `version`
     /// is the running build's semver (bare, e.g. `0.0.16`, no `v`); `git_sha`
     /// and `build_date` are `null` when the build did not capture them (see
     /// [`crate::GIT_SHA`] / [`crate::BUILD_DATE`]); `protocol` is a coarse
     /// capability integer ([`crate::INFO_PROTOCOL`]) clients can gate on without
-    /// parsing semver. An associated fn — it reads only compile-time constants.
+    /// parsing semver. An associated fn - it reads only compile-time constants.
     fn proc_drevo_info() -> ExecResultT<Vec<Vec<Value>>> {
         // Treat an empty override as absent → null. A release image sets
         // `ENV DREVO_GIT_SHA=""` / `DREVO_BUILD_DATE=""` as the build-arg
@@ -11018,7 +11018,7 @@ impl<'a> Executor<'a> {
         ]])
     }
 
-    /// `CALL drevo.pagerank([config]) YIELD node, score` (RFC #307 Phase 8) —
+    /// `CALL drevo.pagerank([config]) YIELD node, score` (RFC #307 Phase 8) -
     /// PageRank centrality over the whole graph, returned most-central-first
     /// (ties by node id) as `(node, score)` rows; edge weights are read from
     /// `Edge::weight`. The optional config map (#781) is described at
@@ -11047,7 +11047,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.pagerank.personalized(sourceNodes[, config]) YIELD node,
-    /// score` (#781) — Personalized PageRank: the walk teleports back to
+    /// score` (#781) - Personalized PageRank: the walk teleports back to
     /// `sourceNodes` (a node, a node id, or a list mixing both) instead of to
     /// a random node, so scores measure closeness to the sources. Nodes the
     /// sources cannot reach score exactly `0` and get no row. Rows come
@@ -11124,7 +11124,7 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
-    /// `CALL drevo.louvain() YIELD node, community` (RFC #307 Phase 8) — Louvain
+    /// `CALL drevo.louvain() YIELD node, community` (RFC #307 Phase 8) - Louvain
     /// community detection over the whole graph. Each node is returned with its
     /// contiguously-numbered community id (nodes sharing an id are one cluster),
     /// in ascending node order. Uses the default resolution/level config; edge
@@ -11153,7 +11153,7 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
-    /// `CALL drevo.wcc() YIELD node, component` (RFC #307 Phase 8) — weakly
+    /// `CALL drevo.wcc() YIELD node, component` (RFC #307 Phase 8) - weakly
     /// connected components over the whole graph. Each node is returned with its
     /// component id (nodes sharing an id are reachable from one another once
     /// edges are treated as undirected), in ascending node order. Component ids
@@ -11182,7 +11182,7 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
-    /// `CALL drevo.scc() YIELD node, component` (RFC #307 Phase 8) — strongly
+    /// `CALL drevo.scc() YIELD node, component` (RFC #307 Phase 8) - strongly
     /// connected components over the whole graph. Unlike `drevo.wcc()`, edge
     /// direction matters: two nodes share a component only if each is reachable
     /// from the other along edge direction (they lie on a common directed
@@ -11213,7 +11213,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.triangles() YIELD node, triangles, coefficient` (RFC #307
-    /// Phase 8) — triangle count and local clustering coefficient per node over
+    /// Phase 8) - triangle count and local clustering coefficient per node over
     /// the whole graph, computed on the undirected projection (edge direction
     /// and weight do not affect the counts). Each node is returned with the
     /// number of triangles through it and its local clustering coefficient in
@@ -11242,7 +11242,7 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
-    /// `CALL drevo.betweenness() YIELD node, score` (RFC #307 Phase 8) —
+    /// `CALL drevo.betweenness() YIELD node, score` (RFC #307 Phase 8) -
     /// betweenness centrality over the whole graph via Brandes' algorithm on the
     /// directed, unweighted graph (hop count; edge weights ignored). Each node
     /// is returned with the number of shortest paths through it, most-central
@@ -11267,7 +11267,7 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
-    /// `CALL drevo.closeness() YIELD node, score` (RFC #307 Phase 8) — harmonic
+    /// `CALL drevo.closeness() YIELD node, score` (RFC #307 Phase 8) - harmonic
     /// closeness centrality over the whole graph: each node's `score` is the sum
     /// of reciprocal shortest-path distances to every node it can reach along
     /// edge direction (directed, unweighted). The harmonic form stays finite on
@@ -11293,8 +11293,8 @@ impl<'a> Executor<'a> {
         Ok(rows)
     }
 
-    /// `CALL drevo.ricciCurvature() YIELD from, to, curvature` (issue #526) —
-    /// Ollivier–Ricci curvature of every undirected edge. `curvature` is
+    /// `CALL drevo.ricciCurvature() YIELD from, to, curvature` (issue #526) -
+    /// Ollivier-Ricci curvature of every undirected edge. `curvature` is
     /// negative on bridge-like edges that lie between communities (good cut
     /// candidates) and positive on edges inside dense clusters. Computed over
     /// the undirected, unweighted projection (edge direction and weight are
@@ -11332,7 +11332,7 @@ impl<'a> Executor<'a> {
 
     /// `CALL drevo.stableMatching(proposerLabel, acceptorLabel, relType,
     /// rankProperty) YIELD proposer, acceptor, proposerRank, acceptorRank`
-    /// (issue #541) — Gale–Shapley stable matching over preferences stored as
+    /// (issue #541) - Gale-Shapley stable matching over preferences stored as
     /// edges.
     ///
     /// Proposers are the `proposerLabel` nodes, acceptors the `acceptorLabel`
@@ -11425,7 +11425,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.engine.status() YIELD engine, mirror_fresh, native_hits,
-    /// kv_fallbacks, kv_routed, rebuild_errors` — engine-flip observability
+    /// kv_fallbacks, kv_routed, rebuild_errors` - engine-flip observability
     /// (RFC #307): which engine serves this database's Cypher, and how the
     /// native read mirror has routed queries so far. The soak signal for
     /// flipping `DREVO_ENGINE` defaults.
@@ -11437,14 +11437,14 @@ impl<'a> Executor<'a> {
     fn proc_engine_status(&self) -> ExecResultT<Vec<Vec<Value>>> {
         // `drevo.engine.status` reported the (now-removed) KV read mirror's
         // routing counters. With the KV executor entry retired, the native
-        // engine is the only engine and there is nothing to report — the
+        // engine is the only engine and there is nothing to report - the
         // procedure surfaces the engine-capability error, exactly as the other
         // KV-only secondary subsystems do.
         Err(Self::engine_capability("drevo.engine.status"))
     }
 
     /// `CALL drevo.semantic.reindex(label, embedding_property, batch_size)
-    /// YIELD scanned, embedded, skipped, remaining` (#262) — backfill embeddings
+    /// YIELD scanned, embedded, skipped, remaining` (#262) - backfill embeddings
     /// for nodes that already existed when an `Auto` target was registered.
     ///
     /// Auto-embedding (#251 slice 4) only fires on create/update, so a rule
@@ -11484,7 +11484,7 @@ impl<'a> Executor<'a> {
                 name: "drevo.semantic.reindex".to_string(),
                 message: format!(
                     "no semantic target registered for label `{label}` with embedding property \
-                     `{embedding_property}` — call drevo.semantic.register first"
+                     `{embedding_property}` - call drevo.semantic.register first"
                 ),
                 span,
             });
@@ -11503,7 +11503,7 @@ impl<'a> Executor<'a> {
                 span,
             })?
         } else {
-            // Manual target — never server-embedded; report zeros.
+            // Manual target - never server-embedded; report zeros.
             crate::report::SemanticReindexReport::default()
         };
 
@@ -11517,7 +11517,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.semantic.registerRel(rel_type, text_property,
-    /// embedding_property, mode)` (#266) — the relationship mirror of
+    /// embedding_property, mode)` (#266) - the relationship mirror of
     /// [`Self::proc_semantic_register`]. Registers an auto-embedding rule
     /// against a relationship *type*; matching edges are embedded on write.
     fn proc_semantic_register_rel(
@@ -11550,7 +11550,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.semantic.queryRel(rel_type, embedding_property, text, k)
-    /// YIELD rel, score` (#266) — the relationship mirror of
+    /// YIELD rel, score` (#266) - the relationship mirror of
     /// [`Self::proc_semantic_query`]: embed the query text server-side, then
     /// rank edges of `rel_type` by cosine similarity to their
     /// `embedding_property`.
@@ -11571,7 +11571,7 @@ impl<'a> Executor<'a> {
         self.rel_vector_scan(&rel_type, &property, &query, k, span)
     }
 
-    /// Brute-force cosine scan over **edges** of `rel_type` (#266) — the edge
+    /// Brute-force cosine scan over **edges** of `rel_type` (#266) - the edge
     /// analogue of [`Self::vector_scan`]. Emits `(rel, score)` rows. Serves
     /// `drevo.semantic.queryRel` and `db.index.vector.queryRelationships`.
     fn rel_vector_scan(
@@ -11614,7 +11614,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.semantic.reindexRel(rel_type, embedding_property, batch_size)
-    /// YIELD scanned, embedded, skipped, remaining` (#266) — the relationship
+    /// YIELD scanned, embedded, skipped, remaining` (#266) - the relationship
     /// mirror of [`Self::proc_semantic_reindex`]. Backfills existing edges.
     #[cfg(feature = "http")]
     fn proc_semantic_reindex_rel(
@@ -11642,7 +11642,7 @@ impl<'a> Executor<'a> {
                 name: "drevo.semantic.reindexRel".to_string(),
                 message: format!(
                     "no semantic relationship target registered for type `{rel_type}` with \
-                     embedding property `{embedding_property}` — call \
+                     embedding property `{embedding_property}` - call \
                      drevo.semantic.registerRel first"
                 ),
                 span,
@@ -11674,7 +11674,7 @@ impl<'a> Executor<'a> {
         ]])
     }
 
-    /// `CALL fts.search(query, k[, config]) YIELD node, score` (issue #208) — the top-`k`
+    /// `CALL fts.search(query, k[, config]) YIELD node, score` (issue #208) - the top-`k`
     /// nodes matching `query` in the BM25 full-text index (task `00131`),
     /// ranked by relevance.
     ///
@@ -11790,7 +11790,7 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
-    /// `CALL fts.searchRelationships(query, k[, config]) YIELD rel, score` (#227-B) — the
+    /// `CALL fts.searchRelationships(query, k[, config]) YIELD rel, score` (#227-B) - the
     /// top-`k` relationships whose string properties best match `query`, ranked
     /// by BM25. The edge companion of [`Self::proc_fts_search`].
     fn proc_fts_search_relationships(
@@ -11829,7 +11829,7 @@ impl<'a> Executor<'a> {
     /// top-`k` fused rows come back, `k` applied before any `YIELD … WHERE`.
     ///
     /// The `mode` column is the mode that ran: `'auto'` runs both legs when a
-    /// label/type is given and an embedder is installed, else BM25 only — and
+    /// label/type is given and an embedder is installed, else BM25 only - and
     /// also BM25 only, with a warning, when that embedder fails on the query.
     fn proc_search_hybrid(
         &self,
@@ -11909,8 +11909,8 @@ impl<'a> Executor<'a> {
             .collect())
     }
 
-    /// The top-`k` fused hits of a hybrid search for `query` — each item
-    /// (a node or relationship, as stored) with its fused ranks — and the
+    /// The top-`k` fused hits of a hybrid search for `query` - each item
+    /// (a node or relationship, as stored) with its fused ranks - and the
     /// mode that ran. `target` is the label / relationship type whose
     /// `property` embeddings the vector leg ranks; `name` is the procedure
     /// errors are reported for.
@@ -12088,7 +12088,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.rag.retrieve(query[, config]) YIELD node, seedScore,
-    /// distance, pprScore, rank, via, truncated, scope` — the nodes that
+    /// distance, pprScore, rank, via, truncated, scope` - the nodes that
     /// answer `query`, best first: the seeds of a hybrid search, then the
     /// nodes within `hops` of them in the config's `rank` order
     /// ([`crate::rag`]); or, in the global scope, the best-matching
@@ -12122,7 +12122,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.rag.context(query[, config]) YIELD text, tokens, format,
-    /// nodeIds, relIds, truncated, mode, traceId, scope` — the nodes of
+    /// nodeIds, relIds, truncated, mode, traceId, scope` - the nodes of
     /// `drevo.rag.retrieve` and the relationships between them written as
     /// one text within the config's `tokenBudget`
     /// ([`crate::rag::serialize::render`]). Always one row: no seeds give an
@@ -12160,7 +12160,7 @@ impl<'a> Executor<'a> {
         ]])
     }
 
-    /// The graph-RAG pipeline and the text it writes: stages 1–5 of
+    /// The graph-RAG pipeline and the text it writes: stages 1-5 of
     /// [`crate::rag`].
     fn rag_build(
         &self,
@@ -12318,7 +12318,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// `CALL drevo.rag.traces(session, limit) YIELD trace` — the newest
+    /// `CALL drevo.rag.traces(session, limit) YIELD trace` - the newest
     /// `limit` context traces of `session` (`null`: of every session),
     /// newest first.
     fn proc_rag_traces(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
@@ -12367,7 +12367,7 @@ impl<'a> Executor<'a> {
     }
 
     /// `CALL drevo.rag.explain(traceId) YIELD node, status, rank, distance,
-    /// seedScore, pprScore, tokens, reason` — the nodes of a context trace by
+    /// seedScore, pprScore, tokens, reason` - the nodes of a context trace by
     /// rank: `status` `'included'` with what ranked the node and its tokens,
     /// or `'skipped'` with the `reason`.
     fn proc_rag_explain(&self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
@@ -12429,7 +12429,7 @@ impl<'a> Executor<'a> {
         Ok(rows.into_iter().map(|(_, _, row)| row).collect())
     }
 
-    /// `CALL drevo.rag.replay(traceId) YIELD text, tokens, changed` — the
+    /// `CALL drevo.rag.replay(traceId) YIELD text, tokens, changed` - the
     /// trace's question run again with its stored config on the graph as it
     /// is now; `changed` when the text differs from the recorded one. It
     /// records no trace.
@@ -12480,7 +12480,7 @@ impl<'a> Executor<'a> {
         ]])
     }
 
-    /// `CALL drevo.rag.pruneTraces(olderThan) YIELD deleted` — delete the
+    /// `CALL drevo.rag.pruneTraces(olderThan) YIELD deleted` - delete the
     /// context traces created before `olderThan` (a UTC date or timestamp)
     /// with their relationships; the nodes they point at stay.
     fn proc_rag_prune(&mut self, args: &[Expression], span: Span) -> ExecResultT<Vec<Vec<Value>>> {
@@ -12886,14 +12886,14 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// `FOREACH (var IN list | update_clause …)` — for every current
+    /// `FOREACH (var IN list | update_clause …)` - for every current
     /// binding row, evaluate `list` and run the body update clauses once
     /// per element with `var` bound to it.
     ///
     /// `FOREACH` is a pure side-effecting clause: it never changes the
     /// outer cardinality. Each outer row passes through unchanged, and any
     /// variables the body introduces (e.g. `CREATE (n …)`) are scoped to
-    /// the iteration and discarded afterwards — only the graph mutations
+    /// the iteration and discarded afterwards - only the graph mutations
     /// persist. A `null` list is a no-op (zero iterations), mirroring
     /// `UNWIND null`; any other non-list value is a type error.
     fn run_foreach(&mut self, f: &ForeachClause) -> ExecResultT<()> {
@@ -13049,7 +13049,7 @@ impl<'a> Executor<'a> {
     /// folded into one output row whose aggregation columns are the
     /// fold of the corresponding values across the group.
     ///
-    /// Special case — pure aggregation with no group keys and zero
+    /// Special case - pure aggregation with no group keys and zero
     /// input bindings still emits exactly one row (matching Neo4j),
     /// so e.g. `MATCH (n) RETURN count(*)` on an empty database
     /// returns `[0]`, not `[]`.
@@ -13084,7 +13084,7 @@ impl<'a> Executor<'a> {
         }
 
         if group_indices.is_empty() && groups.is_empty() {
-            // Pure aggregation over zero input rows — still emit one
+            // Pure aggregation over zero input rows - still emit one
             // synthetic group so e.g. `count(*)` returns 0.
             groups.push((Vec::new(), Vec::new()));
         }
@@ -13117,7 +13117,7 @@ impl<'a> Executor<'a> {
     ///
     /// Aggregation function calls fold across `group_rows`; everything
     /// else falls back to ordinary [`Self::eval`] against the first
-    /// binding in the group (any binding works — non-aggregation
+    /// binding in the group (any binding works - non-aggregation
     /// variable references must be invariant across the group, which
     /// is guaranteed by treating non-aggregation projections as group
     /// keys).
@@ -13209,7 +13209,7 @@ impl<'a> Executor<'a> {
             // A function call, index, slice, map or list expression around
             // an aggregation (`size(collect(x))`, `collect(x)[0]`).
             _ if contains_aggregation(expr) => self.eval_around_aggregations(expr, group_rows),
-            // Leaf / non-aggregation forms — fall back to a
+            // Leaf / non-aggregation forms - fall back to a
             // representative binding. We pick the first one in the
             // group; for pure-aggregation queries the group may be
             // empty, in which case bare variable references will
@@ -13223,7 +13223,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// Evaluate an expression whose operands hold aggregations — a scalar
+    /// Evaluate an expression whose operands hold aggregations - a scalar
     /// function call, an index or slice, a map literal, or the list of a
     /// comprehension, list predicate or `reduce`.
     ///
@@ -13489,7 +13489,7 @@ impl<'a> Executor<'a> {
 
     /// Evaluate and validate the percentile fraction (`args[1]`) of a
     /// `percentileCont` / `percentileDisc` call. It is a per-aggregation
-    /// constant evaluated once (against any group row — it is row-invariant in
+    /// constant evaluated once (against any group row - it is row-invariant in
     /// practice, a literal or `$param`), and must be a number in `[0.0, 1.0]`;
     /// anything else is a recoverable [`ExecError::InvalidFunctionCall`].
     fn eval_percentile_fraction(
@@ -13738,7 +13738,7 @@ impl<'a> Executor<'a> {
     /// * `.key` copies property `key` off the base (absent → `Null`),
     /// * `.*` copies every property of the base,
     /// * `key: expr` adds a computed entry (`expr` evaluated in `row`),
-    /// * `var` is shorthand for `var: var` — the in-scope variable `var`
+    /// * `var` is shorthand for `var: var` - the in-scope variable `var`
     ///   (unbound → [`ExecError::UnboundVariable`]).
     fn eval_map_projection(
         &self,
@@ -13787,7 +13787,7 @@ impl<'a> Executor<'a> {
         // A `.key` / `key: expr` / `var` projection does not require the base to
         // be a map (`var` ignores it entirely); only `.*` does, and it has been
         // type-checked above. But a scalar base with *only* such selectors is
-        // still a misuse — Neo4j requires a map-like base — so reject it.
+        // still a misuse - Neo4j requires a map-like base - so reject it.
         if !matches!(
             base_value,
             Value::Map(_) | Value::Node(_) | Value::Relationship(_)
@@ -13812,8 +13812,8 @@ impl<'a> Executor<'a> {
     /// three-valued logic (`true` keeps, `false`/`null` drops, a non-boolean is
     /// a recoverable [`ExecError::TypeMismatch`]) and `projection` is collected
     /// over each survivor into the result list. No match yields an empty list,
-    /// and a head variable already bound to `null` — an unmatched
-    /// `OPTIONAL MATCH` node — also yields an empty list rather than the
+    /// and a head variable already bound to `null` - an unmatched
+    /// `OPTIONAL MATCH` node - also yields an empty list rather than the
     /// `TypeMismatch` that anchoring a `MATCH` on a non-node would raise.
     fn eval_pattern_comprehension(
         &self,
@@ -13850,16 +13850,16 @@ impl<'a> Executor<'a> {
         Ok(Value::List(out))
     }
 
-    /// Evaluate a pattern predicate `(a)-[:R]->(b)` — `true` iff at least one
+    /// Evaluate a pattern predicate `(a)-[:R]->(b)` - `true` iff at least one
     /// match of the path pattern exists relative to `row`.
     ///
     /// Existence is decided with the same [`match_path`](Self::match_path)
     /// primitive that drives `MATCH` and pattern comprehensions: the pattern is
     /// anchored on already-bound variables, extended into the graph, and the
     /// predicate is `true` as soon as one extended binding row survives (the
-    /// matches themselves are discarded — only their existence matters, and the
+    /// matches themselves are discarded - only their existence matters, and the
     /// variables the pattern introduces stay scoped to the predicate). A head
-    /// variable already bound to `null` — an unmatched `OPTIONAL MATCH` node —
+    /// variable already bound to `null` - an unmatched `OPTIONAL MATCH` node -
     /// yields `null` under three-valued logic (matching Neo4j) rather than the
     /// `TypeMismatch` that anchoring a `MATCH` on a non-node would raise.
     fn eval_pattern_predicate(&self, pattern: &PathPattern, row: &Bindings) -> ExecResultT<Value> {
@@ -13872,8 +13872,8 @@ impl<'a> Executor<'a> {
         Ok(Value::Bool(exists))
     }
 
-    /// Evaluate an existential subquery `EXISTS { [MATCH] pattern [WHERE pred] }`
-    /// — `true` iff at least one match of `pattern` survives the optional inner
+    /// Evaluate an existential subquery `EXISTS { [MATCH] pattern [WHERE pred] }` -
+    /// `true` iff at least one match of `pattern` survives the optional inner
     /// `predicate`, relative to `row`.
     ///
     /// Like [`eval_pattern_predicate`](Self::eval_pattern_predicate), existence
@@ -13885,7 +13885,7 @@ impl<'a> Executor<'a> {
     /// under `WHERE`'s three-valued logic (`true` keeps, `false`/`null` drops, a
     /// non-boolean is a recoverable [`ExecError::TypeMismatch`]); the subquery is
     /// `true` as soon as one extended binding row survives it. A head variable
-    /// already bound to `null` — an unmatched `OPTIONAL MATCH` node — yields
+    /// already bound to `null` - an unmatched `OPTIONAL MATCH` node - yields
     /// `null` (matching Neo4j) rather than the `TypeMismatch` that anchoring a
     /// `MATCH` on a non-node would raise.
     fn eval_exists_subquery(
@@ -13919,8 +13919,8 @@ impl<'a> Executor<'a> {
         Ok(Value::Bool(false))
     }
 
-    /// Evaluate a counting subquery `COUNT { [MATCH] pattern [WHERE pred] }`
-    /// — the **number** of matches of `pattern` that survive the optional inner
+    /// Evaluate a counting subquery `COUNT { [MATCH] pattern [WHERE pred] }` -
+    /// the **number** of matches of `pattern` that survive the optional inner
     /// `predicate`, relative to `row`.
     ///
     /// The integer-valued sibling of
@@ -13931,8 +13931,8 @@ impl<'a> Executor<'a> {
     /// it counts every extended binding row for which the optional inner `WHERE`
     /// holds (three-valued logic: `true` counts, `false`/`null` does not, a
     /// non-boolean is a recoverable [`ExecError::TypeMismatch`]) and returns the
-    /// total as an [`Value::Integer`]. A head variable already bound to `null` —
-    /// an unmatched `OPTIONAL MATCH` node — yields `null` (matching Neo4j) rather
+    /// total as an [`Value::Integer`]. A head variable already bound to `null` -
+    /// an unmatched `OPTIONAL MATCH` node - yields `null` (matching Neo4j) rather
     /// than the `TypeMismatch` that anchoring a `MATCH` on a non-node would
     /// raise; no match yields `0`.
     fn eval_count_subquery(
@@ -14031,17 +14031,17 @@ impl<'a> Executor<'a> {
     /// to `Null` (mirroring `UNWIND` / `IN` / the list comprehension) and a
     /// non-list is a recoverable [`ExecError::TypeMismatch`]. Each element is
     /// bound to `variable` in a child scope and `pred` is evaluated under
-    /// `WHERE`'s three-valued logic — `true`, `false`, or `Null` (unknown);
+    /// `WHERE`'s three-valued logic - `true`, `false`, or `Null` (unknown);
     /// a non-boolean is a type error. The per-element results are folded with
     /// three-valued quantifier semantics so an unknown can make the whole
     /// predicate `Null`:
     ///
-    /// * `all`    — `false` if any element is `false`, else `Null` if any is
+    /// * `all`    - `false` if any element is `false`, else `Null` if any is
     ///   unknown, else `true` (empty list → `true`).
-    /// * `any`    — `true` if any element is `true`, else `Null` if any is
+    /// * `any`    - `true` if any element is `true`, else `Null` if any is
     ///   unknown, else `false` (empty list → `false`).
-    /// * `none`   — the negation of `any` (empty list → `true`).
-    /// * `single` — `true` iff exactly one element is `true` *and* no element
+    /// * `none`   - the negation of `any` (empty list → `true`).
+    /// * `single` - `true` iff exactly one element is `true` *and* no element
     ///   is unknown; more than one `true` is `false`; an unknown that could
     ///   tip the count yields `Null` (empty list → `false`).
     fn eval_list_predicate(
@@ -14171,11 +14171,11 @@ impl<'a> Executor<'a> {
 
     /// Evaluate a `CASE` expression against a single binding row.
     ///
-    /// * **Generic** form (`scrutinee` is `None`) — each `WHEN` condition is
+    /// * **Generic** form (`scrutinee` is `None`) - each `WHEN` condition is
     ///   a boolean predicate; the first arm whose condition is `true` wins.
     ///   `NULL` / `false` conditions are skipped, and a non-boolean condition
     ///   is an [`ExecError::TypeMismatch`] (matching `WHERE` semantics).
-    /// * **Simple** form (`scrutinee` is `Some`) — the scrutinee is compared
+    /// * **Simple** form (`scrutinee` is `Some`) - the scrutinee is compared
     ///   for equality against each `WHEN` value; the first equal arm wins.
     ///   Equality uses Cypher three-valued logic ([`compare`]), so a `NULL`
     ///   scrutinee (or `NULL` arm value) never matches and falls through.
@@ -14228,9 +14228,9 @@ impl<'a> Executor<'a> {
     /// (`00142`), folding every sub-expression over the bindings of one
     /// group via [`eval_with_agg`](Self::eval_with_agg).
     ///
-    /// Semantics are identical to [`eval_case`](Self::eval_case) — generic
+    /// Semantics are identical to [`eval_case`](Self::eval_case) - generic
     /// (boolean `WHEN`) and simple (scrutinee-equality) forms, three-valued
-    /// `WHEN` handling, `NULL` on no-match-without-`ELSE` — the only
+    /// `WHEN` handling, `NULL` on no-match-without-`ELSE` - the only
     /// difference is that each scrutinee / `WHEN` / `THEN` / `ELSE` is
     /// reduced across the group rather than read from a single row, so a
     /// nested `count(*)` / `sum(x)` / … contributes its aggregated value.
@@ -14278,8 +14278,8 @@ impl<'a> Executor<'a> {
 
     /// Dispatch a non-aggregation (scalar) function call.
     ///
-    /// Recognises `similar(...)` — drevo's joint graph+vector predicate
-    /// (`00077`) — `keywords(...)` — BM25-IDF keyword extraction (`00132`) —
+    /// Recognises `similar(...)` - drevo's joint graph+vector predicate
+    /// (`00077`) - `keywords(...)` - BM25-IDF keyword extraction (`00132`) -
     /// and the built-in string / numeric / list library ([`call_scalar`],
     /// `00138`). Every other name stays [`ExecError::Unsupported`] so callers
     /// get a deterministic "not yet" rather than a silent wrong answer.
@@ -14377,7 +14377,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// Evaluate `startNode(rel)` / `endNode(rel)` (issue #232) — the source /
+    /// Evaluate `startNode(rel)` / `endNode(rel)` (issue #232) - the source /
     /// target node of a relationship.
     ///
     /// A [`RelationshipValue`] carries only the endpoint *ids*, so the node is
@@ -14428,7 +14428,7 @@ impl<'a> Executor<'a> {
         }
     }
 
-    /// Evaluate `keywords(text, k [, stem])` — the top-`k` salient terms of
+    /// Evaluate `keywords(text, k [, stem])` - the top-`k` salient terms of
     /// `text`, ranked by term-frequency × BM25 IDF over the indexed corpus.
     ///
     /// Returns a `Value::List` of `Value::String`. An optional third boolean
@@ -14437,7 +14437,7 @@ impl<'a> Executor<'a> {
     ///
     /// `NULL` propagation mirrors `similar(...)`: a `NULL` `text` (most
     /// commonly a node that lacks the property) or a `NULL`/zero `k` yields
-    /// an **empty list**, not an error — so scanning a heterogeneous label
+    /// an **empty list**, not an error - so scanning a heterogeneous label
     /// quietly skips rows with no text instead of aborting. This is also what
     /// lets the intended faceted idiom
     /// `MATCH (n) UNWIND keywords(n.body, 5) AS kw RETURN kw, count(*)`
@@ -14518,13 +14518,13 @@ impl<'a> Executor<'a> {
         Ok(Value::List(terms.into_iter().map(Value::String).collect()))
     }
 
-    /// Evaluate `similar(vector, query, threshold)` — `true` when the
+    /// Evaluate `similar(vector, query, threshold)` - `true` when the
     /// cosine similarity between the first two embeddings is at least
     /// `threshold`.
     ///
     /// Embeddings reach the executor as `Value::List` of numbers (a JSON
-    /// array node property). A `NULL` in any argument — most commonly a
-    /// node that simply lacks the embedding property — propagates to
+    /// array node property). A `NULL` in any argument - most commonly a
+    /// node that simply lacks the embedding property - propagates to
     /// `NULL`, which `WHERE` treats as falsy; this lets a similarity
     /// filter scan a heterogeneous label without erroring on the nodes
     /// that have no vector. Genuine data errors (a non-list argument, a
@@ -14606,7 +14606,7 @@ impl<'a> Executor<'a> {
 
 // ===== Pure helpers =========================================================
 
-/// `YIELD` items for every output column of a procedure — what `YIELD *` / a
+/// `YIELD` items for every output column of a procedure - what `YIELD *` / a
 /// bare `SHOW … WHERE` means.
 fn yield_all(columns: &[&str], span: Span) -> Vec<YieldItem> {
     columns
@@ -14619,8 +14619,8 @@ fn yield_all(columns: &[&str], span: Span) -> Vec<YieldItem> {
         .collect()
 }
 
-/// The POLE+O long-term memory entity types (issue #533) — neo4j-agent-memory's
-/// `type` values — each with the PascalCase label an entity carries next to
+/// The POLE+O long-term memory entity types (issue #533) - neo4j-agent-memory's
+/// `type` values - each with the PascalCase label an entity carries next to
 /// `:Entity`.
 /// A provenance map resolved against the graph before anything is written.
 struct ProvenancePlan {
@@ -14771,7 +14771,7 @@ const HYBRID_RELS: &str = "drevo.search.hybridRelationships";
 const HYBRID_EMBEDDING: &str = "semantic embedding (see drevo.semantic.status())";
 
 /// Note, once per process at DEBUG, that `drevo.search.hybrid` in mode
-/// `'auto'` ran BM25 only because no text embedder is installed — the
+/// `'auto'` ran BM25 only because no text embedder is installed - the
 /// documented degradation, so not a warning.
 fn log_hybrid_without_embedder() {
     #[cfg(feature = "http")]
@@ -14856,11 +14856,11 @@ fn nearest_point(value: &Value, span: Span) -> ExecResultT<Option<(f64, f64)>> {
 
 /// The options map of `drevo.spatial.nearest`:
 ///
-/// * `lat`, `lon` — the position properties, in degrees (default `lat` and
+/// * `lat`, `lon` - the position properties, in degrees (default `lat` and
 ///   `lon`);
-/// * `k` — how many nodes, a non-negative integer (default 1);
-/// * `maxMeters` — only nodes at most this far away;
-/// * `where` — a map: only nodes whose properties equal its values.
+/// * `k` - how many nodes, a non-negative integer (default 1);
+/// * `maxMeters` - only nodes at most this far away;
+/// * `where` - a map: only nodes whose properties equal its values.
 ///
 /// `null` options, and `null` values, mean the defaults.
 fn nearest_options(value: &Value, span: Span) -> ExecResultT<crate::spatial::NearestOptions> {
@@ -15033,25 +15033,25 @@ fn timetable_seconds(v: &Value) -> Option<i64> {
 
 /// The options map of `drevo.path.timetable`:
 ///
-/// - `departAt` — when the journey starts, in seconds after midnight of the
+/// - `departAt` - when the journey starts, in seconds after midnight of the
 ///   query date;
-/// - `arriveBy` — when to be at the destination at the latest, on the same
+/// - `arriveBy` - when to be at the destination at the latest, on the same
 ///   clock; exactly one of `departAt` and `arriveBy` is required, and
 ///   `arriveBy` comes back as the second value;
-/// - `days` — the service days whose trips may run, each `{offset, services}`:
+/// - `days` - the service days whose trips may run, each `{offset, services}`:
 ///   seconds added to its trips' times (`0` today, `-86400` yesterday) and
 ///   the service ids running that day (required);
-/// - `hops` — `{relType, dep, arr, trip, service}`: the hop relationship type
+/// - `hops` - `{relType, dep, arr, trip, service}`: the hop relationship type
 ///   and its list properties (default `'HOP'`, `'dep'`, `'arr'`, `'trip'`,
 ///   `'svc'`);
-/// - `walk` — `{relTypes, cost}`: footpath relationship types and their
+/// - `walk` - `{relTypes, cost}`: footpath relationship types and their
 ///   seconds property; no walking between stops when absent;
-/// - `minTransfer` — seconds a change of vehicles takes at least, at one stop
+/// - `minTransfer` - seconds a change of vehicles takes at least, at one stop
 ///   or over footpaths (default 0);
-/// - `maxTransfers` — the most vehicle changes (default 4);
-/// - `maxDuration` — journeys arriving later than `departAt` plus this, or
+/// - `maxTransfers` - the most vehicle changes (default 4);
+/// - `maxDuration` - journeys arriving later than `departAt` plus this, or
 ///   leaving earlier than `arriveBy` minus this, are not returned;
-/// - `maxWalk` — the most seconds of footpaths in a row, between rides or
+/// - `maxWalk` - the most seconds of footpaths in a row, between rides or
 ///   after the start (no bound when absent).
 fn timetable_options(
     value: &Value,
@@ -15248,13 +15248,13 @@ fn timetable_options(
 
 /// The options map of `drevo.path.weighted`:
 ///
-/// - `relTypes` — list of relationship types to follow; all when absent;
-/// - `direction` — `'OUTGOING'` (default), `'INCOMING'` or `'BOTH'`;
-/// - `cost` — numeric relationship property holding the cost; a relationship
+/// - `relTypes` - list of relationship types to follow; all when absent;
+/// - `direction` - `'OUTGOING'` (default), `'INCOMING'` or `'BOTH'`;
+/// - `cost` - numeric relationship property holding the cost; a relationship
 ///   without it is not used; the built-in weight when absent;
-/// - `heuristic` — `{lat, lon, maxSpeedMps}` for A*: node position properties
+/// - `heuristic` - `{lat, lon, maxSpeedMps}` for A*: node position properties
 ///   (default `'lat'` / `'lon'`) and the fastest speed in metres per second;
-/// - `maxCost` — paths costing more are not returned.
+/// - `maxCost` - paths costing more are not returned.
 fn weighted_path_options(
     value: &Value,
     span: Span,
@@ -15326,11 +15326,11 @@ struct ReachableCall {
 /// The options map of `drevo.path.reachable`: `relTypes`, `direction` and
 /// `cost` as for [`weighted_path_options`], and
 ///
-/// - `maxCost` — required: the budget; nodes costing more are not reached;
-/// - `targets` — `{label}`: only nodes with this label are returned, though
+/// - `maxCost` - required: the budget; nodes costing more are not reached;
+/// - `targets` - `{label}`: only nodes with this label are returned, though
 ///   the search goes through every node;
-/// - `limit` — stop after this many nodes;
-/// - `path` — `true` to also return the path to each node.
+/// - `limit` - stop after this many nodes;
+/// - `path` - `true` to also return the path to each node.
 fn reachable_options(value: &Value, span: Span) -> ExecResultT<ReachableCall> {
     let refuse = |message: String| ExecError::InvalidProcedureCall {
         name: REACHABLE.into(),
@@ -15414,8 +15414,8 @@ fn option_number(v: &Value) -> Option<f64> {
     }
 }
 
-/// The options the path procedures share — `relTypes`, `direction`, `cost`
-/// and `maxCost` — read from `value` for `procedure`. `null` values are
+/// The options the path procedures share - `relTypes`, `direction`, `cost`
+/// and `maxCost` - read from `value` for `procedure`. `null` values are
 /// ignored. Every other key goes to `extra`, which applies it and returns
 /// `true`, or returns `false` for a key it does not know; `expected` lists
 /// every key for that error.
@@ -15737,7 +15737,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
             "state",
             "mode",
         ]),
-        // #263 — status adds live health columns so a client can tell "fully
+        // #263 - status adds live health columns so a client can tell "fully
         // embedded" from "writes landed, embeddings missing". #266 adds
         // `target_kind` (node|relationship) so rel targets are distinguishable.
         "drevo.tx.listPrepared" => Some(&["gid", "preparedAt", "opCount"]),
@@ -15775,7 +15775,7 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         ]),
         // #267 embedder capability introspection.
         "drevo.semantic.info" => Some(&["embedder_present", "model", "dimension", "upstream"]),
-        // #303 — build/version introspection so a Bolt client can assert a
+        // #303 - build/version introspection so a Bolt client can assert a
         // minimum-compatible drevo. Read-only, no auth; stable YIELD contract.
         "drevo.info" => Some(&["version", "git_sha", "build_date", "protocol"]),
         "drevo.pagerank" | PERSONALIZED_PAGERANK => Some(&["node", "score"]),
@@ -15785,9 +15785,9 @@ fn procedure_columns(name: &str) -> Option<&'static [&'static str]> {
         "drevo.triangles" => Some(&["node", "triangles", "coefficient"]),
         "drevo.betweenness" => Some(&["node", "score"]),
         "drevo.closeness" => Some(&["node", "score"]),
-        // Ollivier–Ricci edge curvature (issue #526): endpoints + curvature.
+        // Ollivier-Ricci edge curvature (issue #526): endpoints + curvature.
         "drevo.ricciCurvature" => Some(&["from", "to", "curvature"]),
-        // Gale–Shapley stable matching (issue #541): matched pairs + mutual ranks.
+        // Gale-Shapley stable matching (issue #541): matched pairs + mutual ranks.
         "drevo.stableMatching" => Some(&["proposer", "acceptor", "proposerRank", "acceptorRank"]),
         // drevo.path.weighted(start, end, options): the lowest-cost path.
         WEIGHTED_PATH => Some(&["path", "cost"]),
@@ -16078,7 +16078,7 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.semantic.reindexRel" => 3,
         // drevo.semantic.register(label, text_property, embedding_property, mode)
         "drevo.semantic.register" => 4,
-        // drevo.semantic.status() — no arguments.
+        // drevo.semantic.status() - no arguments.
         "drevo.semantic.status" => 0,
         // Two-phase commit (#556): listPrepared(); the others take the gid.
         "drevo.tx.listPrepared" => 0,
@@ -16104,26 +16104,26 @@ fn procedure_arity(name: &str) -> usize {
         | "drevo.tx.rollbackPrepared"
         | "drevo.tx.heuristicRollback"
         | "drevo.tx.prepare" => 1,
-        // #303: drevo.info() — no arguments (explicit; the `_ => 0` default
+        // #303: drevo.info() - no arguments (explicit; the `_ => 0` default
         // would also cover it).
         "drevo.info" => 0,
-        // drevo.pagerank([config]) — the config map is optional (#781).
+        // drevo.pagerank([config]) - the config map is optional (#781).
         "drevo.pagerank" => 1,
         // drevo.pagerank.personalized(sourceNodes[, config]) (#781).
         PERSONALIZED_PAGERANK => 2,
-        // drevo.louvain() — no arguments (default config).
+        // drevo.louvain() - no arguments (default config).
         "drevo.louvain" => 0,
-        // drevo.wcc() — no arguments.
+        // drevo.wcc() - no arguments.
         "drevo.wcc" => 0,
-        // drevo.scc() — no arguments.
+        // drevo.scc() - no arguments.
         "drevo.scc" => 0,
-        // drevo.triangles() — no arguments.
+        // drevo.triangles() - no arguments.
         "drevo.triangles" => 0,
-        // drevo.betweenness() — no arguments.
+        // drevo.betweenness() - no arguments.
         "drevo.betweenness" => 0,
-        // drevo.closeness() — no arguments.
+        // drevo.closeness() - no arguments.
         "drevo.closeness" => 0,
-        // drevo.ricciCurvature() — no arguments (default idleness alpha = 0.5).
+        // drevo.ricciCurvature() - no arguments (default idleness alpha = 0.5).
         "drevo.ricciCurvature" => 0,
         // drevo.stableMatching(proposerLabel, acceptorLabel, relType, rankProperty).
         "drevo.stableMatching" => 4,
@@ -16137,7 +16137,7 @@ fn procedure_arity(name: &str) -> usize {
         NEAREST => 3,
         // drevo.text.fuzzy(indexName, query, maxEdits) (issue #593).
         "drevo.text.fuzzy" => 3,
-        // drevo.engine.status() — no arguments.
+        // drevo.engine.status() - no arguments.
         "drevo.engine.status" => 0,
         // fts.search(query, k[, config]) / fts.searchRelationships(query, k[, config])
         "fts.search" | "fts.searchRelationships" => 3,
@@ -16212,7 +16212,7 @@ fn procedure_arity(name: &str) -> usize {
         "drevo.memory.retractFact" => 3,
         // drevo.memory.factsAt(name, asOf) (issue #533).
         "drevo.memory.factsAt" => 2,
-        // drevo.cypher.fromText(prompt) — one NL prompt.
+        // drevo.cypher.fromText(prompt) - one NL prompt.
         #[cfg(feature = "http")]
         "drevo.cypher.fromText" => 1,
         // drevo.extract.{entities,facts,chunks}(text[, config]), ingest(text, config).
@@ -16293,7 +16293,7 @@ fn value_as_string_for_alias(value: &Value, alias: &str) -> ExecResultT<String> 
 }
 
 /// Intersect two node candidate sets by id, preserving `a`'s order. Both inputs
-/// are supersets of the real matches, so their intersection is too — this is how
+/// are supersets of the real matches, so their intersection is too - this is how
 /// the native label and property index candidates are combined for the tightest
 /// correct set for `MATCH (n:Label {key: value})`.
 fn intersect_nodes_by_id(a: Vec<Arc<Node>>, b: Vec<Arc<Node>>) -> Vec<Arc<Node>> {
@@ -16315,9 +16315,9 @@ enum PushConstraint {
         path: Vec<String>,
         value: Expression,
     },
-    /// `variable.path IN list` — the property equals one of the list's elements.
+    /// `variable.path IN list` - the property equals one of the list's elements.
     In { path: Vec<String>, list: Expression },
-    /// `variable.path <op> bound` — an inequality against a numeric bound
+    /// `variable.path <op> bound` - an inequality against a numeric bound
     /// (`>`, `>=`, `<`, `<=`), resolved through the ordered numeric index.
     Range {
         path: Vec<String>,
@@ -16331,10 +16331,10 @@ enum PushConstraint {
         op: crate::native_text_index::TextMatch,
         needle: Expression,
     },
-    /// `id(variable) = value` — a storage-id point seek, resolved through
+    /// `id(variable) = value` - a storage-id point seek, resolved through
     /// [`GraphEngine::get_node`] on *any* engine (no index needed).
     IdEq { value: Expression },
-    /// `id(variable) IN list` — a batch of storage-id point seeks.
+    /// `id(variable) IN list` - a batch of storage-id point seeks.
     IdIn { list: Expression },
 }
 
@@ -16358,7 +16358,7 @@ impl PushConstraint {
 /// `WHERE` predicate into `out` (`variable → [constraint]`).
 ///
 /// Only top-level `AND` conjuncts are traversed, so a constraint sitting under
-/// an `OR` / `NOT` / any other operator is never treated as required — pushing
+/// an `OR` / `NOT` / any other operator is never treated as required - pushing
 /// one of those down would drop real matches. An `=` term matches when a bare
 /// `variable.key` property access sits on either side; an `IN` term matches when
 /// its left operand is such a property access. A constraint whose value cannot
@@ -16560,13 +16560,13 @@ fn eq_allowed(
     Some(idx.node_ids(key, &json).into_iter().collect())
 }
 
-/// The id set a `key IN list` membership allows through the property index — the
-/// **union** of the elements' postings — or `None` when `list` is not a list or
+/// The id set a `key IN list` membership allows through the property index - the
+/// **union** of the elements' postings - or `None` when `list` is not a list or
 /// **any** element is non-indexable.
 ///
 /// The all-or-nothing rule is a correctness guard: the elements are OR-ed within
 /// the one constraint, so if even one element cannot be looked up (e.g. a float),
-/// the index-derived union would omit that element's matches — a false negative.
+/// the index-derived union would omit that element's matches - a false negative.
 /// In that case we do not narrow at all and leave the whole `IN` to the exact
 /// filter.
 fn in_allowed(
@@ -16593,7 +16593,7 @@ fn in_allowed(
 
 /// The id set a `key <op> bound` inequality allows through the ordered numeric
 /// index, or `None` when `bound` is not numeric (a numeric range never matches a
-/// non-numeric property, and a non-numeric bound is not served — leave it to the
+/// non-numeric property, and a non-numeric bound is not served - leave it to the
 /// exact filter). The result is a superset; the exact `WHERE` trims it.
 fn range_allowed(
     idx: &crate::native_property_index::NativePropertyIndex,
@@ -16620,7 +16620,7 @@ fn node_matches_pattern(
             return Ok(false);
         }
     }
-    // The full label expression (`:A|B`, `:!A`, … — #572), when present.
+    // The full label expression (`:A|B`, `:!A`, … - #572), when present.
     if let Some(expr) = &pattern.label_expr {
         if !expr.matches(&nv.labels) {
             return Ok(false);
@@ -16740,7 +16740,7 @@ fn get_property(base: &Value, name: &str, _span: Span) -> Value {
     }
 }
 
-/// The full property map of a map-like value — a node, relationship, or map.
+/// The full property map of a map-like value - a node, relationship, or map.
 ///
 /// Returns `None` for any other value, which the `.*` map-projection selector
 /// turns into a [`ExecError::TypeMismatch`].
@@ -16757,25 +16757,25 @@ fn base_properties(base: &Value) -> Option<&BTreeMap<String, Value>> {
 //
 // `expr[index]` and `expr[from..to]` mirror Neo4j's element-access semantics:
 //
-// * **List index** — zero-based; a **negative** index counts from the end
+// * **List index** - zero-based; a **negative** index counts from the end
 //   (`xs[-1]` is the last element). An index **out of range** yields `NULL`
 //   (never an error), so a speculative `xs[10]` over a short list is quietly
 //   absent rather than fatal. The index must be an `Integer`.
-// * **Map / node / relationship index** — `m[key]` with a `String` key is
+// * **Map / node / relationship index** - `m[key]` with a `String` key is
 //   exactly property access (it reuses [`get_property`]), returning `NULL` for
 //   an absent key.
-// * **Slice** — `xs[from..to]` is `from`-inclusive / `to`-exclusive,
+// * **Slice** - `xs[from..to]` is `from`-inclusive / `to`-exclusive,
 //   zero-based, with negative bounds counting from the end and every bound
 //   **clamped** into range (so `xs[-100..100]` is the whole list and
 //   `from >= to` is the empty list). Either bound may be omitted
 //   (`xs[..n]` / `xs[n..]` / `xs[..]`).
 //
 // `NULL` propagates: a `NULL` base, a `NULL` index, or a `NULL` slice bound all
-// make the whole expression `NULL`. Genuine misuse — a non-integer list index,
-// a non-string map key, or indexing/slicing a scalar — is a recoverable
+// make the whole expression `NULL`. Genuine misuse - a non-integer list index,
+// a non-string map key, or indexing/slicing a scalar - is a recoverable
 // [`ExecError::TypeMismatch`].
 
-/// Evaluate `base[index]` — a single list element or a map/entity field.
+/// Evaluate `base[index]` - a single list element or a map/entity field.
 fn eval_index(base: Value, index: Value, span: Span) -> ExecResultT<Value> {
     // NULL on either side propagates (matches arithmetic / comparison).
     if matches!(base, Value::Null) || matches!(index, Value::Null) {
@@ -16890,7 +16890,7 @@ const RANGE_MAX_ELEMENTS: i64 = 10_000_000;
 /// `args` are the fully-evaluated argument [`Value`]s. With the sole
 /// exception of `coalesce` (whose whole purpose is to skip `NULL`s), every
 /// built-in is **NULL-propagating**: if any argument is `NULL` the result is
-/// `NULL`, never an error — so a function applied across a heterogeneous scan
+/// `NULL`, never an error - so a function applied across a heterogeneous scan
 /// quietly yields `NULL` for the rows whose property is absent rather than
 /// aborting the query. Genuine misuse (wrong arity, an argument of a type the
 /// function cannot accept) is a recoverable [`ExecError::InvalidFunctionCall`].
@@ -17324,17 +17324,17 @@ fn next_rand_u64() -> u64 {
     })
 }
 
-/// `rand()` — a uniformly-distributed random `Float` in the half-open interval
+/// `rand()` - a uniformly-distributed random `Float` in the half-open interval
 /// `[0.0, 1.0)`. Takes no arguments and re-draws on every evaluation (per row).
 fn scalar_rand(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("rand", &args, 0, span)?;
-    // Use the top 53 bits — the f64 mantissa width — so every representable
+    // Use the top 53 bits - the f64 mantissa width - so every representable
     // double in `[0,1)` is reachable and the quotient never rounds up to `1.0`.
     let bits = next_rand_u64() >> 11;
     Ok(Value::Float(bits as f64 / (1u64 << 53) as f64))
 }
 
-/// `randomUUID()` — a randomly-generated version-4 UUID rendered as the
+/// `randomUUID()` - a randomly-generated version-4 UUID rendered as the
 /// canonical 36-character `8-4-4-4-12` lowercase-hex string. Takes no arguments
 /// and mints a fresh, practically-unique value on every evaluation. Backed by
 /// the OS CSPRNG (via the `uuid` crate's `getrandom` source), mirroring Neo4j's
@@ -17344,7 +17344,7 @@ fn scalar_random_uuid(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::String(uuid::Uuid::new_v4().to_string()))
 }
 
-/// `timestamp()` — the current wall-clock time as milliseconds since the Unix
+/// `timestamp()` - the current wall-clock time as milliseconds since the Unix
 /// epoch (an `Integer`). Zero-argument and non-deterministic (re-read on every
 /// evaluation), mirroring Neo4j's `timestamp()`.
 fn scalar_timestamp(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
@@ -17352,11 +17352,11 @@ fn scalar_timestamp(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::Integer(unix_millis_now()))
 }
 
-/// `datetime()` — the current UTC instant as an ISO-8601 string
+/// `datetime()` - the current UTC instant as an ISO-8601 string
 /// (`YYYY-MM-DDThh:mm:ss.sssZ`). drevo's Cypher has no dedicated temporal value
 /// type, so the zero-argument `datetime()` constructor returns the canonical
 /// ISO-8601 *string*: storable, Bolt-serialisable, and lexicographically
-/// ordering like the instant itself — enough for the common "stamp
+/// ordering like the instant itself - enough for the common "stamp
 /// `created_at` / `updated_at`" use. Non-deterministic, like `timestamp()`.
 /// The current moment as the ISO 8601 UTC text `datetime()` is stored as
 /// (`2026-11-27T10:00:00.000Z`): texts of this fixed form sort in time.
@@ -17375,7 +17375,7 @@ fn unix_millis_now() -> i64 {
 }
 
 /// Format a Unix-epoch millisecond instant as an ISO-8601 UTC string
-/// (`YYYY-MM-DDThh:mm:ss.sssZ`) with no external date dependency — Howard
+/// (`YYYY-MM-DDThh:mm:ss.sssZ`) with no external date dependency - Howard
 /// Hinnant's `civil_from_days` algorithm over the proleptic Gregorian calendar.
 /// One `SHOW TRANSACTIONS` row, in the column order of
 /// [`procedure_columns`].
@@ -17445,7 +17445,7 @@ pub(crate) fn iso8601_utc(epoch_ms: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z")
 }
 
-/// `atan2(y, x)` — the two-argument arctangent, returning the angle (in
+/// `atan2(y, x)` - the two-argument arctangent, returning the angle (in
 /// radians) of the point `(x, y)` from the positive x-axis. Both arguments
 /// must be numbers; the result is always a `Float`.
 fn scalar_atan2(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
@@ -17467,7 +17467,7 @@ fn scalar_atan2(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::Float(y.atan2(x)))
 }
 
-/// The rounding strategy of the three-argument [`scalar_round`] — the Cypher /
+/// The rounding strategy of the three-argument [`scalar_round`] - the Cypher /
 /// Java `RoundingMode` set. The `HALF_*` variants differ only in how an exact
 /// halfway value is broken; the others ignore the magnitude of the dropped
 /// remainder entirely.
@@ -17475,7 +17475,7 @@ fn scalar_atan2(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
 enum RoundingMode {
     /// Away from zero whenever any digit is dropped.
     Up,
-    /// Toward zero — truncate the dropped digits.
+    /// Toward zero - truncate the dropped digits.
     Down,
     /// Toward positive infinity.
     Ceiling,
@@ -17529,15 +17529,15 @@ impl RoundingMode {
     }
 }
 
-/// `round(value [, precision [, mode]])` — round a number to a chosen number of
+/// `round(value [, precision [, mode]])` - round a number to a chosen number of
 /// decimal places using a selectable rounding mode (task `00160`).
 ///
 /// * `round(value)` rounds to the nearest integer, ties away from zero
-///   (`HALF_UP`) — the long-standing one-argument behaviour.
+///   (`HALF_UP`) - the long-standing one-argument behaviour.
 /// * `round(value, precision)` rounds to `precision` decimal places, still
 ///   `HALF_UP`. A negative `precision` rounds to the left of the decimal point
 ///   (`round(1234.5, -2) = 1200.0`).
-/// * `round(value, precision, mode)` selects the rounding mode — one of `UP`,
+/// * `round(value, precision, mode)` selects the rounding mode - one of `UP`,
 ///   `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`, `HALF_EVEN`
 ///   (case-insensitive), matching Java's `RoundingMode` / Neo4j.
 ///
@@ -17589,8 +17589,8 @@ fn scalar_round(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
 /// `1.2549999…`, so `(1.255 * 100).round() / 100` yields `1.25`, not the `1.26`
 /// a user (and Neo4j's `BigDecimal`) expects. Instead we take the shortest
 /// decimal string that round-trips to this double (Rust's `Display`, which is
-/// always plain — never scientific — notation), round those digits exactly, and
-/// reparse — recovering the intended decimal result.
+/// always plain - never scientific - notation), round those digits exactly, and
+/// reparse - recovering the intended decimal result.
 fn round_decimal(value: f64, precision: i64, mode: RoundingMode) -> f64 {
     if !value.is_finite() {
         return value;
@@ -17663,7 +17663,7 @@ fn increment_digits(digits: &mut Vec<u8>) {
     digits.insert(0, 1);
 }
 
-/// `coalesce(a, b, …)` — the first non-`NULL` argument, or `NULL` if every
+/// `coalesce(a, b, …)` - the first non-`NULL` argument, or `NULL` if every
 /// argument (and there must be at least one) is `NULL`.
 fn scalar_coalesce(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     if args.is_empty() {
@@ -17675,7 +17675,7 @@ fn scalar_coalesce(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
         .unwrap_or(Value::Null))
 }
 
-/// `reverse(x)` — reverses a String (by Unicode scalar value) or a List.
+/// `reverse(x)` - reverses a String (by Unicode scalar value) or a List.
 fn scalar_reverse(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("reverse", args, span)? {
         Value::String(s) => Ok(Value::String(s.chars().rev().collect())),
@@ -17694,7 +17694,7 @@ fn scalar_reverse(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `substring(original, start[, length])` — a 0-based, codepoint-indexed
+/// `substring(original, start[, length])` - a 0-based, codepoint-indexed
 /// slice. A `start` past the end yields the empty string; an omitted `length`
 /// runs to the end. Negative `start` / `length` are rejected (Neo4j parity).
 fn scalar_substring(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
@@ -17734,7 +17734,7 @@ fn scalar_substring(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::String(chars[start..end].iter().collect()))
 }
 
-/// `replace(original, search, replacement)` — replaces every non-overlapping
+/// `replace(original, search, replacement)` - replaces every non-overlapping
 /// occurrence of `search`. An empty `search` leaves the string unchanged
 /// (Neo4j parity), avoiding the surprising insert-between-every-char outcome.
 fn scalar_replace(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
@@ -17748,7 +17748,7 @@ fn scalar_replace(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::String(original.replace(search, replacement)))
 }
 
-/// `split(original, delimiter)` — splits into a List of String. An empty
+/// `split(original, delimiter)` - splits into a List of String. An empty
 /// delimiter splits into individual characters (Neo4j parity).
 fn scalar_split(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("split", &args, 2, span)?;
@@ -17768,7 +17768,7 @@ fn scalar_split(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::List(parts))
 }
 
-/// `left(s, n)` / `right(s, n)` — the first / last `n` codepoints, clamped to
+/// `left(s, n)` / `right(s, n)` - the first / last `n` codepoints, clamped to
 /// the string length. Negative `n` is rejected (Neo4j parity).
 fn scalar_left_right(
     name: &str,
@@ -17792,7 +17792,7 @@ fn scalar_left_right(
     Ok(Value::String(slice.iter().collect()))
 }
 
-/// `toString(x)` — the string form of a Boolean, Integer, Float, or String.
+/// `toString(x)` - the string form of a Boolean, Integer, Float, or String.
 /// Integral floats render with a trailing `.0` (Neo4j parity: `1.0`, not `1`).
 fn scalar_tostring(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     let out = match take_one("toString", args, span)? {
@@ -17811,9 +17811,9 @@ fn scalar_tostring(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::String(out))
 }
 
-/// `abs(n)` — preserves Integer vs Float. `abs(i64::MIN)` overflows and is a
+/// `abs(n)` - preserves Integer vs Float. `abs(i64::MIN)` overflows and is a
 /// recoverable error rather than a panic.
-/// `cosine_similarity(a, b)` — cosine similarity of two numeric-list vectors,
+/// `cosine_similarity(a, b)` - cosine similarity of two numeric-list vectors,
 /// as a Float in `[-1, 1]` (issue #202). Complements the `similar()` threshold
 /// predicate by returning the SCORE, so scored retrieval can
 /// `RETURN cosine_similarity(c.embedding, $q) AS score ORDER BY score DESC`.
@@ -17848,7 +17848,7 @@ fn scalar_abs(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `sign(n)` — `-1`, `0`, or `1` as an Integer.
+/// `sign(n)` - `-1`, `0`, or `1` as an Integer.
 fn scalar_sign(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("sign", &args, 1, span)?;
     let n = args[0].as_number().ok_or_else(|| {
@@ -17868,7 +17868,7 @@ fn scalar_sign(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::Integer(sign))
 }
 
-/// `isNaN(n)` — `true` when `n` is the IEEE-754 NaN value, `false` for any
+/// `isNaN(n)` - `true` when `n` is the IEEE-754 NaN value, `false` for any
 /// other number. An `Integer` is never NaN, and `±Infinity` are numbers (not
 /// NaN), so both yield `false`. A non-numeric argument is a recoverable error.
 ///
@@ -17890,9 +17890,9 @@ fn scalar_is_nan(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `toInteger(x)` — converts a number or numeric string to an Integer.
+/// `toInteger(x)` - converts a number or numeric string to an Integer.
 /// A Float truncates toward zero; an unparseable String or a Boolean yields
-/// `NULL` (Neo4j parity — conversion is lenient, not an error).
+/// `NULL` (Neo4j parity - conversion is lenient, not an error).
 fn scalar_to_integer(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(convert_to_integer_value(&take_one(
         "toInteger",
@@ -17927,7 +17927,7 @@ fn parse_integer(s: &str) -> Value {
     }
 }
 
-/// `toFloat(x)` — converts a number or numeric string to a Float. An
+/// `toFloat(x)` - converts a number or numeric string to a Float. An
 /// unparseable String or a Boolean yields `NULL` (Neo4j parity).
 fn scalar_to_float(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(convert_to_float_value(&take_one("toFloat", args, span)?))
@@ -17946,7 +17946,7 @@ fn convert_to_float_value(v: &Value) -> Value {
     }
 }
 
-/// `toBoolean(x)` — Boolean passthrough; `"true"`/`"false"` (case-insensitive,
+/// `toBoolean(x)` - Boolean passthrough; `"true"`/`"false"` (case-insensitive,
 /// trimmed) from a String; `0`/`1` from an Integer; anything else yields
 /// `NULL` (Neo4j parity).
 fn scalar_to_boolean(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
@@ -17987,7 +17987,7 @@ fn convert_to_string_value(v: &Value) -> Value {
     }
 }
 
-/// `toIntegerList` / `toFloatList` / `toBooleanList` / `toStringList` — apply a
+/// `toIntegerList` / `toFloatList` / `toBooleanList` / `toStringList` - apply a
 /// lenient single-value conversion to every element of a List. An element that
 /// cannot be converted (including a `NULL` element) becomes `NULL`, so the
 /// result always has the same length as the input. A non-`List` argument is a
@@ -18010,7 +18010,7 @@ fn scalar_to_list(
 }
 
 /// `toIntegerOrNull` / `toFloatOrNull` / `toBooleanOrNull` / `toStringOrNull`
-/// (task `00158`) — the fully-lenient Neo4j 5 siblings of the scalar
+/// (task `00158`) - the fully-lenient Neo4j 5 siblings of the scalar
 /// conversions. Each applies the same per-value converter the list-conversion
 /// functions use, so any value that cannot be converted yields `NULL` rather
 /// than an error. A `NULL` argument is already short-circuited to `NULL` by
@@ -18024,14 +18024,14 @@ fn scalar_or_null(
     Ok(convert(&take_one(name, args, span)?))
 }
 
-/// `size(x)` / `length(x)` — the element count of a List or the codepoint
+/// `size(x)` / `length(x)` - the element count of a List or the codepoint
 /// count of a String, as an Integer.
 fn scalar_size(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity(name, &args, 1, span)?;
     match &args[0] {
         Value::List(items) => Ok(Value::Integer(items.len() as i64)),
         Value::String(s) => Ok(Value::Integer(s.chars().count() as i64)),
-        // `length(path)` is the number of relationships (hops) — Neo4j's
+        // `length(path)` is the number of relationships (hops) - Neo4j's
         // canonical use of `length`. `size(path)` resolves the same way here.
         Value::Path(p) => Ok(Value::Integer(p.length() as i64)),
         other => Err(fn_err(
@@ -18045,7 +18045,7 @@ fn scalar_size(name: &str, args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `isEmpty(x)` — `true` when the container `x` holds no elements, for the
+/// `isEmpty(x)` - `true` when the container `x` holds no elements, for the
 /// three Neo4j container types: a String (no characters), a List (no items),
 /// or a Map (no entries). A `NULL` argument propagates to `NULL` before this
 /// helper is reached (see [`call_scalar`]); any non-container value is a
@@ -18067,7 +18067,7 @@ fn scalar_is_empty(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `nodes(path)` — the nodes of a path as a List, in traversal order.
+/// `nodes(path)` - the nodes of a path as a List, in traversal order.
 fn scalar_nodes(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("nodes", args, span)? {
         Value::Path(p) => Ok(Value::List(
@@ -18081,7 +18081,7 @@ fn scalar_nodes(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `relationships(path)` — the relationships of a path as a List, in
+/// `relationships(path)` - the relationships of a path as a List, in
 /// traversal order.
 fn scalar_relationships(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("relationships", args, span)? {
@@ -18100,7 +18100,7 @@ fn scalar_relationships(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `head(list)` — the first element, or `NULL` for an empty list.
+/// `head(list)` - the first element, or `NULL` for an empty list.
 fn scalar_head(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("head", args, span)? {
         Value::List(items) => Ok(items.into_iter().next().unwrap_or(Value::Null)),
@@ -18112,7 +18112,7 @@ fn scalar_head(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `last(list)` — the final element, or `NULL` for an empty list.
+/// `last(list)` - the final element, or `NULL` for an empty list.
 fn scalar_last(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("last", args, span)? {
         Value::List(items) => Ok(items.into_iter().last().unwrap_or(Value::Null)),
@@ -18124,7 +18124,7 @@ fn scalar_last(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `tail(list)` — every element except the first (empty list for a 0/1-element
+/// `tail(list)` - every element except the first (empty list for a 0/1-element
 /// input).
 fn scalar_tail(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("tail", args, span)? {
@@ -18142,7 +18142,7 @@ fn scalar_tail(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `range(start, end[, step])` — an inclusive arithmetic sequence of Integers.
+/// `range(start, end[, step])` - an inclusive arithmetic sequence of Integers.
 /// `step` defaults to `1` and may not be `0`. The element count is capped at
 /// [`RANGE_MAX_ELEMENTS`] to bound memory.
 fn scalar_range(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
@@ -18191,7 +18191,7 @@ fn range_len(start: i64, end: i64, step: i64) -> i64 {
     (span / stride) as i64 + 1
 }
 
-/// `keys(x)` — the property names of a Node, Relationship, or Map, as a List
+/// `keys(x)` - the property names of a Node, Relationship, or Map, as a List
 /// of String in sorted order (the property maps are themselves sorted).
 fn scalar_keys(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("keys", &args, 1, span)?;
@@ -18213,7 +18213,7 @@ fn scalar_keys(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     Ok(Value::List(keys))
 }
 
-/// `labels(node)` — the node's labels as a List of String.
+/// `labels(node)` - the node's labels as a List of String.
 fn scalar_labels(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("labels", &args, 1, span)?;
     match &args[0] {
@@ -18228,7 +18228,7 @@ fn scalar_labels(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `expr:<label expression>` (#568, #572) — tested against a node's labels or
+/// `expr:<label expression>` (#568, #572) - tested against a node's labels or
 /// a relationship's single type (Neo4j 5 semantics); `null` propagates.
 fn eval_has_labels(v: Value, labels: &LabelExpr, span: Span) -> ExecResultT<Value> {
     match v {
@@ -18243,7 +18243,7 @@ fn eval_has_labels(v: Value, labels: &LabelExpr, span: Span) -> ExecResultT<Valu
     }
 }
 
-/// `type(rel)` — the relationship's type as a String.
+/// `type(rel)` - the relationship's type as a String.
 fn scalar_type(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("type", &args, 1, span)?;
     match &args[0] {
@@ -18256,7 +18256,7 @@ fn scalar_type(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `id(x)` — the internal storage id of a Node or Relationship, as an Integer.
+/// `id(x)` - the internal storage id of a Node or Relationship, as an Integer.
 fn scalar_id(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     expect_arity("id", &args, 1, span)?;
     match &args[0] {
@@ -18273,7 +18273,7 @@ fn scalar_id(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `elementId(x)` — the element id of a Node or Relationship: its id as a
+/// `elementId(x)` - the element id of a Node or Relationship: its id as a
 /// string, the `element_id` Bolt 5 drivers see. `null` for `null`.
 fn scalar_element_id(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("elementId", args, span)? {
@@ -18291,7 +18291,7 @@ fn scalar_element_id(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     }
 }
 
-/// `properties(x)` — the property Map of a Node or Relationship (a Map argument
+/// `properties(x)` - the property Map of a Node or Relationship (a Map argument
 /// is returned unchanged).
 fn scalar_properties(args: Vec<Value>, span: Span) -> ExecResultT<Value> {
     match take_one("properties", args, span)? {
@@ -18686,7 +18686,7 @@ fn arith_numbers(op: BinaryOp, lhs: Value, rhs: Value, span: Span) -> ExecResult
         BinaryOp::Div => {
             if both_int {
                 // Cypher division on integers is integer division
-                // when both operands are integers — matches Neo4j.
+                // when both operands are integers - matches Neo4j.
                 if b == 0.0 {
                     return Err(ExecError::TypeMismatch {
                         expected: "non-zero divisor".into(),
@@ -18838,9 +18838,9 @@ mod tests {
     use crate::cypher::parser::parse;
     use crate::native_service::NativeService;
 
-    // These executor tests run over a *bare* engine — a `NativeService`'s
+    // These executor tests run over a *bare* engine - a `NativeService`'s
     // underlying `NativeGraph` reached via `db.graph()`, with no FTS / vector
-    // / semantic index or embedder attached — which is exactly what exercises
+    // / semantic index or embedder attached - which is exactly what exercises
     // the `EngineCapability` deterministic-error paths for the secondary
     // subsystems. `NativeService::in_memory()` also gives the inherent
     // `list_nodes_by_kind` used as a read-side assertion helper (it returns a
@@ -19082,7 +19082,7 @@ mod tests {
 
     #[test]
     fn match_anonymous_labeled_head_single_hop() {
-        // `MATCH (:Person)-->(b)` — the head binds no variable but is still
+        // `MATCH (:Person)-->(b)` - the head binds no variable but is still
         // a real node that must be threaded into the relationship segment.
         let db = drevo();
         run(
@@ -19096,7 +19096,7 @@ mod tests {
 
     #[test]
     fn match_bare_anonymous_head_single_hop() {
-        // `MATCH ()-->(b)` — a totally bare anonymous head (no label) is the
+        // `MATCH ()-->(b)` - a totally bare anonymous head (no label) is the
         // most permissive form; every relationship's target should surface.
         let db = drevo();
         run(
@@ -19110,7 +19110,7 @@ mod tests {
 
     #[test]
     fn match_anonymous_intermediate_in_unnamed_multi_hop() {
-        // `MATCH (a)-->()-->(c)` — the middle node is anonymous and the path
+        // `MATCH (a)-->()-->(c)` - the middle node is anonymous and the path
         // is unnamed (no accumulator), so the endpoint must be threaded
         // directly hop-to-hop.
         let db = drevo();
@@ -19163,7 +19163,7 @@ mod tests {
 
     #[test]
     fn match_anonymous_head_no_match_yields_empty_not_error() {
-        // No relationship of the requested type — empty result, never the
+        // No relationship of the requested type - empty result, never the
         // old spurious `InvalidCreate`.
         let db = drevo();
         run("CREATE (:Person {name: 'Alice'})", &db);
@@ -19457,7 +19457,7 @@ mod tests {
             "expected InvalidMutation, got {:?}",
             e
         );
-        // The error is fail-fast — node should still exist.
+        // The error is fail-fast - node should still exist.
         assert_eq!(db.list_nodes_by_kind("Person", 10, 0).len(), 2);
     }
 
@@ -20388,7 +20388,7 @@ mod tests {
             &db,
         );
         run("CREATE (:Person {name: 'B'})", &db);
-        // B has no outgoing KNOWS — its friend column should be NULL.
+        // B has no outgoing KNOWS - its friend column should be NULL.
         let res = run(
             "MATCH (n:Person) WHERE n.name IN ['A', 'B'] OPTIONAL MATCH (n)-[:KNOWS]->(f:Person) RETURN n.name AS who, f.name AS friend ORDER BY who",
             &db,
@@ -20442,7 +20442,7 @@ mod tests {
             "CREATE (:Person {name: 'C'})-[:KNOWS]->(:Person {name: 'Y'})",
             &db,
         );
-        // A and C have friends; B does not — but it must still appear.
+        // A and C have friends; B does not - but it must still appear.
         let res = run(
             "MATCH (n:Person) WHERE n.name IN ['A', 'B', 'C'] OPTIONAL MATCH (n)-[:KNOWS]->(f) RETURN n.name AS who, f.name AS friend ORDER BY who",
             &db,
@@ -20603,7 +20603,7 @@ mod tests {
     fn with_projection_without_alias_for_complex_expression_is_rejected() {
         let db = drevo();
         run("CREATE (:Person {name: 'A'})", &db);
-        // `WITH n.name` without AS is not legal in Cypher — must be either
+        // `WITH n.name` without AS is not legal in Cypher - must be either
         // a bare variable or an aliased expression.
         let e = err("MATCH (n:Person) WITH n.name RETURN n.name", &db);
         assert!(
@@ -20617,7 +20617,7 @@ mod tests {
     fn with_bare_variable_is_allowed_without_alias() {
         let db = drevo();
         run("CREATE (:Person {name: 'A'})", &db);
-        // `WITH n` without alias is fine — `n` becomes the column name.
+        // `WITH n` without alias is fine - `n` becomes the column name.
         let res = run("MATCH (n:Person) WITH n RETURN n.name AS name", &db);
         assert_eq!(res.rows.len(), 1);
         assert_eq!(res.rows[0][0], Value::String("A".into()));
@@ -20821,7 +20821,7 @@ mod tests {
     #[test]
     fn foreach_over_null_is_a_noop() {
         let db = drevo();
-        // Mirrors `UNWIND null` — a null list iterates zero times rather
+        // Mirrors `UNWIND null` - a null list iterates zero times rather
         // than raising a type error.
         let res = run(
             "FOREACH (x IN null | CREATE (:Task {title: toString(x)}))",
@@ -20937,7 +20937,7 @@ mod tests {
             &db,
         );
         // Two matched rows; FOREACH creates a child each but must not
-        // multiply or collapse the outer rows — RETURN still sees both.
+        // multiply or collapse the outer rows - RETURN still sees both.
         let res = run(
             "MATCH (t:Task) FOREACH (n IN [1] | SET t.touched = true) RETURN t.title ORDER BY t.title",
             &db,
@@ -20967,7 +20967,7 @@ mod tests {
     fn foreach_merge_keyed_by_loop_variable_is_idempotent() {
         let db = drevo();
         run("CREATE (:Bug {title: 'crash'})", &db);
-        // MERGE inside FOREACH, keyed on the loop variable — the canonical
+        // MERGE inside FOREACH, keyed on the loop variable - the canonical
         // "tag each from a list" idiom. Running it twice must not duplicate.
         let q = "MATCH (b:Bug {title: 'crash'}) \
                  FOREACH (lbl IN ['regression', 'p1'] | \
@@ -20991,7 +20991,7 @@ mod tests {
             &db,
         );
         // The second pattern's property filter references `t.title`, a value
-        // bound by the first MATCH — previously this raised UnboundVariable
+        // bound by the first MATCH - previously this raised UnboundVariable
         // because filters evaluated against an empty row.
         let res = run(
             "MATCH (t:Tag {title: 'urgent'}) MATCH (i:Item {tag: t.title}) RETURN i.title",
@@ -21002,7 +21002,7 @@ mod tests {
 
     #[test]
     fn foreach_body_rejects_read_clause_at_parse_time() {
-        // A read clause inside FOREACH is a grammar error — the body is
+        // A read clause inside FOREACH is a grammar error - the body is
         // restricted to update clauses.
         let e = parse("FOREACH (x IN [1] | MATCH (n:Task) SET n.done = true)")
             .expect_err("expected parse error");
@@ -21097,7 +21097,7 @@ mod tests {
     fn varlen_no_relationship_is_repeated_within_a_single_path() {
         let db = drevo();
         // A cycle: A → B → A. With *2 we'd reach A again only by reusing
-        // an edge, which Cypher's "trail" uniqueness forbids — so the
+        // an edge, which Cypher's "trail" uniqueness forbids - so the
         // result must be empty even though the cycle exists.
         run("CREATE (:N {name: 'A'})-[:R]->(:N {name: 'B'})", &db);
         run(
@@ -21157,7 +21157,7 @@ mod tests {
     fn varlen_with_optional_match_yields_null_on_no_path() {
         let db = drevo();
         run("CREATE (:N {name: 'A'})", &db);
-        // No edges out of A — OPTIONAL MATCH with varlen should still
+        // No edges out of A - OPTIONAL MATCH with varlen should still
         // emit one row with `b = NULL`.
         let res = run(
             "MATCH (a:N {name: 'A'}) OPTIONAL MATCH (a)-[:NEXT*]->(b:N) RETURN a.name AS who, b.name AS friend",
@@ -21183,7 +21183,7 @@ mod tests {
     #[test]
     fn varlen_create_still_unsupported() {
         let db = drevo();
-        // CREATE with varlen path makes no sense — must remain rejected.
+        // CREATE with varlen path makes no sense - must remain rejected.
         let e = err("CREATE (a:N)-[:NEXT*1..3]->(b:N)", &db);
         assert!(
             matches!(e, ExecError::Unsupported { ref feature, .. } if feature.contains("variable-length CREATE")),
@@ -21691,7 +21691,7 @@ mod tests {
         assert!(matches!(m["n"].as_slice(), [PushConstraint::IdIn { .. }]));
         assert_eq!(keys_for(&m, "n"), vec!["id()".to_string()]);
 
-        // Conjunctive with a property term — both lift, keyed to the variable.
+        // Conjunctive with a property term - both lift, keyed to the variable.
         let m = pushdown_of("MATCH (n) WHERE id(n) = 3 AND n.status = 'open' RETURN n");
         assert_eq!(m["n"].len(), 2);
 
@@ -21737,7 +21737,7 @@ mod tests {
 
     #[test]
     fn pushdown_ignores_non_conjunctive_and_non_equality_terms() {
-        // OR must never be pushed — narrowing on one arm would drop matches.
+        // OR must never be pushed - narrowing on one arm would drop matches.
         assert!(pushdown_of("MATCH (n) WHERE n.a = 1 OR n.b = 2 RETURN n").is_empty());
         // A term under NOT is not a required equality.
         assert!(pushdown_of("MATCH (n) WHERE NOT n.a = 1 RETURN n").is_empty());
@@ -21782,7 +21782,7 @@ mod tests {
     #[test]
     fn case_aggregation_picks_else_on_empty_group() {
         let db = drevo();
-        // No N nodes exist — the pure-aggregation group is synthetic and
+        // No N nodes exist - the pure-aggregation group is synthetic and
         // count(*) is 0, so the CASE selects the ELSE branch.
         let res = run(
             "MATCH (n:N) RETURN CASE WHEN count(*) > 0 THEN 'some' ELSE 'none' END AS r",
@@ -22256,7 +22256,7 @@ mod tests {
             scalar("RETURN toStringOrNull(42) AS v", &db),
             Value::String("42".into())
         );
-        // Unconvertible inputs yield NULL, never an error — including the cases
+        // Unconvertible inputs yield NULL, never an error - including the cases
         // where the strict scalar `toString` would error (a List / Map).
         assert_eq!(
             scalar("RETURN toIntegerOrNull('abc') AS v", &db),
@@ -22442,7 +22442,7 @@ mod tests {
             "CREATE (:Person {name: 'Ada', age: 36})-[:KNOWS {since: 2020}]->(:Person {name: 'Bo'})",
             &db,
         );
-        // keys() over a node — sorted property names. The placeholder title
+        // keys() over a node - sorted property names. The placeholder title
         // synthesised for an untitled node is hidden (see `node_to_value`),
         // so only the user-supplied `name` / `age` appear, as in Neo4j.
         assert_eq!(
@@ -22457,7 +22457,7 @@ mod tests {
             scalar("MATCH (n:Person {name: 'Ada'}) RETURN labels(n) AS v", &db),
             Value::List(vec![Value::String("Person".into())])
         );
-        // type() over a relationship. The path head must be a named node —
+        // type() over a relationship. The path head must be a named node -
         // the executor looks up each segment's predecessor by variable.
         assert_eq!(
             scalar(
@@ -23211,7 +23211,7 @@ mod tests {
     fn map_projection_literal_entry_is_evaluated_in_scope() {
         let db = drevo();
         run("CREATE (:Person {name: 'Ann', age: 30})", &db);
-        // A literal entry's expression sees the current row — `p.age * 2`.
+        // A literal entry's expression sees the current row - `p.age * 2`.
         let m = one_map(&run(
             "MATCH (p:Person) RETURN p {.name, doubled: p.age * 2, role: 'admin'} AS m",
             &db,
@@ -23247,7 +23247,7 @@ mod tests {
     fn map_projection_later_selector_overwrites_earlier_key() {
         let db = drevo();
         run("CREATE (:Person {name: 'Ann'})", &db);
-        // `.name` then `name: 'override'` — the literal wins.
+        // `.name` then `name: 'override'` - the literal wins.
         let m = one_map(&run(
             "MATCH (p:Person) RETURN p {.name, name: 'override'} AS m",
             &db,

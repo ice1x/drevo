@@ -1,9 +1,9 @@
-# RFC-python-api — Python API Surface for `drevo-py`
+# RFC-python-api - Python API Surface for `drevo-py`
 
-**Task.** Phase 16 `00114` — design the public Python API surface for the
+**Task.** Phase 16 `00114` - design the public Python API surface for the
 `drevo-py` package before any PyO3 code lands in `00115`.
 
-**Status.** Accepted (this document is the contract `00115`–`00122` implement
+**Status.** Accepted (this document is the contract `00115`-`00122` implement
 against). Any deviation requires a follow-up amendment block at the bottom
 of this file, not a silent change in the implementation.
 
@@ -20,7 +20,7 @@ here.
 - `.claude/skills/drevo-rust/SKILL.md` §"Error Handling", §"FFI Safety", §"Async / Tokio".
 - `.claude/skills/drevo-tdd/SKILL.md` §"Three test layers" (informs §8 below).
 - `audit/AUDIT-error.md`, `audit/AUDIT-ffi.md` (existing FFI patterns drevo-py mirrors at the Python boundary).
-- README.md §"Phase 16 — Python Graph-RAG SDK" (the parent task definition).
+- README.md §"Phase 16 - Python Graph-RAG SDK" (the parent task definition).
 
 ---
 
@@ -36,17 +36,17 @@ The C FFI (`src/ffi.rs`) and WASM (`src/wasm.rs`) layers already exist
 and were audited under `00110` / `00111`. Both make different trade-offs
 than the Python layer should:
 
-- **C FFI** — JSON-over-the-boundary, opaque `drevo_t*`, thread-local
+- **C FFI** - JSON-over-the-boundary, opaque `drevo_t*`, thread-local
   errno. Optimised for ABI stability across compilers; unergonomic for
   scripting.
-- **WASM** — `JsValue::from_str(error)` losing the variant. Acceptable
+- **WASM** - `JsValue::from_str(error)` losing the variant. Acceptable
   because browsers do not pattern-match exception types the way Python
   does.
 
 Python is the first binding where users **will** write
 `except drevo.NotFoundError:` and lean on typed exceptions, iterator
 laziness, `with` blocks, `mypy --strict`, and PEP 484 generics. So the
-Python surface gets its own contract — not a copy of the C surface, not
+Python surface gets its own contract - not a copy of the C surface, not
 a copy of the WASM surface.
 
 ---
@@ -63,7 +63,7 @@ a copy of the WASM surface.
 2. **Graph-RAG first.** The headline use case is retrieval-augmented
    generation: build a graph, ingest documents, embed, retrieve a seed
    + neighbourhood, format as LLM context. `drevo.rag` is a first-class
-   layer in this RFC — not an afterthought bolted onto a generic
+   layer in this RFC - not an afterthought bolted onto a generic
    "Python bindings" package.
 3. **Three test layers per `drevo-tdd`.** Every public symbol has unit,
    integration, and e2e tests (`00118` / `00119` / `00120`).
@@ -75,7 +75,7 @@ a copy of the WASM surface.
    **performance** contract, not a "we'll do it if convenient" one.
 6. **Pure-Python idioms layer.** `drevo.rag` (`Retriever`, `Context`,
    `MMRReranker`, `ingest_documents`) is plain Python on top of the
-   PyO3 bindings — no Rust dependency creep for orchestration logic
+   PyO3 bindings - no Rust dependency creep for orchestration logic
    that can live one layer up. Cites `drevo-architecture` §S
    (Single Responsibility) and §I (Interface Segregation): PyO3 owns
    storage I/O; `drevo.rag` owns retrieval composition.
@@ -95,7 +95,7 @@ a copy of the WASM surface.
 - **Vector storage from day one.** Vector helpers (`store_embedding`,
   `search_vectors`) are placeholder signatures in this RFC, gated
   behind a `vector=True` kwarg, fully implemented after Phase 12
-  (`00075`–`00079`) lands the HNSW index.
+  (`00075`-`00079`) lands the HNSW index.
 - **Re-exporting the Rust `Drevo` type as-is.** PyO3 forces ownership
   decisions (Python GC vs Rust `Drop`); the Python `Drevo` is a thin
   wrapper, not a transparent re-export.
@@ -127,14 +127,14 @@ drevo-py/                       # workspace member (00115)
 │       │   └── __init__.pyi
 │       └── _compat.py          # any version-shim glue
 └── tests/
-    ├── unit/                   # 00118 — ~80 tests
-    ├── integration/            # 00119 — ~40 tests
-    └── e2e/                    # 00120 — 5 scenarios + RAG scenario
+    ├── unit/                   # 00118 - ~80 tests
+    ├── integration/            # 00119 - ~40 tests
+    └── e2e/                    # 00120 - 5 scenarios + RAG scenario
 ```
 
 **Why split `python/drevo/` from `src/`?** Per `drevo-architecture`
-§"SOLID — S": the PyO3 layer (Rust) owns storage I/O *only*. The
-`drevo.rag` layer is pure Python — algorithmic, no FFI, no `unsafe`,
+§"SOLID - S": the PyO3 layer (Rust) owns storage I/O *only*. The
+`drevo.rag` layer is pure Python - algorithmic, no FFI, no `unsafe`,
 testable with `pytest` alone without compiling Rust. Mixing them in
 one `.so` would make the rag layer un-iterable during development
 (every change → recompile).
@@ -187,7 +187,7 @@ already idiomatic Python `snake_case`.
 `EdgePatch`, `SubGraph`, `ScoredNode`) are emitted as `@dataclass(frozen=True)`
 on the Python side (via PyO3 `#[pyclass(frozen)]`), so they are hashable,
 `__eq__`-able, `__repr__`-able by default. Mutation goes through
-`NodePatch`/`EdgePatch`, mirroring the Rust side — no in-place property
+`NodePatch`/`EdgePatch`, mirroring the Rust side - no in-place property
 edits. Cites `drevo-architecture` §"Stringly Typed" anti-pattern
 (decision: typed dataclasses instead of `dict`).
 
@@ -258,7 +258,7 @@ class Drevo:
 
 ## 4. Sync vs Async
 
-### 4.1. Default — Synchronous
+### 4.1. Default - Synchronous
 
 `00115` ships a **synchronous** PyO3 surface. Every method blocks until
 the underlying redb transaction commits.
@@ -282,11 +282,11 @@ Every storage I/O call wraps the Rust body in `py.allow_threads(|| {...})`.
 **This is a hard contract**, audited per method in `00118`:
 
 - `create_node`, `update_node`, `delete_node`, `create_edge`, `update_edge`,
-  `delete_edge`, `compact`, `health_check`, `verify_invariants` — release.
+  `delete_edge`, `compact`, `health_check`, `verify_invariants` - release.
 - `get_node`, `get_node_by_uuid`, `get_node_by_title`, `get_edge`, `bfs`,
-  `dfs`, `shortest_path`, `subgraph`, `search_fts` — release.
-- `open`, `open_in_memory`, `close` — release (file system + lock).
-- Property getters (`Node.id`, `Node.title`) — **do not** release
+  `dfs`, `shortest_path`, `subgraph`, `search_fts` - release.
+- `open`, `open_in_memory`, `close` - release (file system + lock).
+- Property getters (`Node.id`, `Node.title`) - **do not** release
   (no I/O; the allow_threads round-trip would dominate).
 
 CI test (`tests/unit/test_gil.py` under `00118`): spawn a Python thread
@@ -295,7 +295,7 @@ that ticks `threading.Event` once per 10 ms; call a long-running
 background thread tick count is ≥ 90% of the wall-clock-derived
 expectation. A drop below 90% means a method forgot to release the GIL.
 
-### 4.3. Async Story — Future Work
+### 4.3. Async Story - Future Work
 
 A follow-up RFC (`RFC-python-async.md`, deferred until Phase 13 MVCC
 lands) will evaluate `pyo3-async-runtimes` (formerly `pyo3-asyncio`).
@@ -316,13 +316,13 @@ in Phase 16.
 
 `Drevo` is `Send + Sync` on the Rust side (`Arc<RwLock<...>>` under the
 hood). On the Python side a single `Drevo` instance is safe to share
-across threads — multiple threads may call `get_node` concurrently;
+across threads - multiple threads may call `get_node` concurrently;
 writers serialise via the inner `RwLock`. The PyO3 wrapper does **not**
 add a Python-level lock; the storage layer already provides MVCC for
 reads and serialised writes.
 
 Multi-process usage (`multiprocessing`, `fork`) is **not supported**.
-Open a fresh `Drevo` instance per process — redb file locks otherwise
+Open a fresh `Drevo` instance per process - redb file locks otherwise
 panic on the second opener. Documented in the `Drevo.open` docstring
 with an example.
 
@@ -396,7 +396,7 @@ create_exception!(drevo, StorageError,       DrevoError);
 create_exception!(drevo, SerializationError, DrevoError);
 create_exception!(drevo, LockedError,        DrevoError);
 create_exception!(drevo, PanicError,         DrevoError);
-// InvalidWeightError extends PyValueError — declared in pure Python in
+// InvalidWeightError extends PyValueError - declared in pure Python in
 // drevo/errors.py so the inheritance reads naturally to `mypy`.
 
 fn map_err(py: Python<'_>, e: drevo::DrevoError) -> PyErr {
@@ -428,7 +428,7 @@ fn map_err(py: Python<'_>, e: drevo::DrevoError) -> PyErr {
 Every `#[pyfunction]` / `#[pymethods]` body is wrapped in
 `std::panic::catch_unwind`. A caught panic raises `drevo.PanicError`
 with the message converted from the panic payload. Mirrors `drevo-rust`
-§"FFI Safety — No panics across FFI" and the existing `src/ffi.rs`
+§"FFI Safety - No panics across FFI" and the existing `src/ffi.rs`
 discipline (`audit/AUDIT-ffi.md` §"panic-catch contract").
 
 CI test: `tests/unit/test_panic_safety.py` forces a panic via a
@@ -447,7 +447,7 @@ matchers.
 
 ## 6. Iterator vs List Returns
 
-### 6.1. Default — Lists
+### 6.1. Default - Lists
 
 The default return for "all results" is `list[T]`:
 
@@ -474,7 +474,7 @@ For known-large surfaces, a generator variant is exposed with a
 
 The iterator internally calls the bounded paginated method in chunks
 of `batch_size` and yields nodes one at a time. The GIL is released
-inside each batch fetch. **Not** a streaming cursor — a paginated
+inside each batch fetch. **Not** a streaming cursor - a paginated
 generator. We add a true streaming cursor in a later phase if
 benchmarks show pagination overhead is material.
 
@@ -491,26 +491,26 @@ scope for `00115`.
 
 ### 7.1. Why Batches Matter
 
-`drevo-rust` §"redb Transaction Patterns — Batch writes" calls out that
+`drevo-rust` §"redb Transaction Patterns - Batch writes" calls out that
 per-operation ACID transactions on 100K+ inserts measure ~530s on the
-project's reference machine — unusable. Python users hitting this from
+project's reference machine - unusable. Python users hitting this from
 a `for doc in docs: drevo.create_node(...)` loop would see the same
 pathology without warning.
 
 ### 7.2. API
 
 ```python
-# create_nodes — single transaction, single GIL release
+# create_nodes - single transaction, single GIL release
 def create_nodes(self, new_nodes: list[NewNode]) -> list[Node]: ...
 
-# create_edges — same shape
+# create_edges - same shape
 def create_edges(self, new_edges: list[NewEdge]) -> list[Edge]: ...
 
-# update_nodes / update_edges — list of (id, patch) tuples
+# update_nodes / update_edges - list of (id, patch) tuples
 def update_nodes(self, patches: list[tuple[int, NodePatch]]) -> list[Node]: ...
 def update_edges(self, patches: list[tuple[int, EdgePatch]]) -> list[Edge]: ...
 
-# delete_nodes / delete_edges — list of ids; all-or-nothing
+# delete_nodes / delete_edges - list of ids; all-or-nothing
 def delete_nodes(self, ids: list[int]) -> None: ...
 def delete_edges(self, ids: list[int]) -> None: ...
 ```
@@ -523,7 +523,7 @@ Semantics:
   offending item in `.__notes__` (Python 3.11+) so users can locate
   it without re-trying linearly.
 - **Same GIL-release pattern.** A single `py.allow_threads` around the
-  whole batch — not one per item.
+  whole batch - not one per item.
 - **Order preserved.** Returned `list[Node]` is in the same order as
   the input `list[NewNode]`.
 
@@ -532,7 +532,7 @@ Semantics:
 Batch methods accept any `Iterable[NewNode]`, materialised internally
 into a `Vec` before crossing the FFI. We accept the small memory cost
 (N PyObject → Rust struct conversions) in exchange for guaranteeing
-"the entire batch is in one redb transaction" — partial batching would
+"the entire batch is in one redb transaction" - partial batching would
 re-introduce the per-op ACID pathology.
 
 ---
@@ -540,7 +540,7 @@ re-introduce the per-op ACID pathology.
 ## 8. Graph-RAG Idioms (`drevo.rag`)
 
 This layer is the **headline value** of Phase 16. It is pure Python on
-top of the PyO3 bindings — no Rust dependency creep — so the algorithm
+top of the PyO3 bindings - no Rust dependency creep - so the algorithm
 choices below are reviewable by anyone with a Python stack trace and
 without a Rust compiler.
 
@@ -560,7 +560,7 @@ class Document(Protocol):
     metadata: dict[str, object]
 ```
 
-No `from langchain_core.documents import Document` import — the protocol
+No `from langchain_core.documents import Document` import - the protocol
 is structural. Adapters for the three big frameworks ship as optional
 extras (`drevo-py[langchain]`, `drevo-py[llama-index]`,
 `drevo-py[haystack]`) that re-export their `Document` type for
@@ -590,7 +590,7 @@ def ingest_documents(
     later promotes this to first-class vector storage.
 
     If `schema` is provided, it maps Document.metadata fields to
-    Node.properties / Node.kind / Node.title — see IngestSchema below.
+    Node.properties / Node.kind / Node.title - see IngestSchema below.
     """
 ```
 
@@ -634,7 +634,7 @@ class Retriever:
         *,
         limit: int = 10,
     ) -> Context:
-        """Vector-store variant — gated; raises NotImplementedError
+        """Vector-store variant - gated; raises NotImplementedError
         until Phase 12 (00075) ships the HNSW index."""
 ```
 
@@ -651,13 +651,13 @@ class Context:
     def to_text(self, *, format: str = "markdown") -> str:
         """Format the context as LLM-ready text.
 
-        format = "markdown"  — headings + bullet lists (default)
-        format = "json"      — JSON object {seeds, neighbours, edges}
-        format = "turtle"    — RDF Turtle (for SPARQL/RAG hybrid stacks)
+        format = "markdown"  - headings + bullet lists (default)
+        format = "json"      - JSON object {seeds, neighbours, edges}
+        format = "turtle"    - RDF Turtle (for SPARQL/RAG hybrid stacks)
         """
 ```
 
-`Context.to_text` is deterministic given the same context — sort by
+`Context.to_text` is deterministic given the same context - sort by
 `(kind, title, id)`. This is what `tests/e2e/` (`00120`) asserts on.
 
 ### 8.5. `MMRReranker`
@@ -682,7 +682,7 @@ class MMRReranker:
     ) -> list[ScoredNode]: ...
 ```
 
-The reranker has its own unit tests (`00118`) — closed-form expected
+The reranker has its own unit tests (`00118`) - closed-form expected
 output for a 3-element input given a fixed `lambda_` and a deterministic
 embedder stub.
 
@@ -692,17 +692,17 @@ embedder stub.
 
 | Driver       | Idioms to borrow                                                                                                                   | Antipatterns to avoid                                                                                                                                            |
 |--------------|------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `neo4j` (official Python driver) | Context-manager driver (`with GraphDatabase.driver(uri) as driver:`); `session.run(cypher, params=)` shape; typed `Record` objects keyed by column. | Implicit transaction commit on success — drevo will be explicit (`with drevo.write_tx() as tx:` once MVCC lands). `Result.data()` returning `list[dict]` loses typing — we keep dataclasses. |
+| `neo4j` (official Python driver) | Context-manager driver (`with GraphDatabase.driver(uri) as driver:`); `session.run(cypher, params=)` shape; typed `Record` objects keyed by column. | Implicit transaction commit on success - drevo will be explicit (`with drevo.write_tx() as tx:` once MVCC lands). `Result.data()` returning `list[dict]` loses typing - we keep dataclasses. |
 | `kuzu`       | Tight Rust core + thin Python wrapper; `Connection.execute(query, params)` returning a typed result; columnar arrow returns for analytics. | "Connection" abstraction without an explicit `with`-block default (users forget to `.close()`). drevo's `Drevo.open` returns an instance with `__enter__`/`__exit__` to make resource ownership obvious. |
-| `falkordb`   | Cypher-first API; explicit `graph.query("...")`; cleanly mirrors the Redis-graph wire protocol.                                    | Returns rows as `list[list[Any]]` (positional, no column names). drevo's row API will return named dataclasses or `dict[str, Any]` — never positional lists.    |
+| `falkordb`   | Cypher-first API; explicit `graph.query("...")`; cleanly mirrors the Redis-graph wire protocol.                                    | Returns rows as `list[list[Any]]` (positional, no column names). drevo's row API will return named dataclasses or `dict[str, Any]` - never positional lists.    |
 | `redis-py`   | `pipeline()` context manager for batched ops; clean async/sync split (`redis.Redis` vs `redis.asyncio.Redis`).                     | Two separate import paths (`from redis import Redis` / `from redis.asyncio import Redis`) is the model drevo follows (`drevo.Drevo` + future `drevo.aio.Drevo`), but redis-py also has parallel signatures we will avoid by making `aio.Drevo` a thin wrapper. |
 
 ### 9.1. Concrete Idioms Adopted
 
 - **`with` block as the default open-pattern.** `with Drevo.open(path) as d: ...` mirrors `neo4j`'s driver lifecycle.
 - **Named dataclasses for rows**, not positional lists or untyped dicts. Mirrors `kuzu`'s columnar dataclass-y returns; avoids `falkordb`'s positional rows.
-- **Explicit `params=`** dict on `query(cypher, params=...)` — `neo4j` and `falkordb` both agree on this shape.
-- **Pipeline-style batches** for bulk writes (`drevo.create_nodes([...])`) — mirrors `redis-py`'s pipeline, just exposed as a method not a context manager. We picked the method form because there is no read-side analogue — pipelines in redis-py do both — and a method matches the all-or-nothing transactional semantics.
+- **Explicit `params=`** dict on `query(cypher, params=...)` - `neo4j` and `falkordb` both agree on this shape.
+- **Pipeline-style batches** for bulk writes (`drevo.create_nodes([...])`) - mirrors `redis-py`'s pipeline, just exposed as a method not a context manager. We picked the method form because there is no read-side analogue - pipelines in redis-py do both - and a method matches the all-or-nothing transactional semantics.
 
 ### 9.2. Concrete Idioms Rejected
 
@@ -721,15 +721,15 @@ recorded as deferred with a follow-up RFC.
 | ID  | Question                                                                                                            | Default if undecided                                          | Owner / Resolved-in    |
 |-----|---------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------|------------------------|
 | Q-1 | Do `Node.uuid` / `Edge.uuid` return `bytes` (len 16) or `uuid.UUID`?                                                | `uuid.UUID` (Pythonic); accept `bytes` on input.              | `00115` (this RFC)     |
-| Q-2 | Does `Drevo.__del__` call `close()` implicitly?                                                                     | No — explicit `close()` or `with`-block. `__del__` warns once. | `00115` (this RFC)     |
+| Q-2 | Does `Drevo.__del__` call `close()` implicitly?                                                                     | No - explicit `close()` or `with`-block. `__del__` warns once. | `00115` (this RFC)     |
 | Q-3 | What's the wire format for `Context.to_text(format="json")`?                                                        | The dataclasses' default `__dict__` shape, stable across versions. | `00117` (lock in tests) |
 | Q-4 | Are `MMRReranker` lambda semantics `1.0 = pure relevance` or `1.0 = pure diversity`?                                | `1.0 = pure relevance, 0.0 = pure diversity` (matches MMR paper). | `00117` (this RFC)     |
 | Q-5 | Does `ingest_documents` deduplicate by content hash?                                                                | No deduplication by default; expose `deduplicate_by="title"` kwarg in a follow-up. | `00117` (deferred)     |
-| Q-6 | Does `query(cypher_text, params=...)` accept positional params (`"$1"` / `"?"`) or only named (`"$name"`)?          | Named only — matches `neo4j`-driver convention.               | After `00063` lands    |
+| Q-6 | Does `query(cypher_text, params=...)` accept positional params (`"$1"` / `"?"`) or only named (`"$name"`)?          | Named only - matches `neo4j`-driver convention.               | After `00063` lands    |
 | Q-7 | Does the Python package vendor pre-built wheels, or require source builds?                                          | Pre-built wheels via `cibuildwheel` (`00116`).                | `00116`                |
 | Q-8 | How are `drevo.Direction.OUT` / `IN` / `BOTH` exposed: `IntEnum`, `Enum`, or sentinel objects?                      | `IntEnum` so JSON-serialisable and ordered.                   | `00115` (this RFC)     |
 | Q-9 | Does `bfs` accept a Python callable `visitor=fn` for streaming, or only collect-then-return?                        | Collect-then-return for `00115`; streaming variant in a later phase if benchmarks demand. | `00115` (this RFC) |
-| Q-10| For multi-process safety, do we expose `Drevo.is_open_elsewhere(path)`?                                             | No — redb's file lock is the source of truth; document the exception. | `00115` (this RFC) |
+| Q-10| For multi-process safety, do we expose `Drevo.is_open_elsewhere(path)`?                                             | No - redb's file lock is the source of truth; document the exception. | `00115` (this RFC) |
 
 ---
 
@@ -738,7 +738,7 @@ recorded as deferred with a follow-up RFC.
 This RFC is "done" when:
 
 - [x] Naming, type system, sync/async story, error mapping, iterator-vs-list,
-      batch APIs, graph-RAG idioms, comparison to other drivers — all
+      batch APIs, graph-RAG idioms, comparison to other drivers - all
       documented above.
 - [x] Every public Python symbol that `00115` will implement appears in
       §3.3 (type stubs) or §8 (rag layer).
@@ -747,22 +747,22 @@ This RFC is "done" when:
 - [x] Open questions are listed in §10 with a default position so
       `00115` can proceed without re-litigating.
 
-**This RFC is the contract.** `00115` implements against §3–§8 exactly.
+**This RFC is the contract.** `00115` implements against §3-§8 exactly.
 Any deviation in `00115` requires a follow-up amendment block below.
 
 ---
 
 ## 12. Amendments
 
-### 12.1 — 2026-05-25, task `00115` PR — Edge field names + timestamp suffix
+### 12.1 - 2026-05-25, task `00115` PR - Edge field names + timestamp suffix
 
 The implementation in `drevo-py` exposes `Edge.from_id` / `Edge.to_id` /
 `Edge.created_at` (and `Node.created_at` / `Node.updated_at`) rather than
 the `src` / `dst` / `*_ms` spellings shown in the §3.3 type-stub
 snippet. The decision was made because §3.1 explicitly states "**No
 re-spellings** ... the Rust spelling is already idiomatic Python
-`snake_case`." The stub snippet in §3.3 was illustrative, not normative
-— `from_id` / `to_id` / `created_at` / `updated_at` match the Rust
+`snake_case`." The stub snippet in §3.3 was illustrative, not normative -
+`from_id` / `to_id` / `created_at` / `updated_at` match the Rust
 [`drevo::model::Edge`] / [`drevo::model::Node`] field names exactly, so
 users who read the Rust API docs (e.g. via [docs.rs](https://docs.rs)
 when this crate is published) see the same names on the Python side.
@@ -771,7 +771,7 @@ Future amendments to §3.3 should rewrite the stub block to mirror this
 implementation choice. Filed under task `00115` to keep §3.1 the
 single source of truth.
 
-### 12.2 — 2026-05-25, task `00115` PR — UUID surfaced as `bytes`, not `uuid.UUID`
+### 12.2 - 2026-05-25, task `00115` PR - UUID surfaced as `bytes`, not `uuid.UUID`
 
 The PyO3 layer returns 16-byte `bytes` for `Node.uuid` / `Edge.uuid`
 and accepts `bytes` for `get_node_by_uuid` / `get_edge_by_uuid`. The
@@ -780,12 +780,12 @@ conversion lives one layer up in the pure-Python `drevo/__init__.py`
 shim shipped by task `00116`. Reasoning: keeping the PyO3 layer free of
 `import uuid` calls on the hot path makes the Rust ↔ Python boundary
 cheaper and lets the shim layer evolve UUID handling (timezone-aware
-timestamps from UUID v7 byte 0–5, for example) without recompiling the
+timestamps from UUID v7 byte 0-5, for example) without recompiling the
 extension module. Users who pre-instal `00116`'s shim see `Node.uuid:
 uuid.UUID`; users who `import _drevo` directly (e.g. during `00115`
 development) see `bytes`.
 
-### 12.3 — 2026-05-25, task `00115` PR — `InvalidWeight` raises `PyValueError` directly
+### 12.3 - 2026-05-25, task `00115` PR - `InvalidWeight` raises `PyValueError` directly
 
 Per the implementation sketch in §5.3, the Rust mapper raises
 `PyValueError` (not a `drevo.InvalidWeightError` subclass) when a
@@ -796,5 +796,5 @@ catching `ValueError` work today; once `00116` lands, callers catching
 `drevo.InvalidWeightError` also work without a re-raise change in this
 crate.
 
-*(Add a dated `## 12.N — <title>` block here for any future
+*(Add a dated `## 12.N - <title>` block here for any future
 post-acceptance change. Mention the PR that landed the change.)*

@@ -1,16 +1,16 @@
-//! End-to-end Cypher tests — `startNode(rel)` / `endNode(rel)` (issue #232).
+//! End-to-end Cypher tests - `startNode(rel)` / `endNode(rel)` (issue #232).
 //!
 //! The two standard Neo4j relationship-endpoint functions: `startNode(r)`
 //! returns a relationship's source node, `endNode(r)` its target. They are
-//! the natural companion to `fts.searchRelationships` (#229) — a `YIELD rel`
-//! result is far more useful when its endpoints are directly reachable —
+//! the natural companion to `fts.searchRelationships` (#229) - a `YIELD rel`
+//! result is far more useful when its endpoints are directly reachable -
 //! and are what Neo4j-compatible tooling (the graphiti connector) emits for
 //! edge endpoint projection instead of a slower re-`MATCH`.
 //!
 //! Because a `RelationshipValue` carries only the endpoint *ids*, these two
 //! functions need the graph to resolve the node, so they are evaluated in
 //! the executor (with DB access) rather than in the pure `call_scalar`
-//! library — alongside `similar()` / `keywords()`.
+//! library - alongside `similar()` / `keywords()`.
 //!
 //! Cases drive the real parser → executor pipeline across the drevo target
 //! scenario domains (IT task manager, ERP, bug tracker, story editor) plus

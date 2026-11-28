@@ -1,4 +1,4 @@
-//! End-to-end Cypher WHERE tests — Phase 10 task `00065`.
+//! End-to-end Cypher WHERE tests - Phase 10 task `00065`.
 //!
 //! Exercises the WHERE filter on `MATCH` clauses across the five
 //! drevo target scenario domains (CBT journal, story editor, IT task
@@ -41,7 +41,7 @@ fn names(rows: &[Vec<Value>]) -> Vec<String> {
         .collect()
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_find_thoughts_with_anxious_mood_above_threshold() {
@@ -88,7 +88,7 @@ fn cbt_distortion_kinds_in_list() {
     );
 }
 
-// ===== Scenario 2 — Story editor ============================================
+// ===== Scenario 2 - Story editor ============================================
 
 #[test]
 fn story_find_scenes_in_act_with_tension_filter() {
@@ -138,7 +138,7 @@ fn story_scenes_whose_title_starts_with_prefix() {
     );
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_manager_open_tasks_assigned_to_user_via_parameter() {
@@ -196,7 +196,7 @@ fn task_manager_tasks_with_missing_due_date() {
     assert_eq!(names(&rows), vec!["T2".to_string()]);
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_line_items_filtered_by_qty_and_price() {
@@ -251,7 +251,7 @@ fn erp_purchase_orders_open_or_overdue() {
     );
 }
 
-// ===== Scenario 5 — Bug tracker =============================================
+// ===== Scenario 5 - Bug tracker =============================================
 
 #[test]
 fn bug_tracker_filter_by_severity_in_list() {
@@ -301,7 +301,7 @@ fn bug_tracker_title_contains_keyword() {
     ] {
         run(&format!("CREATE (:Bug {{title: '{}'}})", title), &db);
     }
-    // CONTAINS is case-sensitive — lowercase 'login' only matches the
+    // CONTAINS is case-sensitive - lowercase 'login' only matches the
     // first title; 'Login' starts the second title with a capital L.
     let rows = run(
         "MATCH (b:Bug) WHERE b.title CONTAINS 'login' RETURN b.title AS title ORDER BY b.title",

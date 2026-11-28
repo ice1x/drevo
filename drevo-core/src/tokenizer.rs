@@ -107,7 +107,7 @@ pub fn extract_trigrams(title: &str, body: &str) -> Vec<String> {
     extract_trigrams_fields(&[title, body])
 }
 
-/// Extract **raw** trigrams from text — like [`trigrams`] but **without
+/// Extract **raw** trigrams from text - like [`trigrams`] but **without
 /// deduplication**, preserving every sliding-window occurrence in document
 /// order.
 ///
@@ -157,7 +157,7 @@ pub fn extract_raw_trigrams(title: &str, body: &str) -> Vec<String> {
 }
 
 /// Extract **raw** (non-deduplicated) trigrams across an arbitrary list of text
-/// fields — the multi-field companion of [`extract_raw_trigrams`], used to
+/// fields - the multi-field companion of [`extract_raw_trigrams`], used to
 /// compute BM25 document length `|d|` over title + body + string
 /// properties.
 pub fn extract_raw_trigrams_fields(fields: &[&str]) -> Vec<String> {
@@ -171,7 +171,7 @@ pub fn extract_raw_trigrams_fields(fields: &[&str]) -> Vec<String> {
 /// `00132`), deliberately distinct from the character-trigram tokenizer that
 /// powers the FTS inverted index. A token is a maximal run of alphanumeric or
 /// CJK characters; everything else (whitespace, punctuation) is a separator.
-/// Tokens shorter than two characters are dropped — single letters and stray
+/// Tokens shorter than two characters are dropped - single letters and stray
 /// digits carry no keyword signal and only add noise to the ranking.
 ///
 /// Unlike [`trigrams`], occurrences are **not** deduplicated: the caller needs
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn trigrams_short_text_two_chars() {
-        // "hi" — too short for trigrams, no CJK bigrams
+        // "hi" - too short for trigrams, no CJK bigrams
         assert!(trigrams("hi").is_empty());
     }
 

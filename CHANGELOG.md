@@ -90,7 +90,7 @@ history and the in-repo issue tracker; format loosely follows
   built-in function with its category. All of them are reads. The schema
   procedures read every node and relationship once per call.
 
-- **`drevo.path.timetable`: `arriveBy` — be there by a time, leave as late
+- **`drevo.path.timetable`: `arriveBy` - be there by a time, leave as late
   as possible** (issue #776). `arriveBy` (seconds after midnight of the query
   date) replaces `departAt`; giving both, or neither, is refused. Each row is
   a journey that leaves later than every journey with fewer transfers, the
@@ -106,10 +106,10 @@ history and the in-repo issue tracker; format loosely follows
   on this corpus?** (issue #790). Given questions and the nodes their context
   should hold (`{query, expected: [id | {name, label}]}`, a name matching a
   node's `name` or `title` exactly, or `{query, traceId}` to compare against
-  what a context trace included), each strategy
-  — `'vector'` (embedding top-k, the baseline), `'fts'`, `'hybrid'`,
+  what a context trace included), each strategy -
+  `'vector'` (embedding top-k, the baseline), `'fts'`, `'hybrid'`,
   `'hybrid+expand'` (nearest first) and `'rag'` (the full pipeline with
-  Personalized PageRank) — writes its context within one shared
+  Personalized PageRank) - writes its context within one shared
   `tokenBudget` and is scored on what fits: `hit`, `recall`, `precision`,
   `mrr`, `tokens`, `durationMs`, `nodeIds`, plus `recallRetrieved` before the
   budget cut. The summary averages per strategy with `p50Ms`/`p95Ms`. Read
@@ -118,7 +118,7 @@ history and the in-repo issue tracker; format loosely follows
   `'vector'` without an embedder or a `label`) fail with an error naming them. `examples/rag_eval.rs` prints the
   summary for a store and a JSONL gold set as a markdown table, and
   `benches/rag_retrieve_bench.rs` times each pipeline stage on a GraphML copy
-  of real data — numbers in `docs/benchmarks.md` ("Graph-RAG pipeline").
+  of real data - numbers in `docs/benchmarks.md` ("Graph-RAG pipeline").
 - **Community summaries: `drevo.community.summarize([config]) YIELD
   community, size, summary, keywords, mode`, `drevo.community.query(query,
   k[, config])`, `drevo.community.of(node)`, `drevo.community.stale()`, and
@@ -129,9 +129,9 @@ history and the in-repo issue tracker; format loosely follows
   size, modularity, summary, keywords, mode, computed_at, member_ids_hash})`,
   `MEMBER_OF {layer, rank}` from each member (rank = PageRank inside the
   community) and `RELATED_COMMUNITY {weight}` between linked communities;
-  `replace` recomputes a `layer`, layers coexist. Summaries are extractive —
+  `replace` recomputes a `layer`, layers coexist. Summaries are extractive -
   the best-ranked members by label (`maxMembers`), ten keywords and the three
-  most frequent relationship types, deterministic, within `tokenBudget` —
+  most frequent relationship types, deterministic, within `tokenBudget` -
   for communities of at least `minSize`; `mode: 'llm'` reports that no chat
   model is configured and `'auto'` writes extractive summaries;
   `async: true` is refused. `query` ranks a layer's communities by BM25 over
@@ -142,7 +142,7 @@ history and the in-repo issue tracker; format loosely follows
   context from the best-matching communities' summaries and then their
   members of the `communityLayer` (default `'default'`); `'auto'` picks
   global when the search finds no seed, for an overview question
-  (`globalHint`), or — when both search legs ran — for a weak best seed
+  (`globalHint`), or - when both search legs ran - for a weak best seed
   (`globalThreshold`, 0.02). Both procedures, `POST /rag/context` and
   context traces gain a trailing `scope`. Each community stores the
   `labels`/`relTypes` it was computed with (`config`), which `stale` reuses;
@@ -150,11 +150,11 @@ history and the in-repo issue tracker; format loosely follows
   now one of the default `excludeLabels` of the local scope.
 
 - **Durable ingest jobs: `drevo.ingest.submit(items, config)` loads a whole
-  book in the background** (issue #788). The job is stored in the graph —
+  book in the background** (issue #788). The job is stored in the graph -
   `(:IngestJob {id, state, total, done, failed, priority, config, …})
   -[:HAS_ITEM]->(:IngestItem {seq, state, attempts, next_attempt_at,
   last_error, text, offset, length})`, and `(:IngestItem)-[:PRODUCED]->(:Chunk)`
-  once written — so it survives a restart: items left `running` are queued
+  once written - so it survives a restart: items left `running` are queued
   again when the database opens. A scheduler per database runs each item as
   a `drevo.extract.ingest` of its passage in one transaction, at most
   `DREVO_INGEST_WORKERS` (2) items at once server-wide and a job's
@@ -201,9 +201,9 @@ history and the in-repo issue tracker; format loosely follows
   overlap, character offsets) and each is sent to an OpenAI-compatible chat
   endpoint asking for one JSON object of entities and facts, each quoting the
   passage verbatim with its character offset. Every quote is located in the
-  passage before it is used — moved to its nearest place when the offset is
+  passage before it is used - moved to its nearest place when the offset is
   wrong, whitespace differences repaired, dropped and counted in `skipped`
-  when the passage does not contain it — so invented quotes never reach the
+  when the passage does not contain it - so invented quotes never reach the
   results or the graph. A non-JSON answer is asked for once more, then the
   call fails. Config: `types` (POLE+O by default, extra types allowed),
   `relations` (allow-list, upper-snake-cased), `schemaHint`, `language`,
@@ -232,8 +232,8 @@ history and the in-repo issue tracker; format loosely follows
   question becomes LLM-ready context inside the database: seeds from
   `drevo.search.hybrid`, the walk of `drevo.graph.expand` (2 hops by default,
   conversation and bookkeeping labels left out), the relationships between
-  the nodes found, a ranking (`rank: 'ppr'` — Personalized PageRank over just
-  those nodes, teleporting to the seeds by search score — `'distance'` or
+  the nodes found, a ranking (`rank: 'ppr'` - Personalized PageRank over just
+  those nodes, teleporting to the seeds by search score - `'distance'` or
   `'none'`, seeds always first), and a greedy writer that fills `tokenBudget`
   (2000, at least 50) best-ranked first, skipping a node that does not fit
   whole. Formats `markdown` (`## Entities` / `## Relations`), `triples`
@@ -254,7 +254,7 @@ history and the in-repo issue tracker; format loosely follows
 
 - **Entity resolution** (issue #787): `drevo.entity.candidates(label[,
   config]) YIELD a, b, nameScore, vectorScore, score, reasons` lists the
-  pairs of nodes that probably name the same thing — Jaro–Winkler on
+  pairs of nodes that probably name the same thing - Jaro-Winkler on
   normalised names (case, accents and punctuation folded, initials allowed
   for: «Пушкин» and «А. С. Пушкин» score 1.0), optionally cosine on an
   embedding property, a weighted score with a threshold, blocking
@@ -270,7 +270,7 @@ history and the in-repo issue tracker; format loosely follows
   entity, aliases` finds a node by any of its names, and
   `drevo.entity.normalise(name)` returns the compared form.
   `drevo.memory.rememberEntity`'s fifth argument also takes `resolve`
-  (`'exact'` — the default —, `'alias'`, `'fuzzy'`) and `threshold`: a fuzzy
+  (`'exact'` - the default -, `'alias'`, `'fuzzy'`) and `threshold`: a fuzzy
   mention reuses the one entity of its type above the threshold and
   otherwise records `POSSIBLY_SAME {score}` near-misses.
 - **Provenance for long-term memory** (issue #785): memory can record where
@@ -333,7 +333,7 @@ history and the in-repo issue tracker; format loosely follows
   `mode`, `ftsFilter`, `weights`) rejects unknown keys by name.
 - **`maxWalk` on `drevo.path.timetable`** (issue #774): the most seconds of
   footpaths in a row, between two rides or after the start cost. Without it
-  the search followed footpaths as far as they went — on Sofia's graph, where
+  the search followed footpaths as far as they went - on Sofia's graph, where
   every footpath is at most 5 minutes, a chain of 11 of them made a 46-minute
   "walk to the first stop", and 1.7 km "transfers". With a bound, a way to a
   stop that arrives later but has walked less is kept alongside the earliest,
@@ -345,8 +345,8 @@ history and the in-repo issue tracker; format loosely follows
 
 - **drevo-core: `VersionVector::covers` and `VersionVector::iter`** (issue
   #799). A sync host can now tell whether its vector has observed everything
-  another one has — `mine.covers(&base)` is true when, for every origin in
-  `base`, `mine` has an equal or later clock — and list a vector's entries as
+  another one has - `mine.covers(&base)` is true when, for every origin in
+  `base`, `mine` has an equal or later clock - and list a vector's entries as
   `(OriginId, Hlc)` pairs. A host that merges a delta only when its vector
   covers the delta's base no longer loses the writes of a push it missed;
   before, the only way to compare two vectors was to decode their private
@@ -366,6 +366,15 @@ history and the in-repo issue tracker; format loosely follows
   `NativeService::execute_with_access`, `execute_in_tx_with_access`.
 
 ### Changed
+
+- **The hyphen `-` in place of the long dash everywhere** (issue #880). The
+  long dash (U+2014) and the en dash (U+2013) are gone from every tracked
+  file: README, docs, comments, workflows, the Web UI and messages. What a
+  client can see: error and log messages that had a long dash now have ` - `
+  (for example `invalid edge weight: NaN - weight must be a finite f32`), the
+  graph-RAG text context joins a node's extra fields with ` - `, and the Web
+  UI shows `-` for an empty value. `tests/no_long_dash_tests.rs` fails if
+  either character comes back.
 
 - **Cypher: a column without `AS` is named by its expression, not `expr`**
   (issue #864). `RETURN count(*), max(p.age)` returned two columns both
@@ -423,8 +432,8 @@ history and the in-repo issue tracker; format loosely follows
 - **Web UI: a large graph is laid out as islands of related nodes** (issue
   #854). The overview of thousands of nodes came out as one even disc, its
   relationships running across it in every direction. A fresh layout now
-  finds the groups of the graph — nodes related more among themselves than
-  to the rest (Louvain) — lays each group out on its own and packs the
+  finds the groups of the graph - nodes related more among themselves than
+  to the rest (Louvain) - lays each group out on its own and packs the
   groups with room between them, groups that share relationships side by
   side; nodes with no relationship are kept together in one more. On a
   4596-node, 10898-relationship graph the median relationship spans 2.5
@@ -446,7 +455,7 @@ history and the in-repo issue tracker; format loosely follows
   directory (`origin.json`, `stamps.jsonl`, `tombstones.json`,
   `sequences.json`, `semantic.json`), so two stores side by side (`a.gbk`,
   `b.gbk`) shared one replica origin, and node 1 of one store took the later
-  stamp of node 1 of the other on open — which decides Last-Writer-Wins in
+  stamp of node 1 of the other on open - which decides Last-Writer-Wins in
   delta sync. The sidecars are now named after the log file
   (`a.gbk.origin.json`, …), as the lock already was. A store written before
   takes over its fixed-name files when it is alone in its directory; next to
@@ -473,7 +482,7 @@ history and the in-repo issue tracker; format loosely follows
   `drevo.tx.prepare` failed with `Neo.TransientError.Transaction.Outdated`
   after any commit made since `BEGIN`, even to unrelated nodes, and with
   `Neo.TransientError.Transaction.LockAcquisitionTimeout` while any other
-  transaction was prepared — so every two-phase-commit participant on a
+  transaction was prepared - so every two-phase-commit participant on a
   server was serialized. A prepare now follows the rule of `COMMIT`: it
   conflicts only with a commit that wrote what it wrote, and waits only for a
   prepared transaction it overlaps (the same node or relationship, a
@@ -497,7 +506,7 @@ history and the in-repo issue tracker; format loosely follows
   `drevo.search.hybrid`, `drevo.memory.recall` and the `drevo.rag.*`
   procedures used to fail with "searches the full-text index, which covers
   committed data only" (`Neo.ClientError.Transaction.ForbiddenDueToTransactionType`
-  over Bolt) once their statement or explicit transaction had written — so
+  over Bolt) once their statement or explicit transaction had written - so
   `addMessage` followed by `drevo.rag.context` in one `execute_write`, or two
   traced `drevo.rag.context` calls in one statement, could not run. They now
   find what the transaction created or changed, leave out what it deleted,
@@ -520,7 +529,7 @@ history and the in-repo issue tracker; format loosely follows
   job `running` forever, and a chunk-id mismatch fails the item with the
   reason** (issue #806). The scheduler matches the item before writing its
   extraction, so nothing is written for an item that is gone; its slot is
-  given back and the job finishes once nothing else is left — `cancelled`
+  given back and the job finishes once nothing else is left - `cancelled`
   when it lost items, its counters taken from the items that remain. An item
   whose chunk is not found after the write (the job's `source_id` differs
   from its config's `source`) is `dead` with `last_error` "chunk `<id>` not
@@ -540,8 +549,8 @@ history and the in-repo issue tracker; format loosely follows
   `GET /ui/vendor/LICENSES.txt`.
 - **Web UI: the overview no longer downloads the whole graph dump** (issue
   #846). On every page load and every Refresh the browser fetched
-  `GET /export/json` — 115 MB for a store of 4582 nodes, 67 MB of it
-  embeddings — to draw a sample of 50 nodes. It now fetches the new
+  `GET /export/json` - 115 MB for a store of 4582 nodes, 67 MB of it
+  embeddings - to draw a sample of 50 nodes. It now fetches the new
   `GET /export/overview`: every node and relationship with its kind, title
   and the property values of up to 256 bytes of JSON, the keys of larger
   values listed under `omitted`. On the same store that is 3.3 MB. A node's
@@ -559,8 +568,8 @@ history and the in-repo issue tracker; format loosely follows
   every double-click expand. Such a graph is now arranged by d3-force in
   short steps between which the tab paints and answers, with a progress bar
   on the canvas. On a copy of a real store: 500 nodes in 0.7 s, 2000 nodes
-  (8224 relationships) in 3–5 s, 4582 nodes (10 894 relationships) in
-  7–9 s, with no pause longer than about a second. Expanding a node of a
+  (8224 relationships) in 3-5 s, 4582 nodes (10 894 relationships) in
+  7-9 s, with no pause longer than about a second. Expanding a node of a
   large graph fits the new nodes in and leaves the others where they are.
   Graphs under 250 nodes keep the fcose layout. d3-force 3.0.0 and its
   three modules (d3-dispatch, d3-quadtree, d3-timer 3.0.1; ISC) are
@@ -612,9 +621,9 @@ history and the in-repo issue tracker; format loosely follows
   full-text leg required every word of the query, so `drevo.rag.retrieve` /
   `drevo.rag.context` returned nothing for "who watched the storm from the
   lighthouse" without an embedder, and with one the seeds came from the
-  vector leg alone. Full text gains an any-word mode — a node matches when it
+  vector leg alone. Full text gains an any-word mode - a node matches when it
   holds any word of the query and ranks by the BM25 weight of the words it
-  holds — as `ftsMode: 'all' | 'any'` in the config of `drevo.rag.*` and
+  holds - as `ftsMode: 'all' | 'any'` in the config of `drevo.rag.*` and
   `drevo.search.hybrid`, and as an optional third argument of `fts.search` /
   `fts.searchRelationships` (`{ftsMode: 'any'}`). **Behaviour change:** the
   graph-RAG procedures default to `'any'`; pass `ftsMode: 'all'` for the old
@@ -704,9 +713,9 @@ history and the in-repo issue tracker; format loosely follows
 - **Soft keywords can name variables** (issue #765). `RETURN 1 AS starts`,
   `WITH … AS ends`, `MATCH (contains:Stop)`, `UNWIND list AS in` and the
   like were parse errors ("expected identifier"); Neo4j accepts them. The
-  keywords that only ever stand between operands or inside a clause —
+  keywords that only ever stand between operands or inside a clause -
   `starts`, `ends`, `contains`, `in`, `is`, `on`, `by`, `asc`, `desc`,
-  `and`, `or`, `xor` — now name variables, aliases, pattern and path
+  `and`, `or`, `xor` - now name variables, aliases, pattern and path
   variables, `UNWIND`/`FOREACH`/`reduce`/list-predicate variables and
   `YIELD` aliases, keeping their written casing. Each still works as a
   keyword in its own position; clause keywords and expression openers
@@ -772,7 +781,7 @@ history and the in-repo issue tracker; format loosely follows
   (no `ORDER BY`, `DISTINCT`, aggregation or `WITH … WHERE`) now stops once
   it has enough, and a one-node pattern projects only the nodes it keeps:
   `MATCH (n) WHERE n.c = 1 WITH n LIMIT 2000` on 50,000 nodes peaks at
-  1.3 MB instead of 31 MB — the delete loop importers run (`… LIMIT 2000
+  1.3 MB instead of 31 MB - the delete loop importers run (`… LIMIT 2000
   DETACH DELETE n`).
 - **Memory not given back after deleting and rewriting a large graph**
   (issue #711). The Docker image sets `MALLOC_ARENA_MAX=2`: with one glibc
@@ -797,7 +806,7 @@ history and the in-repo issue tracker; format loosely follows
   not after a restart. The id-indexed tables behind the adjacency lists
   hid an entry first stored as an outlier once the table grew past its id.
   The log always held every relationship, so restarting on a fixed build
-  shows them all again — an importer that re-created the missing ones as
+  shows them all again - an importer that re-created the missing ones as
   a workaround will then see those twice.
 
 ### Changed
@@ -842,12 +851,12 @@ history and the in-repo issue tracker; format loosely follows
   `drevo.path.weighted` no longer copies every relationship record it
   visits: the new `GraphEngine::for_each_edge_of` (and
   `GraphSnapshot::for_each_edge_of`) hands each one by reference. On the
-  Sofia road network a route is 11–23% faster (driving A* 90 → 80 ms,
+  Sofia road network a route is 11-23% faster (driving A* 90 → 80 ms,
   walking Dijkstra 137 → 105 ms), and reading every drivable junction's
   relationships takes 5 ms instead of 68 ms.
 - **A writing auto-commit statement is one transaction** (issue #715).
   Its writes go to the log as one record with one fsync, and a statement
-  that fails — an error, the statement timeout, `TERMINATE TRANSACTIONS` —
+  that fails - an error, the statement timeout, `TERMINATE TRANSACTIONS` -
   leaves none of them, as in Neo4j (before, the writes made before the
   failure stayed). On a durable store, creating 2,000 nodes in one
   statement went from 11.5 s to 22 ms and deleting 2,000 from 16.6 s to
@@ -880,7 +889,7 @@ history and the in-repo issue tracker; format loosely follows
 - **Every node within a cost budget: `CALL drevo.path.reachable(start,
   {maxCost, …}) YIELD node, cost, path`** (issue #763). One Dijkstra search
   from `start` returns each node it reaches within `maxCost`, at its least
-  cost, cheapest first — isochrones, and the walk from a place to every
+  cost, cheapest first - isochrones, and the walk from a place to every
   nearby stop. It takes the `relTypes`, `direction` and `cost` options of
   `drevo.path.weighted`, plus `targets: {label}` (return only those nodes,
   search through all), `limit` and `path: true`. Also
@@ -950,8 +959,8 @@ history and the in-repo issue tracker; format loosely follows
   admin guide's timeouts section.
 
 - **The text-to-Cypher provider is set at runtime** (issue #747). The Web
-  UI's Settings panel has a *Text-to-Cypher (Ask)* section — chat completions
-  URL, write-only API key, model — backed by `GET`/`POST /config/text2cypher`.
+  UI's Settings panel has a *Text-to-Cypher (Ask)* section - chat completions
+  URL, write-only API key, model - backed by `GET`/`POST /config/text2cypher`.
   A save is kept in `<data dir>/text2cypher_config.json` (owner-only, sealed
   under encryption at rest, included in server backups and rekeyed with the
   other files), wins over `DREVO_TEXT2CYPHER_*` at the next start, and
@@ -1002,7 +1011,7 @@ history and the in-repo issue tracker; format loosely follows
   travel in plain text; a plain-text client gets no answer. In Rust:
   `grpc::serve_tls_with_security`, `flight::serve_tls_with_security`,
   `rpc_tls::incoming`.
-- **Bolt 5.0–5.4** (issue #651). The handshake takes version ranges and
+- **Bolt 5.0-5.4** (issue #651). The handshake takes version ranges and
   picks the highest version both sides speak, so Neo4j 5.x drivers get
   Bolt 5.4; 4.4 / 4.3 clients are unchanged. Nodes and relationships carry
   `element_id`, `LOGON` / `LOGOFF` log a connection in and out (so
@@ -1303,8 +1312,8 @@ history and the in-repo issue tracker; format loosely follows
   `bolt-tls`. New `drevo::https::TlsListener` serves an axum router over TLS.
 
 - **gRPC and Arrow Flight login** (issue #634). With user management on,
-  gRPC `Execute` and Flight `DoGet` need `authorization` metadata — `Basic`
-  (user:password) or `Bearer <session token>` — else `UNAUTHENTICATED`
+  gRPC `Execute` and Flight `DoGet` need `authorization` metadata - `Basic`
+  (user:password) or `Bearer <session token>` - else `UNAUTHENTICATED`
   (`RESOURCE_EXHAUSTED` after repeated failures, `PERMISSION_DENIED` for a
   user who must change the password). Flight `Handshake` trades a password
   for a session token (pyarrow `authenticate_basic_token`). gRPC `Health`
@@ -1530,12 +1539,12 @@ history and the in-repo issue tracker; format loosely follows
 
 - **CSR adjacency snapshot** (`drevo_core::csr::CsrAdjacency`, issue #382,
   Phase 8): a Compressed-Sparse-Row view of a `GraphSnapshot`'s out-adjacency
-  (`GraphSnapshot::csr_out`) and in-adjacency (`GraphSnapshot::csr_in`) — a
+  (`GraphSnapshot::csr_out`) and in-adjacency (`GraphSnapshot::csr_in`) - a
   cache-friendly, contiguous layout with dense vertex indices, built off the
   immutable MVCC snapshot. The substrate for whole-graph parallel algorithms
   (#408, #412).
 - **Morsel-driven parallel scan** (`CsrAdjacency::par_map`, issue #382): runs a
-  per-vertex closure across worker threads over disjoint output slices — no
+  per-vertex closure across worker threads over disjoint output slices - no
   locking, no contention, no new dependency (`std::thread::scope`). The
   parallel-execution primitive the analytics can fan out over (#411).
 
@@ -1550,9 +1559,9 @@ history and the in-repo issue tracker; format loosely follows
   to `drevo_core::csr` in #409 and #410. **This was my (the assistant's)
   mistake:** I built second implementations of PageRank and WCC over the CSR
   layout without first checking that the crate already ships a complete graph
-  analytics suite in `src/algorithms/` — `pagerank` (serial, `pagerank_parallel`,
+  analytics suite in `src/algorithms/` - `pagerank` (serial, `pagerank_parallel`,
   and `pagerank_native` over the native MVCC snapshot), `louvain`, `wcc`, `scc`,
-  `triangles`, `betweenness`, `closeness` — the canonical, more capable versions
+  `triangles`, `betweenness`, `closeness` - the canonical, more capable versions
   (weighted edges, tolerance-based convergence, configurable damping), exposed as
   `CALL drevo.*` procedures. The csr.rs copies were weaker (unweighted,
   fixed-iteration), unused by anything, and pure duplication, so they are
@@ -1560,4 +1569,4 @@ history and the in-repo issue tracker; format loosely follows
   algorithm; #382's actual intent is to give the *existing* algorithms a CSR
   layout for a real parallel speedup (as the `pagerank_native` doc comment
   already noted), not to reimplement them. The CSR layout and `par_map` above
-  remain — those are the genuinely new, on-target contribution.
+  remain - those are the genuinely new, on-target contribution.

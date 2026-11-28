@@ -1,6 +1,6 @@
-//! End-to-end Cypher scalar-function tests — Phase 10 follow-up task `00138`.
+//! End-to-end Cypher scalar-function tests - Phase 10 follow-up task `00138`.
 //!
-//! The executor ships a built-in library of standalone scalar functions —
+//! The executor ships a built-in library of standalone scalar functions -
 //! string (`toLower` / `toUpper` / `trim` / `substring` / `replace` / `split`
 //! / `left` / `right` / `reverse` / `toString`), numeric (`abs` / `ceil` /
 //! `floor` / `round` / `sign` / `sqrt` / `toInteger` / `toFloat` /
@@ -181,7 +181,7 @@ fn keys_labels_type_id_properties_over_graph() {
         one("MATCH (n:Task {title: 'Ship'}) RETURN labels(n) AS v", &db),
         Value::List(vec![s("Task")])
     );
-    // type() of a relationship. The path head must be a named node — the
+    // type() of a relationship. The path head must be a named node - the
     // executor resolves each segment's predecessor by variable.
     assert_eq!(
         one(
@@ -316,7 +316,7 @@ fn range_drives_row_generation_via_unwind() {
 }
 
 // ===== Vector similarity (issue #202) =======================================
-// `cosine_similarity(a, b)` — cosine of the angle between two numeric-list
+// `cosine_similarity(a, b)` - cosine of the angle between two numeric-list
 // vectors, in `[-1, 1]`. Unlike the `similar()` threshold predicate, it
 // returns the SCORE, so retrieval can `RETURN … AS score ORDER BY score DESC`.
 // NULL-propagating like every other scalar; genuine misuse (arity / type /

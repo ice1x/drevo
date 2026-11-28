@@ -100,10 +100,10 @@ test("elapsed time reads in the largest sensible unit", () => {
 });
 
 test("a missing or bad elapsed time reads as a dash", () => {
-  assert.equal(formatElapsed(null), "—");
-  assert.equal(formatElapsed(undefined), "—");
-  assert.equal(formatElapsed(-5), "—");
-  assert.equal(formatElapsed("12"), "—");
+  assert.equal(formatElapsed(null), "-");
+  assert.equal(formatElapsed(undefined), "-");
+  assert.equal(formatElapsed(-5), "-");
+  assert.equal(formatElapsed("12"), "-");
 });
 
 // ── terminateRequest ─────────────────────────────────────────────────

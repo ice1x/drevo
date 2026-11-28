@@ -1,10 +1,10 @@
-//! Phase 15 task `00092` — Web UI handlers.
+//! Phase 15 task `00092` - Web UI handlers.
 //!
-//! Embedded HTML / JS / CSS for the `drevo browser` — a minimal
+//! Embedded HTML / JS / CSS for the `drevo browser` - a minimal
 //! Cytoscape.js graph explorer served by the same `axum` router
 //! that backs the HTTP API. Assets live at `static/web/` and are
 //! baked into the binary via [`include_str!`] so the deployed
-//! `drevo-server` is self-contained — no separate `static/`
+//! `drevo-server` is self-contained - no separate `static/`
 //! directory to ship alongside.
 //!
 //! ## Routes wired by [`crate::native_api::build_native_router`]
@@ -32,25 +32,25 @@
 //!
 //! Cytoscape.js and its `fcose` layout extension are **vendored** under
 //! `static/web/vendor/` and baked into the binary alongside the rest of
-//! the UI — they are NOT loaded from a public CDN. Earlier revisions
+//! the UI - they are NOT loaded from a public CDN. Earlier revisions
 //! pulled them from `unpkg.com`, but that breaks the WebUI in any
 //! environment where the CDN is unreachable: offline boxes, locked-down
 //! networks, and privacy browsers (Brave Shields blocks `unpkg.com` by
 //! default), leaving the graph canvas stuck on "connecting…". Serving the
-//! libraries same-origin makes the container fully self-contained — the
+//! libraries same-origin makes the container fully self-contained - the
 //! WebUI works the instant `/ui` loads, no third-party request required.
 //!
 //! ## Why embed via `include_str!` instead of `ServeDir`?
 //!
 //! `tower-http::ServeDir` requires the binary to know where its
-//! `static/` directory lives at runtime — fine in a container, awkward
+//! `static/` directory lives at runtime - fine in a container, awkward
 //! in the `drevo-server` distribution model that already ships as a
 //! single statically-linked binary. Embedding keeps that model intact.
-//! The assets are ~10 KB total — negligible binary-size cost.
+//! The assets are ~10 KB total - negligible binary-size cost.
 //!
 //! ## Note on port 7474
 //!
-//! README task `00092` mentions "port 7474" — that's the canonical
+//! README task `00092` mentions "port 7474" - that's the canonical
 //! Neo4j Browser port and the documented suggestion for a stand-alone
 //! UI listener. This implementation deliberately serves `/ui` on the
 //! **same** `axum` listener as the HTTP API (default `8080` via
@@ -62,103 +62,103 @@
 use axum::http::header;
 use axum::response::{IntoResponse, Redirect, Response};
 
-/// `index.html` body — embedded at compile time.
+/// `index.html` body - embedded at compile time.
 const INDEX_HTML: &str = include_str!("../static/web/index.html");
 
-/// `app.js` body — embedded at compile time.
+/// `app.js` body - embedded at compile time.
 const APP_JS: &str = include_str!("../static/web/app.js");
 
-/// `graph_math.js` body — pure, DOM-free geometry helpers used by `app.js`,
+/// `graph_math.js` body - pure, DOM-free geometry helpers used by `app.js`,
 /// embedded at compile time. Unit-tested separately by `graph_math.test.js`
 /// (`node --test`, the `web-assets` CI job).
 const GRAPH_MATH_JS: &str = include_str!("../static/web/graph_math.js");
 
-/// `big_layout.js` body — the layout of a large graph (a force simulation
+/// `big_layout.js` body - the layout of a large graph (a force simulation
 /// computed in short steps, then a pass that leaves no two nodes or titles
 /// overlapping), used by `app.js`. Unit-tested by `big_layout.test.js`
 /// under `node --test`.
 const BIG_LAYOUT_JS: &str = include_str!("../static/web/big_layout.js");
 
-/// `report.js` body — pure helpers for problem toasts and the "Report a
+/// `report.js` body - pure helpers for problem toasts and the "Report a
 /// problem" GitHub issue (#552), used by `app.js`. Unit-tested by
 /// `report.test.js` under `node --test`.
 const REPORT_JS: &str = include_str!("../static/web/report.js");
 
-/// `transactions_view.js` body — pure helpers for the Storage panel's list
+/// `transactions_view.js` body - pure helpers for the Storage panel's list
 /// of running transactions, used by `app.js`. Unit-tested by
 /// `transactions_view.test.js` under `node --test`.
 const TRANSACTIONS_VIEW_JS: &str = include_str!("../static/web/transactions_view.js");
 
-/// `backups_view.js` body — pure helpers for the Storage panel's physical
+/// `backups_view.js` body - pure helpers for the Storage panel's physical
 /// backups, used by `app.js`. Unit-tested by `backups_view.test.js` under
 /// `node --test`.
 const BACKUPS_VIEW_JS: &str = include_str!("../static/web/backups_view.js");
 
-/// `db_access.js` body — pure helpers for marking read-only databases in the
+/// `db_access.js` body - pure helpers for marking read-only databases in the
 /// top bar, used by `app.js`. Unit-tested by `db_access.test.js` under
 /// `node --test`.
 const DB_ACCESS_JS: &str = include_str!("../static/web/db_access.js");
 
-/// `live_refresh.js` body — pure helpers for the live overview (the
+/// `live_refresh.js` body - pure helpers for the live overview (the
 /// `GET /events` URL, change coalescing, the remembered switch), used by
 /// `app.js`. Unit-tested by `live_refresh.test.js` under `node --test`.
 const LIVE_REFRESH_JS: &str = include_str!("../static/web/live_refresh.js");
 
-/// `results_view.js` body — pure helpers for the Table / JSON result views
+/// `results_view.js` body - pure helpers for the Table / JSON result views
 /// (cell formatting, the view a result opens in, CSV), embedded at compile
 /// time. Unit-tested separately by `results_view.test.js` under `node --test`.
 const RESULTS_VIEW_JS: &str = include_str!("../static/web/results_view.js");
 
-/// `query_history.js` body — pure helpers for the query editor (the
+/// `query_history.js` body - pure helpers for the query editor (the
 /// per-browser query history and the key that runs a query), embedded at
 /// compile time. Unit-tested separately by `query_history.test.js`.
 const QUERY_HISTORY_JS: &str = include_str!("../static/web/query_history.js");
 
-/// `auth.js` body — pure sign-in helpers (which screen to show after
+/// `auth.js` body - pure sign-in helpers (which screen to show after
 /// `/auth/me`, sign-in error messages, the password-change request), embedded
 /// at compile time. Unit-tested separately by `auth.test.js`.
 const AUTH_JS: &str = include_str!("../static/web/auth.js");
 
-/// `styles.css` body — embedded at compile time.
+/// `styles.css` body - embedded at compile time.
 const STYLES_CSS: &str = include_str!("../static/web/styles.css");
 
 /// The licence notices of the libraries below: each vendored file with its
 /// package, version, licence and copyright line, and the licence text.
 const VENDOR_LICENSES: &str = include_str!("../static/web/vendor/LICENSES.txt");
 
-/// Cytoscape.js core (`cytoscape@3.30.2`) — vendored, embedded at compile time.
+/// Cytoscape.js core (`cytoscape@3.30.2`) - vendored, embedded at compile time.
 const VENDOR_CYTOSCAPE: &str = include_str!("../static/web/vendor/cytoscape.min.js");
 
-/// `layout-base@2.0.1` — fcose transitive dep, embedded at compile time.
+/// `layout-base@2.0.1` - fcose transitive dep, embedded at compile time.
 const VENDOR_LAYOUT_BASE: &str = include_str!("../static/web/vendor/layout-base.js");
 
-/// `cose-base@2.2.0` — fcose dep (needs `layout-base`), embedded at compile time.
+/// `cose-base@2.2.0` - fcose dep (needs `layout-base`), embedded at compile time.
 const VENDOR_COSE_BASE: &str = include_str!("../static/web/vendor/cose-base.js");
 
-/// `cytoscape-fcose@2.2.0` — fcose physics layout, embedded at compile time.
+/// `cytoscape-fcose@2.2.0` - fcose physics layout, embedded at compile time.
 const VENDOR_FCOSE: &str = include_str!("../static/web/vendor/cytoscape-fcose.js");
 
-/// `webcola@3.4.0` — the WebCola constraint-solver, embedded at compile time.
+/// `webcola@3.4.0` - the WebCola constraint-solver, embedded at compile time.
 /// Backs the live force layout (`cytoscape-cola`) used for Neo4j-Browser-style
 /// drag interaction: dragging a node tugs its neighbours via the running sim.
 const VENDOR_COLA: &str = include_str!("../static/web/vendor/cola.min.js");
 
-/// `cytoscape-cola@2.5.1` — the Cytoscape adapter for WebCola, embedded at
+/// `cytoscape-cola@2.5.1` - the Cytoscape adapter for WebCola, embedded at
 /// compile time. Registers the `cola` layout; needs the `cola` global first.
 const VENDOR_CYTOSCAPE_COLA: &str = include_str!("../static/web/vendor/cytoscape-cola.js");
 
-/// `d3-force@3.0.0` — the force simulation `big_layout.js` arranges a large
+/// `d3-force@3.0.0` - the force simulation `big_layout.js` arranges a large
 /// graph with, embedded at compile time. It needs the three modules below
 /// loaded first.
 const VENDOR_D3_FORCE: &str = include_str!("../static/web/vendor/d3-force.min.js");
 
-/// `d3-dispatch@3.0.1` — events of the d3-force simulation.
+/// `d3-dispatch@3.0.1` - events of the d3-force simulation.
 const VENDOR_D3_DISPATCH: &str = include_str!("../static/web/vendor/d3-dispatch.min.js");
 
-/// `d3-quadtree@3.0.1` — the spatial index d3-force finds nearby nodes with.
+/// `d3-quadtree@3.0.1` - the spatial index d3-force finds nearby nodes with.
 const VENDOR_D3_QUADTREE: &str = include_str!("../static/web/vendor/d3-quadtree.min.js");
 
-/// `d3-timer@3.0.1` — the timer of the d3-force simulation.
+/// `d3-timer@3.0.1` - the timer of the d3-force simulation.
 const VENDOR_D3_TIMER: &str = include_str!("../static/web/vendor/d3-timer.min.js");
 
 /// `GET /ui` → serve the HTML shell.
@@ -315,7 +315,7 @@ fn asset_response(body: &'static str, content_type: &'static str) -> Response {
         [
             (header::CONTENT_TYPE, content_type),
             // Short cache: the assets are bundled into the binary,
-            // but a `cargo build` rotates them — telling the browser
+            // but a `cargo build` rotates them - telling the browser
             // to revalidate on every navigation avoids the "I
             // rebuilt the server and the UI didn't change" surprise
             // during local development. Production deployments
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn embedded_index_references_required_dom_elements() {
         // Every id the front-end script reaches for via
-        // `getElementById` must be present in the HTML — otherwise
+        // `getElementById` must be present in the HTML - otherwise
         // the UI silently breaks at runtime.
         for needle in [
             "id=\"search-form\"",
@@ -366,7 +366,7 @@ mod tests {
         ] {
             assert!(
                 INDEX_HTML.contains(needle),
-                "index.html must contain `{needle}` — app.js depends on it"
+                "index.html must contain `{needle}` - app.js depends on it"
             );
         }
     }
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn embedded_index_has_an_inline_emoji_favicon() {
         // The favicon is the 🎄 code point (U+1F384) as an inline SVG *text*
-        // glyph in a data: URI — no vendor artwork shipped (the browser draws
+        // glyph in a data: URI - no vendor artwork shipped (the browser draws
         // it with the viewer's font), no file, no external origin. Guards
         // against it being dropped and against it regressing to a fetched icon.
         assert!(
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn embedded_index_loads_cytoscape_from_local_vendor() {
         // Cytoscape.js is vendored same-origin under /ui/vendor/, NOT
-        // pulled from a public CDN — see the module docs for why (Brave
+        // pulled from a public CDN - see the module docs for why (Brave
         // Shields / offline / locked-down networks broke the CDN load).
         assert!(
             INDEX_HTML.contains("/ui/vendor/cytoscape.min.js"),
@@ -494,7 +494,7 @@ mod tests {
         ] {
             assert!(
                 !INDEX_HTML.contains(ext),
-                "index.html must not load assets from an external origin (`{ext}`) — vendor them locally"
+                "index.html must not load assets from an external origin (`{ext}`) - vendor them locally"
             );
         }
     }
@@ -556,7 +556,7 @@ mod tests {
             "app.js must start/stop the live simulation"
         );
         // The sim is armed on the first real `drag` (not on `grab`, which fires
-        // on a bare click and would reshuffle the graph on mere selection — see
+        // on a bare click and would reshuffle the graph on mere selection - see
         // #437) and stopped on `free`. Because cytoscape-cola pins the dragged
         // node to the cursor via its own `grab` handler, app.js re-emits `grab`
         // when it starts the sim so the pin still takes and neighbours trail.
@@ -564,8 +564,8 @@ mod tests {
             APP_JS.contains("\"grab\"") && APP_JS.contains("\"free\""),
             "app.js must re-emit grab when the drag sim starts and stop it on free"
         );
-        // Because cola registers its grab handler only when run() is called —
-        // after this grab was already dispatched — app.js must re-emit grab so
+        // Because cola registers its grab handler only when run() is called -
+        // after this grab was already dispatched - app.js must re-emit grab so
         // cola pins the just-grabbed node to the cursor.
         assert!(
             APP_JS.contains(".emit(\"grab\")"),
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn embedded_graph_math_module_backs_live_drag_spring() {
         // The live drag spring length is computed by the pure, unit-tested
-        // graph_math.js module — not hardcoded in app.js (which regressed once
+        // graph_math.js module - not hardcoded in app.js (which regressed once
         // as `edgeLength: 150`, desynced from fcose's retuned 90, see #440).
         assert!(
             GRAPH_MATH_JS.contains("meanEdgeLength") && GRAPH_MATH_JS.contains("DrevoGraphMath"),
@@ -936,7 +936,7 @@ mod tests {
         assert!(STYLES_CSS.contains("grid-template-columns"));
     }
 
-    // ── Phase 15 task 00093 — Web UI kinetics ────────────────────────────
+    // ── Phase 15 task 00093 - Web UI kinetics ────────────────────────────
 
     #[test]
     fn embedded_index_loads_fcose_layout_extension() {
@@ -948,7 +948,7 @@ mod tests {
             INDEX_HTML.contains("/ui/vendor/cytoscape-fcose.js"),
             "index.html must load the vendored cytoscape-fcose extension"
         );
-        // fcose depends on cose-base which depends on layout-base — both
+        // fcose depends on cose-base which depends on layout-base - both
         // must be present and ordered before the extension.
         assert!(
             INDEX_HTML.contains("/ui/vendor/cose-base.js")
@@ -1016,8 +1016,8 @@ mod tests {
     #[test]
     fn embedded_app_js_edge_tap_opens_inspector() {
         // Clicking a relationship on the canvas must populate the right
-        // sidebar with the edge's metadata (kind, endpoints, properties)
-        // — not just hover-highlight it. A dedicated `tap` handler on the
+        // sidebar with the edge's metadata (kind, endpoints, properties) -
+        // not just hover-highlight it. A dedicated `tap` handler on the
         // `edge` selector routes the edge's raw wire object to the
         // inspector.
         assert!(
@@ -1040,7 +1040,7 @@ mod tests {
     #[test]
     fn embedded_app_js_colors_nodes_dynamically() {
         // Node colour is derived from `kind` for *any* kind, not just
-        // the three hard-coded selectors — a hash-to-hue function gives
+        // the three hard-coded selectors - a hash-to-hue function gives
         // every distinct kind a stable, distinguishable colour.
         assert!(
             APP_JS.contains("colorForKind"),
@@ -1137,7 +1137,7 @@ mod tests {
     #[test]
     fn embedded_app_js_induced_edges_only() {
         // A sample of N nodes must draw only edges whose BOTH endpoints are
-        // in the sampled set — otherwise cytoscape throws on a dangling
+        // in the sampled set - otherwise cytoscape throws on a dangling
         // edge endpoint. Lock the membership-filter helper.
         assert!(
             APP_JS.contains("inducedEdges") || APP_JS.contains("has(e.from_id)"),

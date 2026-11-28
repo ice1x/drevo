@@ -1,8 +1,8 @@
-# neo4j-to-drevo — standalone migration tool (task 00134).
+# neo4j-to-drevo - standalone migration tool (task 00134).
 #
 # DELIBERATELY a separate package from `drevo-py`: the database and its
 # Python bindings (`drevo`) must know NOTHING about Neo4j. This tool
-# depends on `drevo` (it writes through the public bindings) — the
+# depends on `drevo` (it writes through the public bindings) - the
 # dependency points one way only. The `neo4j` driver is an optional
 # extra needed only for the live-Bolt source; the default offline
 # APOC-dump path is pure standard library.

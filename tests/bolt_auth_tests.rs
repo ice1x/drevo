@@ -1,4 +1,4 @@
-//! Integration tests for Bolt authentication — Phase 11 task `00074`.
+//! Integration tests for Bolt authentication - Phase 11 task `00074`.
 //!
 //! These drive the argon2-backed [`UserStore`] end-to-end through the
 //! synchronous session loop (`run_session_sync_with_auth_durable`), the same
@@ -11,7 +11,7 @@
 //! * an issued bearer **session token** re-authenticates without the
 //!   password.
 //!
-//! Gated on the `auth` feature (or its old name `bolt-auth`) — the whole file compiles to nothing
+//! Gated on the `auth` feature (or its old name `bolt-auth`) - the whole file compiles to nothing
 //! in the default build (mirroring `tests/bolt_tls_tests.rs`).
 
 #![cfg(all(not(target_arch = "wasm32"), feature = "auth"))]

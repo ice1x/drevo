@@ -1,9 +1,9 @@
-//! `CALL drevo.cypher.fromText(prompt)` — text-to-Cypher proxy procedure
+//! `CALL drevo.cypher.fromText(prompt)` - text-to-Cypher proxy procedure
 //! (issue #429), exercised end-to-end through the Cypher executor with a **fake**
 //! generator (no network / no LLM).
 //!
 //! Verifies the two paths a client sees: a clear "not configured" error when no
-//! upstream is installed, and — once a generator is installed — a single
+//! upstream is installed, and - once a generator is installed - a single
 //! `cypher` row carrying the generated query, with the live graph schema handed
 //! to the generator so the model queries the graph that actually exists.
 

@@ -5,7 +5,7 @@
 //! must never deadlock or tear, point-in-time snapshot stability under a
 //! flood of commits, and realistic workflows from the target domains
 //! (bug tracker, IT task manager, CBT journal). A `proptest` pins the core
-//! invariant — a snapshot is a stable point-in-time view — against randomly
+//! invariant - a snapshot is a stable point-in-time view - against randomly
 //! generated update histories.
 
 use std::sync::{Arc, Barrier};
@@ -34,7 +34,7 @@ fn committed_visible_inflight_hidden() {
 }
 
 /// A long-running reader keeps seeing the same value across many concurrent
-/// committed updates — repeatable read / snapshot isolation.
+/// committed updates - repeatable read / snapshot isolation.
 #[test]
 fn long_reader_sees_repeatable_view_under_write_flood() {
     let mgr = Arc::new(TransactionManager::new());
@@ -105,7 +105,7 @@ fn concurrent_readers_and_writers_never_tear_or_deadlock() {
                 let got = store.get(&"k".into(), &snap).unwrap();
                 match got {
                     Some(v) => assert!(legal(v), "read a value that was never committed: {v}"),
-                    None => panic!("seeded key vanished — a committed value was lost"),
+                    None => panic!("seeded key vanished - a committed value was lost"),
                 }
             }
         }));
@@ -137,7 +137,7 @@ fn bug_tracker_two_concurrent_edits_are_isolated() {
 
     // engineer B opens a transaction at the same time
     let bob = mgr.snapshot(INVALID_XID).unwrap();
-    // B must still see "open" — A's edit is uncommitted
+    // B must still see "open" - A's edit is uncommitted
     assert_eq!(
         store.get(&"BUG-42".into(), &bob).unwrap(),
         Some("open".into())
@@ -161,8 +161,8 @@ fn bug_tracker_two_concurrent_edits_are_isolated() {
     assert_eq!(store.version_count(&"BUG-42".into()).unwrap(), 2);
 }
 
-/// IT task-manager workflow: a rolled-back bulk reassignment leaves no trace
-/// — an aborted transaction's writes are invisible to everyone.
+/// IT task-manager workflow: a rolled-back bulk reassignment leaves no trace -
+/// an aborted transaction's writes are invisible to everyone.
 #[test]
 fn task_manager_rolled_back_bulk_edit_is_invisible() {
     let mgr = Arc::new(TransactionManager::new());
@@ -242,7 +242,7 @@ proptest! {
     /// random history of committed single-key updates, capturing a snapshot
     /// after every step together with the value expected *as of that step*.
     /// After the whole history has run, every captured snapshot must still
-    /// resolve to the value it should have seen at capture time — proving no
+    /// resolve to the value it should have seen at capture time - proving no
     /// later commit ever leaked backwards into an older snapshot.
     #[test]
     fn snapshots_are_point_in_time_stable(

@@ -1,4 +1,4 @@
-//! Plan cache — memoise planned queries so a repeated query string skips the
+//! Plan cache - memoise planned queries so a repeated query string skips the
 //! plan-building work.
 //!
 //! [`PlanCache`] is a bounded, thread-safe, least-recently-used cache keyed by
@@ -6,7 +6,7 @@
 //! cost-based planner (`00085`): planning is pure given a
 //! [`GraphStatistics`](crate::planner::stats::GraphStatistics) snapshot, so
 //! caching the resulting [`PlanNode`] is sound until the
-//! statistics change — at which point the host calls [`clear`](PlanCache::clear)
+//! statistics change - at which point the host calls [`clear`](PlanCache::clear)
 //! to invalidate.
 //!
 //! The cache never panics: a lock poisoned by a panic in another thread is
@@ -23,7 +23,7 @@ use crate::planner::plan::PlanNode;
 /// A bounded LRU cache mapping a query string to its planned [`PlanNode`].
 ///
 /// Construct with [`PlanCache::new`] giving the maximum number of entries
-/// (capacity `0` disables caching — every lookup misses and nothing is
+/// (capacity `0` disables caching - every lookup misses and nothing is
 /// retained). Thread-safe and cheap to share behind an `Arc`.
 #[derive(Debug)]
 pub struct PlanCache {

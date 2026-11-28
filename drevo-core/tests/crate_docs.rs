@@ -1,7 +1,7 @@
 //! The published docs (docs.rs crate page, module pages, crates.io README) are
 //! written for someone using `drevo-core`, not for the people who extracted it.
 //!
-//! They must describe what the crate *is* and *does* today — not the long-gone
+//! They must describe what the crate *is* and *does* today - not the long-gone
 //! KV store, nor migration bookkeeping (extraction slices, RFC phases, issue
 //! numbers) that means nothing to a reader of docs.rs.
 
@@ -51,8 +51,8 @@ fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The doc comments of a source file — module docs (`//!`) and item docs
-/// (`///`) — with every other line blanked so line numbers stay true. Private
+/// The doc comments of a source file - module docs (`//!`) and item docs
+/// (`///`) - with every other line blanked so line numbers stay true. Private
 /// items are included too: docs.rs hides them, but `--document-private-items`
 /// and readers of the source do not.
 fn doc_lines(file: &Path) -> Vec<String> {

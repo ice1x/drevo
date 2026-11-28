@@ -1,9 +1,9 @@
 ---
 name: drevo-tdd
-description: Strict Test-Driven Development workflow for drevo — RED→GREEN→REFACTOR, three test layers, no code without tests
+description: Strict Test-Driven Development workflow for drevo - RED→GREEN→REFACTOR, three test layers, no code without tests
 ---
 
-# drevo — TDD Workflow
+# drevo - TDD Workflow
 
 ## When to Use
 Always. Every feature, bug fix, or refactor in this project follows TDD.
@@ -20,11 +20,11 @@ Always. Every feature, bug fix, or refactor in this project follows TDD.
 
 For every task:
 
-1. **RED — Write failing tests first.** Define the expected behavior as test cases before any implementation. Run `cargo test` and confirm the new tests fail (compilation error or assertion failure).
-2. **GREEN — Write the minimum code to pass.** Implement just enough to make the failing tests pass. Resist the urge to add features, optimizations, or abstractions not driven by a test.
-3. **REFACTOR — Improve without changing behavior.** With green tests as a safety net, clean up: extract helpers, eliminate duplication, rename for clarity. Run `cargo test` after each change.
+1. **RED - Write failing tests first.** Define the expected behavior as test cases before any implementation. Run `cargo test` and confirm the new tests fail (compilation error or assertion failure).
+2. **GREEN - Write the minimum code to pass.** Implement just enough to make the failing tests pass. Resist the urge to add features, optimizations, or abstractions not driven by a test.
+3. **REFACTOR - Improve without changing behavior.** With green tests as a safety net, clean up: extract helpers, eliminate duplication, rename for clarity. Run `cargo test` after each change.
 
-If you find yourself writing implementation before tests — stop, delete the code, write the test first.
+If you find yourself writing implementation before tests - stop, delete the code, write the test first.
 
 ---
 
@@ -41,14 +41,14 @@ If you find yourself writing implementation before tests — stop, delete the co
 - Location: `tests/<topic>.rs` files
 - Scope: cross-module interactions, in-process
 - Run: `cargo test --test '*'`
-- Storage tests parameterized by backend (`MemoryBackend` + `RedbBackend`) — same test suite runs against both via macro parameterization
+- Storage tests parameterized by backend (`MemoryBackend` + `RedbBackend`) - same test suite runs against both via macro parameterization
 - Example: `tests/storage_tests.rs`, `tests/node_crud_tests.rs`, `tests/fts_recall_tests.rs`, `tests/edge_crud_tests.rs`
 
 ### 3. Scenario E2E Tests
 - Location: `tests/scenario_<name>.rs`
 - Scope: full domain workflows from the use cases (CBT, story editor, task manager, ERP, bug tracker)
 - Validates that `kind` / `properties` / `edges` patterns work end-to-end for each domain
-- Each scenario file is large (40–80 tests) and exercises CRUD, traversal, FTS, subgraph, and edge cases
+- Each scenario file is large (40-80 tests) and exercises CRUD, traversal, FTS, subgraph, and edge cases
 - Already implemented: `scenario_cbt_journal`, `scenario_story_editor`, `scenario_task_manager`, `scenario_erp`, `scenario_bug_tracker`
 
 ---
@@ -82,7 +82,7 @@ The CI workflow is in `.github/workflows/`. Cross-compilation (iOS / Android / W
 - Location: `benches/<topic>_bench.rs`
 - Existing benches: storage layer (`put/get/scan_prefix`), graph layer (insert / read), FTS (search / index insert / list_recent), traversal (BFS / DFS / shortest_path / subgraph at multiple depths)
 - Run: `cargo bench`
-- A bench is NOT a substitute for a test — bench measures speed, test verifies correctness. Both are required for performance-sensitive code.
+- A bench is NOT a substitute for a test - bench measures speed, test verifies correctness. Both are required for performance-sensitive code.
 
 ---
 
@@ -119,13 +119,13 @@ For algorithmic code (FTS tokenizer, graph invariants), use `proptest`. Tracked 
 
 ---
 
-## Python tests (`drevo-py` — the API/SDK minority)
+## Python tests (`drevo-py` - the API/SDK minority)
 
 Most of drevo is Rust and follows the `cargo fmt && cargo clippy && cargo test` gates above. The `drevo-py` crate (PyO3 bindings + the `drevo.rag` SDK) is the small Python surface, and its pytest suites follow the global Python-testing rule (`~/.claude/CLAUDE.md` → "Python Testing"):
 
-- **`faker`** — default ON for generating realistic test data in `drevo-py/tests/**` (nodes, edges, document text, CBT/story/task/ERP/bug fixtures) instead of hand-rolled literals; seed it when a test must stay deterministic.
-- **`hypothesis`** — case-by-case property-based tests for logic with clear invariants (UUID round-trips, serialization, query-result shape); weigh runtime/flakiness cost before applying — skip for thin CRUD glue.
-- **`mutmut`** — case-by-case mutation testing to validate suite strength on high-value SDK logic; expensive, so apply deliberately, not as a default gate.
+- **`faker`** - default ON for generating realistic test data in `drevo-py/tests/**` (nodes, edges, document text, CBT/story/task/ERP/bug fixtures) instead of hand-rolled literals; seed it when a test must stay deterministic.
+- **`hypothesis`** - case-by-case property-based tests for logic with clear invariants (UUID round-trips, serialization, query-result shape); weigh runtime/flakiness cost before applying - skip for thin CRUD glue.
+- **`mutmut`** - case-by-case mutation testing to validate suite strength on high-value SDK logic; expensive, so apply deliberately, not as a default gate.
 
 Declare these in `drevo-py/pyproject.toml` → `[project.optional-dependencies].dev` when first used. This is additive to (not a replacement for) the Rust gates, which remain the source of truth for the core engine.
 
@@ -134,10 +134,10 @@ Declare these in `drevo-py/pyproject.toml` → `[project.optional-dependencies].
 ## Order of Operations for a New Feature
 
 1. Read the relevant section of `README.md` (task `0XXXX`, definition of done)
-2. Add unit tests describing the expected behavior — confirm they fail
-3. Add integration tests describing realistic usage — confirm they fail
+2. Add unit tests describing the expected behavior - confirm they fail
+3. Add integration tests describing realistic usage - confirm they fail
 4. Implement the feature with the minimum code to pass
-5. Run `cargo fmt && cargo clippy && cargo test` — all must be green
+5. Run `cargo fmt && cargo clippy && cargo test` - all must be green
 6. Add a scenario test if the feature touches an end-user workflow
 7. Add a benchmark if the feature is on a performance-critical path
 8. Update `Current Status` section of `README.md` (mark task `[x]`)
@@ -148,8 +148,8 @@ Declare these in `drevo-py/pyproject.toml` → `[project.optional-dependencies].
 ## Project-Specific Conventions
 
 - `cargo fmt` before every commit (enforced by CI)
-- `cargo clippy -- -W clippy::all` — zero warnings
-- No `unwrap()` / `expect()` in library code — `Result<T, DrevoError>` everywhere
+- `cargo clippy -- -W clippy::all` - zero warnings
+- No `unwrap()` / `expect()` in library code - `Result<T, DrevoError>` everywhere
 - `unwrap()` allowed ONLY in tests and benchmarks
 - No `unsafe` without explicit justification in a comment
 - Doc-comments on every `pub` API surface

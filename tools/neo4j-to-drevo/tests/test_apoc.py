@@ -1,4 +1,4 @@
-"""Unit tests for `ApocJsonSource` — the offline dump → load path.
+"""Unit tests for `ApocJsonSource` - the offline dump → load path.
 
 Reads an `apoc.export.json.all` JSON-Lines dump from disk (no live Neo4j,
 no driver) and presents it as the engine's `GraphSource`.

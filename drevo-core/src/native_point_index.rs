@@ -10,8 +10,8 @@
 //!
 //! A node is indexed when it carries the spec's label (as its kind or as a
 //! secondary label) and both properties hold finite numbers, the latitude in
-//! −90..=90 and the longitude in −180..=180. Anything else — a missing
-//! property, a string, a number out of range — leaves the node out.
+//! −90..=90 and the longitude in −180..=180. Anything else - a missing
+//! property, a string, a number out of range - leaves the node out.
 //!
 //! Distances are haversine distances on a sphere of [`EARTH_RADIUS_M`]
 //! metres. Results come nearest first; equal distances are ordered by node id.

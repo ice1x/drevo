@@ -5,7 +5,7 @@
 //!
 //! These run through [`NativeService::execute`], which wires the durable
 //! semantic control plane (the vector-index registry lives there) and the
-//! full-text index — so this exercises the real name→(label, property)
+//! full-text index - so this exercises the real name→(label, property)
 //! resolution and, for the durable path, that a registration survives a reopen.
 
 use std::collections::HashMap;
@@ -80,7 +80,7 @@ fn query_nodes_matches_drevo_vector_query_exactly() {
     );
 
     // The Neo4j-named surface resolves to the same (label, property) and runs
-    // the same cosine scan as the drevo-native procedure — identical rows.
+    // the same cosine scan as the drevo-native procedure - identical rows.
     let via_named = run_ok(&svc, QUERY);
     let via_native = run_ok(
         &svc,
@@ -135,7 +135,7 @@ fn non_vector_schema_ddl_is_accepted_as_a_noop() {
     let svc = NativeService::in_memory();
     seed(&svc);
     // A driver's schema bootstrap (drevo auto-indexes, so these do nothing) must
-    // not fail — each returns an empty result rather than a parse/exec error.
+    // not fail - each returns an empty result rather than a parse/exec error.
     for stmt in [
         "CREATE INDEX chunk_title IF NOT EXISTS FOR (c:Chunk) ON (c.title)",
         "CREATE RANGE INDEX chunk_title2 FOR (c:Chunk) ON (c.title)",

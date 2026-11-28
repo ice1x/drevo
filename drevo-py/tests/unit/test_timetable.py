@@ -1,4 +1,4 @@
-"""Unit tests for `CALL drevo.path.timetable` from Python — public-transport
+"""Unit tests for `CALL drevo.path.timetable` from Python - public-transport
 journeys over a timetable stored on hop relationships between stops.
 
 The fixture is one bus line, Central → Market → Park (trips 11 and 12), and

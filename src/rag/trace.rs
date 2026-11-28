@@ -66,7 +66,7 @@ pub(crate) struct TraceEntry {
 }
 
 /// The nodes a trace links to: those `rendered` wrote, then those it
-/// skipped, then `cut` — the node the expansion stopped at — when there is
+/// skipped, then `cut` - the node the expansion stopped at - when there is
 /// one.
 pub(crate) fn entries(
     subgraph: &Subgraph,

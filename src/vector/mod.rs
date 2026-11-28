@@ -1,4 +1,4 @@
-//! Phase 12 task `00075` — dense `f32` vector embeddings and the
+//! Phase 12 task `00075` - dense `f32` vector embeddings and the
 //! similarity / distance functions that operate on them.
 //!
 //! This module is the foundation the rest of Phase 12 builds on: the
@@ -18,13 +18,13 @@
 //! validates every element once at the boundary and hands back a
 //! [`Vector`](crate::vector::Vector) that the distance functions can
 //! trust. [`Vector::to_json_value`](crate::vector::Vector::to_json_value)
-//! is the inverse — it serializes back
+//! is the inverse - it serializes back
 //! into the JSON shape stored on a node. Keeping that round-trip in one
 //! place means callers never sprinkle `as f64` / `as_f64()` casts (and
 //! their silent NaN traps) across the codebase.
 //!
-//! The type is dependency-free and always compiled — no Cargo feature
-//! gate — because both the embedded sync path and the future Bolt /
+//! The type is dependency-free and always compiled - no Cargo feature
+//! gate - because both the embedded sync path and the future Bolt /
 //! Python surfaces need it.
 
 /// Cosine similarity, Euclidean distance, and dot product over `&[f32]`.
@@ -32,7 +32,7 @@ pub mod distance;
 /// HNSW approximate-nearest-neighbor index over [`Vector`] embeddings
 /// (`00076`).
 pub mod hnsw;
-/// Durable embedding store — redb-backed persistence and a batched
+/// Durable embedding store - redb-backed persistence and a batched
 /// insert API for [`Vector`] payloads (`00078`).
 pub mod store;
 
@@ -44,7 +44,7 @@ pub use hnsw::{HnswConfig, HnswIndex, Metric, Neighbor};
 /// Every failure mode is recoverable: the inputs originate from
 /// user-supplied node `properties` (an arbitrary JSON array), so a bad
 /// length or a non-numeric element must surface as an error the HTTP /
-/// Bolt / FFI layers can map to a client response — never a panic.
+/// Bolt / FFI layers can map to a client response - never a panic.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VectorError {
     /// The two operands have different lengths, so an element-wise
@@ -64,7 +64,7 @@ pub enum VectorError {
 
     /// Cosine similarity is undefined when either operand has zero
     /// magnitude (the angle between a point and the origin is
-    /// undefined — it would divide by zero).
+    /// undefined - it would divide by zero).
     #[error("cosine similarity is undefined for a zero-magnitude vector")]
     ZeroVector,
 
@@ -126,9 +126,9 @@ impl Vector {
     ///
     /// # Errors
     ///
-    /// * [`VectorError::NotAnArray`] — the value is not a JSON array.
-    /// * [`VectorError::NonNumeric`] — an element is not a number.
-    /// * [`VectorError::NonFinite`] — an element is NaN or ±∞.
+    /// * [`VectorError::NotAnArray`] - the value is not a JSON array.
+    /// * [`VectorError::NonNumeric`] - an element is not a number.
+    /// * [`VectorError::NonFinite`] - an element is NaN or ±∞.
     pub fn from_json_value(value: &serde_json::Value) -> Result<Self, VectorError> {
         let arr = value
             .as_array()

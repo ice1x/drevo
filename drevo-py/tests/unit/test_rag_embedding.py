@@ -1,7 +1,7 @@
 """Unit tests for `drevo.rag.embedding` (Phase 12 task `00079`).
 
-Covers the pure-Python embedding helpers — `Embedder`, `VectorHit`,
-`embed_and_store`, `vector_search` — plus the now-implemented
+Covers the pure-Python embedding helpers - `Embedder`, `VectorHit`,
+`embed_and_store`, `vector_search` - plus the now-implemented
 `Retriever.retrieve_with_embedding` and `ingest_documents`' first-class
 persistence. The `orthogonal_embedder` fixture gives one-hot vectors per
 distinct string, so nearest-neighbour outcomes are deterministic.

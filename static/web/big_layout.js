@@ -1,4 +1,4 @@
-// drevo browser — layout of a large graph, split out of app.js so it can be
+// drevo browser - layout of a large graph, split out of app.js so it can be
 // unit-tested under `node --test` with no DOM and no Cytoscape (see
 // big_layout.test.js).
 //
@@ -13,8 +13,8 @@
 //   - d3-force (vendor/d3-force.min.js and the three d3 modules it needs)
 //     arranges the nodes, one tick at a time, so the caller can paint
 //     between ticks;
-//   - WebCola's `removeOverlaps` (vendor/cola.min.js) then moves the boxes —
-//     a node and the title drawn below it — apart, as little as it takes.
+//   - WebCola's `removeOverlaps` (vendor/cola.min.js) then moves the boxes -
+//     a node and the title drawn below it - apart, as little as it takes.
 //
 // UMD: attaches to the global `DrevoBigLayout` in the browser (loaded after
 // the vendor files and before app.js) and to `module.exports` under node's
@@ -82,8 +82,8 @@
   const GROUP_GAP = 40;
   const PACK_TICKS = 300;
 
-  // A hub — a node with at least this many relationships, and at least
-  // HUB_SCALE × √(number of nodes) of them — is left out of the groups and
+  // A hub - a node with at least this many relationships, and at least
+  // HUB_SCALE × √(number of nodes) of them - is left out of the groups and
   // stands at the centre of the nodes it links to.
   const HUB_MIN_DEGREE = 20;
   const HUB_SCALE = 1;
@@ -145,7 +145,7 @@
   // then as circles with room around them, and overlap removal finishes it.
   // Same interface as createLayout. Nodes that come with a position keep it
   // as far as the others allow: a graph where some nodes are placed is only
-  // completed — the new nodes go next to a neighbour and whatever overlaps
+  // completed - the new nodes go next to a neighbour and whatever overlaps
   // is moved apart.
   function pieceLayout(nodes, edges) {
     if (nodes.length === 0) {
@@ -195,7 +195,7 @@
     }
 
     // A fresh layout runs in two stages. The first arranges the graph as
-    // points — relationships pull, everything else pushes — which is cheap
+    // points - relationships pull, everything else pushes - which is cheap
     // and decides who ends up next to whom. The picture is then enlarged
     // until the boxes have room, and the second stage evens the spacing out
     // with one circle per box.
@@ -359,16 +359,16 @@
   // `step(units)` does at most that many units of work and says whether the
   // layout is finished.
   //
-  // A fresh layout finds the groups of the graph — nodes related more among
-  // themselves than to the rest (Louvain) — and lays each one out as an
+  // A fresh layout finds the groups of the graph - nodes related more among
+  // themselves than to the rest (Louvain) - and lays each one out as an
   // island of its own; the nodes with no relationship form one more. The
   // islands are then packed with room between them, those that share
   // relationships side by side. Laid out as one piece, a graph of thousands
   // of nodes comes out as an even disc, its relationships running across it
   // in every direction.
   //
-  // A hub — a node a large part of the graph links to, such as a project's
-  // `types.py` or its layer — is left out of the islands: pulled towards it,
+  // A hub - a node a large part of the graph links to, such as a project's
+  // `types.py` or its layer - is left out of the islands: pulled towards it,
   // all the nodes it touches would end up in one knot around it, their own
   // relationships running across the knot. Once the islands are packed, each
   // hub stands at the centre of the nodes it links to.

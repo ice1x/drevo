@@ -1,10 +1,10 @@
-//! Explicit transactions — `Drevo.begin()` / `Drevo.transaction()` (#554).
+//! Explicit transactions - `Drevo.begin()` / `Drevo.transaction()` (#554).
 //!
 //! A [`Transaction`] wraps one registered native transaction
 //! (`NativeService::begin_tx` / `execute_in_tx` / `commit_tx` /
 //! `rollback_tx`): its Cypher statements read their own writes, nobody else
 //! sees them until `commit()`, and `rollback()` discards them. Commit is one
-//! fsynced WAL batch and optimistic — a graph that changed since `begin()`
+//! fsynced WAL batch and optimistic - a graph that changed since `begin()`
 //! raises the retryable [`TransactionConflict`]. A statement that fails
 //! inside the transaction rolls it back (Neo4j semantics: the working copy
 //! may already hold part of that statement's writes), and any use of a
@@ -247,7 +247,7 @@ impl Transaction {
 
     /// Two-phase commit, phase one (#556): validate the transaction and record
     /// it durably as prepared under `gid`, closing it. Finish it with
-    /// `Drevo.commit_prepared(gid)` or `Drevo.rollback_prepared(gid)` — from
+    /// `Drevo.commit_prepared(gid)` or `Drevo.rollback_prepared(gid)` - from
     /// any handle, also after a restart. While it is prepared, every other
     /// write raises `TransactionConflict`. Past the transaction's
     /// `timeout_ms` it raises `QueryTimeoutError` and rolls back instead.

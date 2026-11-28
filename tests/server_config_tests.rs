@@ -3,17 +3,17 @@
 //!
 //! The pre-`00112` server binary inlined all env-var parsing and
 //! validation inside `main()`, which made the four `expect()` calls
-//! at startup untestable — the only way to exercise a malformed
+//! at startup untestable - the only way to exercise a malformed
 //! `DREVO_PORT` was to launch the binary as a subprocess. Task
 //! `00112` extracts that logic into [`drevo::server::Config`] so each
 //! validation rule lives behind a unit test.
 //!
 //! Rules verified:
-//! - `drevo-rust` §"Error Handling" — _"Never `unwrap()` / `expect()`
+//! - `drevo-rust` §"Error Handling" - _"Never `unwrap()` / `expect()`
 //!   in library code"._ The server module replaces every `expect()`
 //!   with a typed [`drevo::server::ConfigError`].
-//! - `drevo-tdd` §"every public function — at least 1 test".
-//! - README task `00112` — _"Env-var parsing: `DREVO_PORT` bounds
+//! - `drevo-tdd` §"every public function - at least 1 test".
+//! - README task `00112` - _"Env-var parsing: `DREVO_PORT` bounds
 //!   (u16, 1024+ recommended in container); `DREVO_DATA_DIR` path
 //!   validation"._
 
@@ -41,7 +41,7 @@ fn from_env_defaults_when_nothing_is_set() {
 }
 
 // ---------------------------------------------------------------------
-// Overrides — happy path
+// Overrides - happy path
 // ---------------------------------------------------------------------
 
 #[test]
@@ -105,7 +105,7 @@ fn port_zero_is_rejected() {
 
 #[test]
 fn port_above_u16_is_rejected() {
-    // 65536 overflows u16 — parse error.
+    // 65536 overflows u16 - parse error.
     let err = Config::from_env(getter(HashMap::from([("DREVO_PORT", "65536")]))).unwrap_err();
     assert!(matches!(err, ConfigError::InvalidPort { .. }));
 }
@@ -136,7 +136,7 @@ fn port_at_max_u16_is_accepted() {
 
 #[test]
 fn port_one_is_accepted_but_privileged() {
-    // 1..1024 is "privileged" — accepted (operator's choice) but
+    // 1..1024 is "privileged" - accepted (operator's choice) but
     // [`Config::is_privileged_port`] flags it so the binary can warn.
     let cfg = Config::from_env(getter(HashMap::from([("DREVO_PORT", "80")]))).unwrap();
     assert_eq!(cfg.port, 80);
@@ -208,7 +208,7 @@ fn data_dir_absolute_path_is_accepted() {
 
 #[test]
 fn data_dir_relative_path_is_accepted() {
-    // Relative paths are permitted (useful for local dev) — the
+    // Relative paths are permitted (useful for local dev) - the
     // validation only rejects the empty string. Container deployments
     // rely on the absolute `/data` default.
     let cfg = Config::from_env(getter(HashMap::from([("DREVO_DATA_DIR", "./var/data")]))).unwrap();

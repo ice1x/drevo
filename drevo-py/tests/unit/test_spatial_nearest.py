@@ -1,4 +1,4 @@
-"""Unit tests for `CALL drevo.spatial.nearest` from Python — the nodes nearest
+"""Unit tests for `CALL drevo.spatial.nearest` from Python - the nodes nearest
 to a latitude/longitude, from a point index.
 
 The fixture is three tram stops in Sofia and a depot that is not a stop.

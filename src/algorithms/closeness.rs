@@ -1,9 +1,9 @@
-//! Closeness centrality (harmonic) — RFC #307 Phase 8.
+//! Closeness centrality (harmonic) - RFC #307 Phase 8.
 //!
 //! Closeness measures how near a node is to every other node it can reach: a
 //! high score means short routes to the rest of the graph. This module uses the
-//! **harmonic** variant — the sum of reciprocal distances,
-//! `C(v) = Σ_{u reachable, u≠v} 1 / d(v, u)` — rather than the classical
+//! **harmonic** variant - the sum of reciprocal distances,
+//! `C(v) = Σ_{u reachable, u≠v} 1 / d(v, u)` - rather than the classical
 //! `(n-1) / Σ d(v,u)`. Harmonic closeness is well defined on **disconnected**
 //! and **directed** graphs (an unreachable node simply contributes `1/∞ = 0`
 //! instead of making the classical sum diverge), which a real knowledge graph
@@ -12,7 +12,7 @@
 //! [`pagerank`](crate::algorithms::pagerank) (flow/popularity).
 //!
 //! Computed with one breadth-first sweep per node over the **directed,
-//! unweighted** graph (hop count; edge weights ignored — the usual
+//! unweighted** graph (hop count; edge weights ignored - the usual
 //! knowledge-graph default), following edge direction (out-closeness), for
 //! `O(V·(V+E))`. Parallel edges and self-loops do not affect distances and are
 //! collapsed. Scores are structural, so the result is deterministic and

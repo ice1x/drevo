@@ -1,9 +1,9 @@
-//! Integration tests for Bolt-over-TLS — Phase 11 task `00073`.
+//! Integration tests for Bolt-over-TLS - Phase 11 task `00073`.
 //!
 //! These tests bind a real `tokio::net::TcpListener` on loopback,
 //! drive the TLS handshake (via `tokio-rustls` on both sides), and
 //! then exercise the Bolt 20-byte handshake + a full HELLO → RUN →
-//! PULL → GOODBYE session over the encrypted stream — proving the
+//! PULL → GOODBYE session over the encrypted stream - proving the
 //! plain-TCP code path is preserved end-to-end when wrapped in TLS.
 //!
 //! The cert + key are generated in-memory at the start of each test
@@ -31,7 +31,7 @@ use tokio_rustls::TlsConnector;
 
 /// Set the rustls default crypto provider once per test process.
 /// `rustls 0.23` requires an explicit provider when the crate has
-/// multiple installed (or zero) — `ring` is what `bolt-tls`
+/// multiple installed (or zero) - `ring` is what `bolt-tls`
 /// enables, but the default-provider slot is not auto-populated.
 fn install_default_crypto_provider() {
     use std::sync::Once;
@@ -74,7 +74,7 @@ async fn bind_loopback() -> TcpListener {
     TcpListener::bind("127.0.0.1:0").await.expect("bind")
 }
 
-/// Smallest possible TLS handshake test — drives only the Bolt
+/// Smallest possible TLS handshake test - drives only the Bolt
 /// 20-byte handshake over TLS. If this passes, the TLS plumbing is
 /// alive; if it hangs or errors, every richer test would too.
 #[tokio::test]
@@ -128,7 +128,7 @@ async fn tls_handshake_negotiates_bolt_4_4_over_tls() {
     );
 }
 
-/// Full HELLO → RUN → PULL → GOODBYE over TLS — proves that once
+/// Full HELLO → RUN → PULL → GOODBYE over TLS - proves that once
 /// the TLS layer is in place, the existing session loop runs
 /// unchanged on top.
 #[tokio::test]
@@ -174,7 +174,7 @@ async fn tls_accept_and_run_session_handles_hello_run_pull_goodbye_over_tls() {
         .expect("read version");
     assert_eq!(version_reply, [0x00, 0x00, 0x04, 0x04]);
 
-    // 2) HELLO + RUN + PULL + GOODBYE — same framing as the
+    // 2) HELLO + RUN + PULL + GOODBYE - same framing as the
     //    plain-TCP test in `bolt_listener_tests.rs`.
     fn frame_struct(tag: u8, fields: Vec<Value>) -> Vec<u8> {
         let value = Value::Structure { tag, fields };
@@ -268,7 +268,7 @@ async fn tls_accept_and_run_session_handles_hello_run_pull_goodbye_over_tls() {
 }
 
 /// A peer that uses plain TCP against a TLS-only listener must
-/// fail the TLS handshake — the bytes that look like a Bolt
+/// fail the TLS handshake - the bytes that look like a Bolt
 /// preamble (`60 60 B0 17`) start neither a valid `ClientHello`
 /// nor an SSL2 record, so rustls rejects them.
 #[tokio::test]
@@ -288,7 +288,7 @@ async fn tls_listener_rejects_plain_tcp_client() {
     });
 
     // Connect plain-TCP and send the Bolt preamble + four version
-    // proposals. The server is in TLS-only mode — rustls will see
+    // proposals. The server is in TLS-only mode - rustls will see
     // garbage where it expects a ClientHello and reject.
     let mut client = TcpStream::connect(addr).await.expect("tcp connect");
     let mut payload = Vec::with_capacity(20);
@@ -305,7 +305,7 @@ async fn tls_listener_rejects_plain_tcp_client() {
         .expect("server task join");
     // The server task must return an error. We don't pin which
     // exact variant (the underlying tokio_rustls error message
-    // varies across versions) — just that it's surfaced.
+    // varies across versions) - just that it's surfaced.
     let err = match r {
         Err(err) => err,
         Ok(_) => panic!("plain-TCP client against TLS listener must fail"),

@@ -1,4 +1,4 @@
-//! End-to-end tests for #263 — surfacing swallowed auto-embed failures via
+//! End-to-end tests for #263 - surfacing swallowed auto-embed failures via
 //! `drevo.semantic.status` (`pending_count` / `failed_count` / `last_error` /
 //! `degraded` state).
 //!
@@ -13,7 +13,7 @@
 //!   / failed nodes (`pending_count` > 0, `failed_count` > 0, `last_error` set,
 //!   `state` = `degraded`);
 //! - a fully-embedded target reads clean (all zeros, non-degraded);
-//! - write durability is unchanged — the outage does not fail the write.
+//! - write durability is unchanged - the outage does not fail the write.
 
 #![cfg(feature = "embeddings-proxy")]
 

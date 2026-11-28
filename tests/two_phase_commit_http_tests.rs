@@ -1,4 +1,4 @@
-//! Two-phase commit over HTTP — #556 slice 2.
+//! Two-phase commit over HTTP - #556 slice 2.
 //!
 //! HTTP has no explicit transactions, so prepare happens over Bolt, drevo-py
 //! or the Rust API. HTTP gives operators and coordinators the rest:

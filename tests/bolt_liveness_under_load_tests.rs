@@ -1,9 +1,9 @@
-//! Bolt liveness while Cypher is busy — issue #547.
+//! Bolt liveness while Cypher is busy - issue #547.
 //!
 //! The Bolt session loop is async, but RUN/PULL execute Cypher synchronously.
 //! Called straight from the loop, a slow statement pins its tokio worker; a
 //! few of them in flight starve the runtime, and every other connection and
-//! task — including the HTTP `/health` endpoint on the same runtime — stops
+//! task - including the HTTP `/health` endpoint on the same runtime - stops
 //! being served.
 //!
 //! On a **two-worker** runtime this test keeps three slow Bolt statements in
@@ -86,7 +86,7 @@ fn tag_of(v: &Value) -> u8 {
 }
 
 /// Connect and pipeline the Bolt 4.4 handshake, HELLO, RUN `query` and PULL
-/// without waiting for any reply — so starting a statement never depends on
+/// without waiting for any reply - so starting a statement never depends on
 /// the server having a free worker (the replies are read afterwards).
 async fn start_statement(addr: std::net::SocketAddr, query: String) -> TcpStream {
     let mut client = TcpStream::connect(addr).await.expect("connect");
@@ -165,7 +165,7 @@ async fn runtime_stays_live_while_more_slow_bolt_statements_than_workers_run() {
     .expect("probe task");
     // Each statement alone takes `one_statement` (three at once only take
     // longer), so a probe that ran sooner than that after they started ran
-    // while all of them were still busy — the check is not vacuous.
+    // while all of them were still busy - the check is not vacuous.
     let budget = Duration::from_secs(2).min(one_statement);
     assert!(
         probe - started < budget,

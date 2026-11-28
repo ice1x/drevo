@@ -43,7 +43,7 @@ def test_list_nodes_offset_mid_corpus(
 def test_list_nodes_last_partial_page(
     disk_db: drevo.Drevo, make_tag_corpus: Callable[[int, str], list[drevo.Node]]
 ) -> None:
-    """When the last page is short, only the remaining rows come back —
+    """When the last page is short, only the remaining rows come back -
     no padding, no error.
     """
     nodes = make_tag_corpus(13, "tag")
@@ -108,7 +108,7 @@ def test_list_nodes_unknown_kind_returns_empty(disk_db: drevo.Drevo) -> None:
 
 def test_list_edges_pagination_reassembles_full_corpus(disk_db: drevo.Drevo) -> None:
     """Edge pagination follows the same boundary rules as node
-    pagination — concat of pages == full corpus.
+    pagination - concat of pages == full corpus.
     """
     a = disk_db.create_node(drevo.NewNode(kind="note", title="a"))
     targets = [disk_db.create_node(drevo.NewNode(kind="note", title=f"t-{i}")) for i in range(15)]

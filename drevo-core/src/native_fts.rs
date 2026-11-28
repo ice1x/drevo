@@ -152,7 +152,7 @@ impl NativeFtsIndex {
         self.docs.is_empty()
     }
 
-    /// The number of indexed documents (corpus `N`) — the IDF denominator for
+    /// The number of indexed documents (corpus `N`) - the IDF denominator for
     /// keyword extraction (`drevo.keywords`).
     pub fn doc_count(&self) -> u64 {
         self.docs.len() as u64
@@ -190,7 +190,7 @@ impl NativeFtsIndex {
     /// since the last [`cursor`](Self::cursor).
     ///
     /// If the feed was trimmed past this index's cursor (a `lagged` batch), the
-    /// index is rebuilt from a fresh snapshot of every node — the standard
+    /// index is rebuilt from a fresh snapshot of every node - the standard
     /// re-snapshot recovery for a consumer that fell behind the retention window.
     pub fn sync(&mut self, graph: &NativeGraph) {
         let batch = graph.changes_since(self.cursor);
@@ -227,7 +227,7 @@ impl NativeFtsIndex {
     ///
     /// The query is trigram-tokenised the same way documents are, and each
     /// query trigram contributes its BM25 weight to every node whose text
-    /// contains it — so a longer, more specific query concentrates score on the
+    /// contains it - so a longer, more specific query concentrates score on the
     /// nodes that match the most of it.
     pub fn search(&self, query: &str, limit: usize) -> Vec<(u64, f32)> {
         self.corpus()
@@ -417,8 +417,8 @@ impl NativeFtsIndex {
 /// an edge's
 /// full-text document is its **string property values** (and the string
 /// elements of any array-valued property), so `fts.searchRelationships` can be
-/// answered on the native engine. Edges carry no title/body, so — unlike nodes
-/// — only properties contribute.
+/// answered on the native engine. Edges carry no title/body, so - unlike nodes -
+/// only properties contribute.
 #[derive(Default)]
 pub struct NativeFtsRelIndex {
     /// trigram → (edge id → term frequency in that edge).
@@ -496,7 +496,7 @@ impl NativeFtsRelIndex {
     }
 
     /// [`search`](Self::search) as it will answer once `changes` are
-    /// committed and indexed — the relationship twin of
+    /// committed and indexed - the relationship twin of
     /// [`NativeFtsIndex::search_with_changes`]. `changes` are the
     /// relationships the transaction has created, updated or deleted so far
     /// ([`NativeGraph::tx_changes`]), those removed with a deleted node
@@ -664,8 +664,8 @@ impl Corpus<'_> {
     ///
     /// The query is trigram-tokenised the same way documents are. With
     /// [`FtsMatch::All`] a document matches only if it contains *every*
-    /// query trigram — this approximates substring matching, so sharing a
-    /// single incidental trigram does not make a document match — and each
+    /// query trigram - this approximates substring matching, so sharing a
+    /// single incidental trigram does not make a document match - and each
     /// query trigram then contributes its BM25 weight to the document's
     /// score. With [`FtsMatch::Any`] the same rule is applied to each word
     /// of the query on its own, and a document's score is the sum over the

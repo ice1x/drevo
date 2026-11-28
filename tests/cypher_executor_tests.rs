@@ -1,17 +1,17 @@
-//! End-to-end Cypher executor tests — Phase 10 task `00063`.
+//! End-to-end Cypher executor tests - Phase 10 task `00063`.
 //!
 //! These tests exercise `parse → execute → result rows` on the five
 //! drevo target scenario domains (CBT journal, story editor, IT task
 //! manager, ERP, bug tracker). They are the integration counterpart to
-//! the unit tests inside `src/cypher/executor.rs` — instead of poking
+//! the unit tests inside `src/cypher/executor.rs` - instead of poking
 //! at internal state they assert the public contract from the Cypher
 //! source string down to the storage layer.
 //!
 //! The five scenarios mirror the AST asserted by `cypher_parser_e2e_tests.rs`
-//! and form the **definition of done** seed for Phase 10 — once `00064`
+//! and form the **definition of done** seed for Phase 10 - once `00064`
 //! (`SET`/`DELETE`/`MERGE`) and `00065` (`WHERE`) land, the same tests
 //! grow into the canonical "Phase 10 finished" suite required by the
-//! README §"Phase 10 — Cypher Query Language" DoD line.
+//! README §"Phase 10 - Cypher Query Language" DoD line.
 
 use std::collections::HashMap;
 
@@ -38,7 +38,7 @@ fn stats(source: &str, drevo: &NativeGraph) -> ExecStats {
     execute(&q, drevo, HashMap::new()).expect("execute").stats
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_capture_thought_with_inline_mood_relationship() {
@@ -78,7 +78,7 @@ fn cbt_find_thoughts_by_distortion_kind() {
     assert_eq!(rows[0][1], Value::Integer(1700001000));
 }
 
-// ===== Scenario 2 — story / book editor =====================================
+// ===== Scenario 2 - story / book editor =====================================
 
 #[test]
 fn story_chapter_appears_in_scene() {
@@ -100,7 +100,7 @@ fn story_chapter_appears_in_scene() {
     assert_eq!(rows[0][1], Value::String("first encounter".into()));
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_manager_subtask_chain() {
@@ -144,7 +144,7 @@ fn task_manager_parametrised_lookup() {
     assert_eq!(rows[0][1], Value::Integer(2));
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_purchase_order_line_items_ordered_total_amount() {
@@ -168,7 +168,7 @@ fn erp_purchase_order_line_items_ordered_total_amount() {
     assert_eq!(rows[1][1], Value::Integer(10));
 }
 
-// ===== Scenario 5 — bug tracker ============================================
+// ===== Scenario 5 - bug tracker ============================================
 
 #[test]
 fn bug_tracker_assignee_lookup_by_severity_filter() {

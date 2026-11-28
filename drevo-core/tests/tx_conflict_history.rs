@@ -1,6 +1,6 @@
 //! Why a commit was rejected (issue #749): every rejected explicit
-//! transaction is classified — a real overlap, a rejection only the
-//! serializable rule makes, or a transaction older than the history — and
+//! transaction is classified - a real overlap, a rejection only the
+//! serializable rule makes, or a transaction older than the history - and
 //! counted. Snapshot-isolation merges are covered in `snapshot_isolation.rs`.
 
 use drevo_core::conflict::{ConflictStats, DEFAULT_HISTORY};

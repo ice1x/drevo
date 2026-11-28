@@ -1,8 +1,8 @@
-//! Ollivier–Ricci edge curvature over the native engine and
+//! Ollivier-Ricci edge curvature over the native engine and
 //! `CALL drevo.ricciCurvature()` (issue #526). Same pattern as the other
 //! analytics slices: a "barbell" of two triangles joined by a single bridge
-//! edge pins the sign contract — the bridge is negatively curved (it lies
-//! between the two clusters) while the intra-triangle edges are positive — and
+//! edge pins the sign contract - the bridge is negatively curved (it lies
+//! between the two clusters) while the intra-triangle edges are positive - and
 //! the raw-edge-list reference cross-checks the native snapshot path.
 
 use std::collections::HashMap;

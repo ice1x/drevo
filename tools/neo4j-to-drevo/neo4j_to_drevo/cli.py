@@ -6,7 +6,7 @@ Three single-purpose phases, each its own command:
     python -m neo4j_to_drevo dump \\
         --neo4j-uri bolt://localhost:7687 --neo4j-user neo4j --out graph.json
 
-    # 2. dry run — read + map + validate, report what WOULD happen, write nothing
+    # 2. dry run - read + map + validate, report what WOULD happen, write nothing
     python -m neo4j_to_drevo import --apoc-json graph.json --drevo-path graph.redb --dry-run
 
     # 3. import for real

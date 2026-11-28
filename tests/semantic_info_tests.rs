@@ -1,4 +1,4 @@
-//! End-to-end tests for #267 — `drevo.semantic.info()`, embedder capability
+//! End-to-end tests for #267 - `drevo.semantic.info()`, embedder capability
 //! introspection (model id + vector dimension + upstream + presence).
 //!
 //! Gated on `embeddings-proxy`; run with:
@@ -11,7 +11,7 @@
 //! - a client can read the active model id and vector dimension via Cypher;
 //! - a client can tell whether a server-side embedder is actually installed
 //!   (not merely whether the procedure exists);
-//! - no secret is exposed (model + dimension + upstream only — the API key is
+//! - no secret is exposed (model + dimension + upstream only - the API key is
 //!   never part of the upstream field).
 
 #![cfg(feature = "embeddings-proxy")]

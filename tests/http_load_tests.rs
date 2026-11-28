@@ -1,4 +1,4 @@
-//! HTTP load harness — authoritative tested pieces (#241 slice 4).
+//! HTTP load harness - authoritative tested pieces (#241 slice 4).
 //!
 //! Validates the over-the-wire client + endpoint path that
 //! `examples/http_load.rs` drives: the status-line parser (pure) and a small
@@ -7,7 +7,7 @@
 //! is an on-demand measurement in the example; this keeps the flow honest on
 //! the normal PR gate (localhost + in-memory backend is fast).
 //!
-//! The whole file is gated on `http` — without axum/tokio there is no server.
+//! The whole file is gated on `http` - without axum/tokio there is no server.
 
 #![cfg(feature = "http")]
 

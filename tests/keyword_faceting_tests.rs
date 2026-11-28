@@ -1,18 +1,18 @@
-//! Integration tests for keyword faceting — Phase 17 task `00133`.
+//! Integration tests for keyword faceting - Phase 17 task `00133`.
 //!
 //! [`NativeService::facets`] groups every node of a `kind` by the keywords
 //! extracted from one of its text fields ([`keywords()`](../src/fts/keywords.rs),
 //! task `00132`), optionally collapsing near-duplicate keywords along one
 //! of two axes:
 //!
-//! * **lexical** — shared Porter stem or close trigram overlap (typos);
+//! * **lexical** - shared Porter stem or close trigram overlap (typos);
 //!   form-based, dependency-free, the default;
-//! * **semantic** — cosine similarity of caller-supplied embeddings;
+//! * **semantic** - cosine similarity of caller-supplied embeddings;
 //!   meaning-based, opt-in.
 //!
 //! These tests run against a real (in-memory) `NativeService` graph across the five
-//! drevo target scenario domains — CBT journal, story editor, IT task
-//! manager, ERP, bug tracker — plus the property-source and edge-case
+//! drevo target scenario domains - CBT journal, story editor, IT task
+//! manager, ERP, bug tracker - plus the property-source and edge-case
 //! behaviours.
 
 use std::collections::HashMap;
@@ -146,7 +146,7 @@ fn facets_can_read_an_arbitrary_property() {
 #[test]
 fn node_missing_the_property_is_skipped_not_errored() {
     let db = db();
-    // One node has the property, one doesn't — the scan must not abort.
+    // One node has the property, one doesn't - the scan must not abort.
     db.create_node(note_props(
         "ticket",
         "has-summary",
@@ -172,7 +172,7 @@ fn node_missing_the_property_is_skipped_not_errored() {
 #[test]
 fn lexical_collapse_folds_morphological_variants() {
     // CBT journal: recurring "anxiety" theme spelled in two morphological
-    // forms across entries — must collapse into one facet under lexical.
+    // forms across entries - must collapse into one facet under lexical.
     let db = db();
     db.create_node(note("entry", "Mon", "anxiety before the meeting"))
         .unwrap();
@@ -218,7 +218,7 @@ fn lexical_representative_is_the_most_frequent_surface_form() {
 
 #[test]
 fn semantic_collapse_merges_synonyms_across_documents() {
-    // Story editor: motif tracking — "fear" and "dread" are synonyms with
+    // Story editor: motif tracking - "fear" and "dread" are synonyms with
     // no shared characters, so only the semantic axis collapses them.
     let db = db();
     db.create_node(note("scene", "Opening", "a creeping fear settled in"))

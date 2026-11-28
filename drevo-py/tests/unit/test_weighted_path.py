@@ -1,4 +1,4 @@
-"""Unit tests for `Drevo.weighted_path` — the cheapest route by a
+"""Unit tests for `Drevo.weighted_path` - the cheapest route by a
 relationship cost, with an optional A* heuristic over node coordinates.
 
 The fixture is a small street grid: car routes follow one-way `ROAD`s by
@@ -36,7 +36,7 @@ _WALK = {
 @pytest.fixture
 def streets(drevo_db: drevo.Drevo, fake: Faker) -> dict[str, drevo.Node]:
     """The grid above. Car streets: A→B→C one way, A↔D, B↔E, C↔F, D↔E,
-    E↔F, each 60 s except B–E (90 s) and A–D (120 s); every street is 300 s
+    E↔F, each 60 s except B-E (90 s) and A-D (120 s); every street is 300 s
     on foot. A footpath A→E is 100 s on foot and closed to cars.
     """
     nodes = {

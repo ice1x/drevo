@@ -5,7 +5,7 @@
 //!
 //! The fixture is an IT task manager with two teams: a backend team (Alice,
 //! Bob, Carol and their tickets) and a mobile team (Dave, Erin, Frank and
-//! theirs), densely linked inside, with one bridge — a mobile crash that
+//! theirs), densely linked inside, with one bridge - a mobile crash that
 //! depends on a backend login fix. A stand-up `:Message` hangs off a backend
 //! ticket and must stay out of every community. The embedder is an
 //! in-process stub: text about logins points at `[1, 0, 0]`, about mobile

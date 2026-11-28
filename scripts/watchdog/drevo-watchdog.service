@@ -1,4 +1,4 @@
-# systemd service (oneshot) for scripts/drevo-watchdog.sh — paired with the
+# systemd service (oneshot) for scripts/drevo-watchdog.sh - paired with the
 # .timer beside it. Install as a *user* unit so it runs the watchdog as you (the
 # user who owns the Docker context and the bind-mounted redb file):
 #

@@ -1,4 +1,4 @@
-//! PageRank centrality via weighted power iteration — Phase 15 task `00098`.
+//! PageRank centrality via weighted power iteration - Phase 15 task `00098`.
 //!
 //! Computes the stationary distribution of the random-surfer Markov chain over
 //! the directed graph: with probability `damping` the surfer follows an
@@ -26,7 +26,7 @@ use super::{AdjacencyList, AlgorithmError};
 /// [`personalization`](Self::personalization) for Personalized PageRank.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageRankConfig {
-    /// Damping factor `d` — the probability of following a link rather than
+    /// Damping factor `d` - the probability of following a link rather than
     /// teleporting. Must be in the open interval `(0, 1)`. The classic value
     /// is `0.85`.
     pub damping: f64,
@@ -203,7 +203,7 @@ pub struct PageRankResult {
 
 impl PageRankResult {
     /// The `(node_id, rank)` pairs sorted by descending rank (ties broken by
-    /// ascending node ID) — the natural "most central nodes first" ordering.
+    /// ascending node ID) - the natural "most central nodes first" ordering.
     pub fn ranked(&self) -> Vec<(u64, f64)> {
         let mut v = self.ranks.clone();
         v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -287,7 +287,7 @@ pub fn pagerank(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResul
     }
 }
 
-/// Parallel PageRank over an immutable adjacency snapshot (RFC #307 Phase 8 —
+/// Parallel PageRank over an immutable adjacency snapshot (RFC #307 Phase 8 -
 /// parallel runtime).
 ///
 /// **Measured slower than [`pagerank`], not faster**, and the CSR layout did
@@ -295,7 +295,7 @@ pub fn pagerank(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResul
 /// (#382), yet `benches/pagerank_bench.rs` re-measured this at ~17× slower at
 /// 10k nodes, ~8× at 100k, and ~4.4× even at 500k / 3M edges. PageRank is
 /// memory-bandwidth-bound, so the per-iteration rayon fork/join and the
-/// pull-based reverse index cost more than the extra cores save — more threads
+/// pull-based reverse index cost more than the extra cores save - more threads
 /// do not help. Kept as the correct baseline the bench compares against; a real
 /// parallel win would need a fundamentally different scheme (NUMA-aware block
 /// partitioning), not just the CSR layout (see `docs/native-load.md`, #382). The
@@ -304,11 +304,11 @@ pub fn pagerank(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResul
 ///
 /// Same math as [`pagerank`], but **pull-based**: each step recomputes every
 /// node's rank from its *incoming* edges, which makes the per-node update of a
-/// step independent, so it parallelises with rayon (`next.par_iter_mut()`) —
+/// step independent, so it parallelises with rayon (`next.par_iter_mut()`) -
 /// the "free over the MVCC snapshot" win, since the frozen snapshot is shared
 /// immutably across workers. Bit-for-bit equality with [`pagerank`] is not
 /// guaranteed (the parallel reduction sums in a different order), but the ranks
-/// agree within tolerance — pinned by `pagerank_parallel_matches_serial`.
+/// agree within tolerance - pinned by `pagerank_parallel_matches_serial`.
 ///
 /// Dangling nodes (zero out-weight) redistribute uniformly, identically to the
 /// serial version: their contribution is excluded from the pull sum (they have
@@ -399,7 +399,7 @@ pub fn pagerank_parallel(graph: &AdjacencyList, config: &PageRankConfig) -> Page
     }
 }
 
-/// `wasm32` has no thread pool — run the serial power iteration instead, so the
+/// `wasm32` has no thread pool - run the serial power iteration instead, so the
 /// `pagerank_parallel` API is available on every target.
 #[cfg(target_arch = "wasm32")]
 pub fn pagerank_parallel(graph: &AdjacencyList, config: &PageRankConfig) -> PageRankResult {

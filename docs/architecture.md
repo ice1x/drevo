@@ -6,16 +6,16 @@
 
 Beyond the embedded knowledge-base use case described above, drevo is on a multi-phase trajectory toward becoming a full graph-vector database with capabilities equivalent to Neo4j and Memgraph:
 
-- **Cypher query language** — full support for CREATE / MATCH / MERGE / SET / DELETE / WHERE / RETURN / WITH / UNWIND / FOREACH / aggregations / variable-length paths (Phase 10)
-- **Bolt wire protocol** — Neo4j-compatible, so `cypher-shell`, `neo4j-python-driver`, and `neo4j-javascript-driver` connect out of the box (Phase 11)
-- **Native vector search** — `Value::Vector` type, HNSW index, joint graph+vector queries for RAG and semantic search (Phase 12)
-- **MVCC concurrency** — readers never block writers, multiple configurable isolation levels (Phase 13)
-- **Cost-based query planner** — statistics, cardinality estimates, plan caching, supernode handling (Phase 14)
-- **Production ecosystem** — MCP server, web UI, Python SDK, replication, streaming ingestion, CDC, RBAC, observability (Prometheus `/metrics`, structured query log) (Phase 15)
-- **Keyword analytics & lexical search** — BM25 ranking, `keywords()` extraction from properties/labels, similarity-collapsed faceted group-by-keyword (Phase 17)
-- **Graph analytics procedures** — seven whole-graph algorithms exposed as Cypher `CALL drevo.<algo>() YIELD …` procedures (over HTTP, Bolt, and MCP), on both the KV and native engines: centrality (`pagerank`, `betweenness`, `closeness`), community detection (`louvain`), connectivity (`wcc` / `scc`), and density (`triangles` + local clustering coefficient) (RFC #307 Phase 8)
+- **Cypher query language** - full support for CREATE / MATCH / MERGE / SET / DELETE / WHERE / RETURN / WITH / UNWIND / FOREACH / aggregations / variable-length paths (Phase 10)
+- **Bolt wire protocol** - Neo4j-compatible, so `cypher-shell`, `neo4j-python-driver`, and `neo4j-javascript-driver` connect out of the box (Phase 11)
+- **Native vector search** - `Value::Vector` type, HNSW index, joint graph+vector queries for RAG and semantic search (Phase 12)
+- **MVCC concurrency** - readers never block writers, multiple configurable isolation levels (Phase 13)
+- **Cost-based query planner** - statistics, cardinality estimates, plan caching, supernode handling (Phase 14)
+- **Production ecosystem** - MCP server, web UI, Python SDK, replication, streaming ingestion, CDC, RBAC, observability (Prometheus `/metrics`, structured query log) (Phase 15)
+- **Keyword analytics & lexical search** - BM25 ranking, `keywords()` extraction from properties/labels, similarity-collapsed faceted group-by-keyword (Phase 17)
+- **Graph analytics procedures** - seven whole-graph algorithms exposed as Cypher `CALL drevo.<algo>() YIELD …` procedures (over HTTP, Bolt, and MCP), on both the KV and native engines: centrality (`pagerank`, `betweenness`, `closeness`), community detection (`louvain`), connectivity (`wcc` / `scc`), and density (`triangles` + local clustering coefficient) (RFC #307 Phase 8)
 
-Phases 1-9 (embedded DB + HTTP API + Docker) form the foundation. Phases 10-15 layer the query language, protocol, vector engine, concurrency, optimizer, and ecosystem on top of the existing storage and traversal engine — without rewriting it.
+Phases 1-9 (embedded DB + HTTP API + Docker) form the foundation. Phases 10-15 layer the query language, protocol, vector engine, concurrency, optimizer, and ecosystem on top of the existing storage and traversal engine - without rewriting it.
 
 ---
 
@@ -25,8 +25,8 @@ drevo borrows architectural ideas from two existing graph databases. Their licen
 
 | Database | What we borrow | Why we cannot use it directly |
 |----------|---------------|-------------------------------|
-| **[HelixDB](https://github.com/HelixDB/helix-db)** | graph+vector native engine, compiled query plans, MCP tooling, memory-mapped storage, built-in embeddings | BSL (Business Source License) — incompatible with MIT |
-| **[Memgraph](https://github.com/memgraph/memgraph)** | full Cypher support, Bolt protocol, MVCC, in-memory + WAL/snapshots, MAGE plugin system, Python query modules, streaming ingestion | AGPL / proprietary enterprise — incompatible with MIT |
+| **[HelixDB](https://github.com/HelixDB/helix-db)** | graph+vector native engine, compiled query plans, MCP tooling, memory-mapped storage, built-in embeddings | BSL (Business Source License) - incompatible with MIT |
+| **[Memgraph](https://github.com/memgraph/memgraph)** | full Cypher support, Bolt protocol, MVCC, in-memory + WAL/snapshots, MAGE plugin system, Python query modules, streaming ingestion | AGPL / proprietary enterprise - incompatible with MIT |
 
 drevo ships under MIT (see License section).
 
@@ -98,7 +98,7 @@ properties: HashMap<String, Value>
 
 ## Storage Engine
 
-> **Note (engine evolution).** The design below describes the original **redb** key-value backend. Since the native-core program (see [`../PHASE-HISTORY.md`](../PHASE-HISTORY.md), Phase 7+ and the native-core baseline), the default deployment engine is **`native-durable`** — an in-memory graph with a JSON-Lines **write-ahead log** as the store of record (zero redb). The redb backend remains selectable via `DREVO_ENGINE=kv`; the WAL engine keeps its indexes in memory and rebuilds them from the log on open. Treat the redb table layout in this section as the **legacy KV** contract, not the current default. See [`native-core-baseline.md`](native-core-baseline.md) and [`native-load.md`](native-load.md) for the current engine.
+> **Note (engine evolution).** The design below describes the original **redb** key-value backend. Since the native-core program (see [`../PHASE-HISTORY.md`](../PHASE-HISTORY.md), Phase 7+ and the native-core baseline), the default deployment engine is **`native-durable`** - an in-memory graph with a JSON-Lines **write-ahead log** as the store of record (zero redb). The redb backend remains selectable via `DREVO_ENGINE=kv`; the WAL engine keeps its indexes in memory and rebuilds them from the log on open. Treat the redb table layout in this section as the **legacy KV** contract, not the current default. See [`native-core-baseline.md`](native-core-baseline.md) and [`native-load.md`](native-load.md) for the current engine.
 
 ### File layout
 
@@ -111,7 +111,7 @@ properties: HashMap<String, Value>
 
 ### Backend: redb
 
-[redb](https://github.com/cberner/redb) — pure Rust, no C dependencies, ACID transactions, WASM-compatible, actively maintained.
+[redb](https://github.com/cberner/redb) - pure Rust, no C dependencies, ACID transactions, WASM-compatible, actively maintained.
 
 Alternative if redb has WASM issues: [sled](https://github.com/spacejam/sled).
 
@@ -222,9 +222,9 @@ Optional phase 2: integrate [tantivy](https://github.com/quickwit-oss/tantivy) f
 
 ## Serialization
 
-**bincode v2** for all stored values — compact binary, fast encode/decode, deterministic, serde-compatible.
+**bincode v2** for all stored values - compact binary, fast encode/decode, deterministic, serde-compatible.
 
-`properties: HashMap<String, Value>` — use `serde_json::Value` to allow arbitrary metadata without schema migration.
+`properties: HashMap<String, Value>` - use `serde_json::Value` to allow arbitrary metadata without schema migration.
 
 ---
 
@@ -280,23 +280,23 @@ Target numbers vs published competitor benchmarks. CI tracks measured drevo metr
 | Concurrent reads (100 threads) | > 500K ops/s | ~300K ops/s | ~400K ops/s | ~50K ops/s | ~200K ops/s |
 | Memory per 1M nodes | < 500 MB | ~400 MB | ~600 MB | ~2 GB | ~800 MB |
 
-> Competitor numbers are approximate, derived from published benchmarks and vendor claims — a rough positioning sketch, not a measured head-to-head. For a reproducible comparison, Phase 15 task `00101` ships the [`comparison_bench`](https://github.com/ice1x/drevo/blob/main/benches/comparison_bench.rs) harness and the [benchmarks guide](benchmarks.md): drevo's side is measured on your machine and the identical workload is specified as runnable code against each competitor, so the cross-engine numbers are something you *run* rather than copy from a slide.
+> Competitor numbers are approximate, derived from published benchmarks and vendor claims - a rough positioning sketch, not a measured head-to-head. For a reproducible comparison, Phase 15 task `00101` ships the [`comparison_bench`](https://github.com/ice1x/drevo/blob/main/benches/comparison_bench.rs) harness and the [benchmarks guide](benchmarks.md): drevo's side is measured on your machine and the identical workload is specified as runnable code against each competitor, so the cross-engine numbers are something you *run* rather than copy from a slide.
 
-### Native-core scoreboard — measured history
+### Native-core scoreboard - measured history
 
-The native graph engine ([RFC #307](rfc-native-core.md)) measured on a **copy of real production data** (2 596-node knowledge-graph snapshot), Apple M1 Max, criterion midpoints. Each run appends to the full [native-core baseline](native-core-baseline.md) — the summary below is the headline per milestone.
+The native graph engine ([RFC #307](rfc-native-core.md)) measured on a **copy of real production data** (2 596-node knowledge-graph snapshot), Apple M1 Max, criterion midpoints. Each run appends to the full [native-core baseline](native-core-baseline.md) - the summary below is the headline per milestone.
 
 | Date | Version / milestone | Headline result |
 |---|---|---|
-| 2026-08-26 | native engine, in-process (runs 1–4) | native + secondary indexes vs today's KV on real data: full scan **537 µs (≈560×)**, property-equality **9.3 µs (≈32 000×)**, hub 1-hop **60 µs (≈230×)** |
-| 2026-08-27 | drevo `0.0.18` KV over Bolt vs Memgraph v3.12 (run 5) | production KV **loses** to Memgraph 24–535× over the same Bolt client; native in-process is already in Memgraph's class |
+| 2026-08-26 | native engine, in-process (runs 1-4) | native + secondary indexes vs today's KV on real data: full scan **537 µs (≈560×)**, property-equality **9.3 µs (≈32 000×)**, hub 1-hop **60 µs (≈230×)** |
+| 2026-08-27 | drevo `0.0.18` KV over Bolt vs Memgraph v3.12 (run 5) | production KV **loses** to Memgraph 24-535× over the same Bolt client; native in-process is already in Memgraph's class |
 | 2026-08-28 | `DREVO_ENGINE=native` read mirror over Bolt (run 6) | engine flip: drevo **wins 4/6** rows vs Memgraph; Memgraph keeps ~1.2× only on two bare count-scans |
-| 2026-08-28 | + count pushdown (run 7) | drevo **wins 6/6**, **1.4–5.8×** ahead through the identical Bolt client — "surpass Memgraph" met on this scoreboard |
-| 2026-09-01 | `DREVO_ENGINE=native-durable`, zero redb (run 8) | WAL-backed store of record **wins 6/6, 1.2–6.8×**; durability is free on reads (matches the in-memory mirror within noise) |
+| 2026-08-28 | + count pushdown (run 7) | drevo **wins 6/6**, **1.4-5.8×** ahead through the identical Bolt client - "surpass Memgraph" met on this scoreboard |
+| 2026-09-01 | `DREVO_ENGINE=native-durable`, zero redb (run 8) | WAL-backed store of record **wins 6/6, 1.2-6.8×**; durability is free on reads (matches the in-memory mirror within noise) |
 
-> Numbers are drevo vs Memgraph on identical Cypher over the same Bolt client (runs 5–8) or native vs the KV engine in-process (runs 1–4). The cross-DB side reproduces with `scripts/memgraph_baseline_bench.py`; the in-process KV-vs-native `real_data_baseline_bench` that produced runs 1–4 was removed with the KV engine (epic #444), so those rows are a historical record. Each harness asserted both engines returned identical rows before timing, so a wrong-answer speedup never counted.
+> Numbers are drevo vs Memgraph on identical Cypher over the same Bolt client (runs 5-8) or native vs the KV engine in-process (runs 1-4). The cross-DB side reproduces with `scripts/memgraph_baseline_bench.py`; the in-process KV-vs-native `real_data_baseline_bench` that produced runs 1-4 was removed with the KV engine (epic #444), so those rows are a historical record. Each harness asserted both engines returned identical rows before timing, so a wrong-answer speedup never counted.
 
-### Native-core load & concurrency — measured
+### Native-core load & concurrency - measured
 
 Beyond single-op latency: throughput under a concurrent thread sweep, deep
 traversal, and durable writes (`native-durable` with a real WAL vs the KV
@@ -307,12 +307,12 @@ engine, same real-data snapshot, Apple M1 Max). Full numbers + p50/p95/p99 in
 |---|---:|---:|
 | point read, 8 threads | **3.1 M ops/s** | 56 k |
 | 3-hop BFS, 1 thread | **77 k ops/s** | 27 k |
-| edge write — autocommit (fsync each) | 174 /s | **8.1 k** |
-| edge write — **tx-batched** (one fsync/commit) | **172 k /s** | ~8 k |
+| edge write - autocommit (fsync each) | 174 /s | **8.1 k** |
+| edge write - **tx-batched** (one fsync/commit) | **172 k /s** | ~8 k |
 
-> Reads win 3–700× and scale. The write path is the honest caveat: autocommit
+> Reads win 3-700× and scale. The write path is the honest caveat: autocommit
 > fsyncs every edge (~174/s), so **write-heavy callers must batch into a
-> transaction** — one fsync per commit lifts it to ~172 k/s (~1 000×), ~20×
+> transaction** - one fsync per commit lifts it to ~172 k/s (~1 000×), ~20×
 > above KV. (The `native_load` / `real_data_baseline_bench` harnesses that
 > produced these KV-vs-native numbers were removed with the KV engine in epic
 > #444; the figures are retained here as a record.)

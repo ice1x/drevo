@@ -1,14 +1,14 @@
-//! [`GraphEngine`] — the graph operations, as a
+//! [`GraphEngine`] - the graph operations, as a
 //! trait.
 //!
-//! It expresses storage in **graph terms** — nodes, edges, adjacency — and is
+//! It expresses storage in **graph terms** - nodes, edges, adjacency - and is
 //! what drevo's query layers (Cypher executor, traversal, planner) are written
 //! against. [`NativeGraph`](crate::native::NativeGraph) implements it, and so
 //! does each open transaction, so the same code runs inside or outside one.
 //! The trait is **object-safe** (`&dyn GraphEngine` works) so call sites can
 //! be generic over the engine without monomorphising the whole executor.
 //!
-//! The method set mirrors the core of a store's inherent API — node/edge CRUD
+//! The method set mirrors the core of a store's inherent API - node/edge CRUD
 //! plus adjacency expansion, and the [`crate::engine::GraphEngine::export_dump`]
 //! / [`crate::engine::GraphEngine::apply_dump`] migration seam. Secondary concerns
 //! (FTS, vectors, transactions, statistics) are intentionally out of scope and
@@ -61,7 +61,7 @@ pub trait GraphEngine {
     /// already absent are skipped rather than erroring.
     ///
     /// The default implementation deletes one at a time (one durable write per
-    /// node). An engine that can batch — the native WAL engine — overrides this
+    /// node). An engine that can batch - the native WAL engine - overrides this
     /// to flush the whole batch under a **single fsync**, so deleting a subtree
     /// costs one flush, not `N`.
     ///
@@ -107,7 +107,7 @@ pub trait GraphEngine {
     fn delete_edge(&self, id: u64) -> Result<()>;
 
     /// Return the **distinct** node ids adjacent to `node_id` in `direction`,
-    /// optionally restricted to edges of `kind` — the id-only fan-out that reads
+    /// optionally restricted to edges of `kind` - the id-only fan-out that reads
     /// straight from the adjacency index.
     ///
     /// # Errors
@@ -132,7 +132,7 @@ pub trait GraphEngine {
     ) -> Result<Vec<Arc<Node>>>;
 
     /// Return the full [`Edge`] records incident to `node_id` in `direction`
-    /// (the weighted/full-edge expansion, which loads each edge record — unlike
+    /// (the weighted/full-edge expansion, which loads each edge record - unlike
     /// [`neighbor_ids`](Self::neighbor_ids)).
     ///
     /// # Errors
@@ -140,7 +140,7 @@ pub trait GraphEngine {
     fn edges_of(&self, node_id: u64, direction: Direction) -> Result<Vec<Edge>>;
 
     /// Call `f` with each relationship of `node_id` in `direction`, by
-    /// reference — for a loop that reads a few fields of many relationships
+    /// reference - for a loop that reads a few fields of many relationships
     /// and should not copy every record, such as a path search. Same
     /// relationships and order as [`edges_of`](Self::edges_of), which the
     /// default calls.
@@ -159,14 +159,14 @@ pub trait GraphEngine {
         Ok(())
     }
 
-    /// Return **every** node in the store (a full scan — the label-less
+    /// Return **every** node in the store (a full scan - the label-less
     /// `MATCH (n)`).
     ///
     /// # Errors
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
     fn all_nodes(&self) -> Result<Vec<Arc<Node>>>;
 
-    /// The number of nodes in the store — the `MATCH (n) RETURN count(*)`
+    /// The number of nodes in the store - the `MATCH (n) RETURN count(*)`
     /// pushdown target: a bare count needs no record materialisation at all.
     ///
     /// The default counts a full [`crate::engine::GraphEngine::all_nodes`]
@@ -180,7 +180,7 @@ pub trait GraphEngine {
         Ok(self.all_nodes()?.len() as u64)
     }
 
-    /// The number of nodes whose **primary kind** equals `kind` — the
+    /// The number of nodes whose **primary kind** equals `kind` - the
     /// kind half of the labelled-count pushdown (secondary `_labels`
     /// matches are the label index's business, not the engine's).
     ///
@@ -194,7 +194,7 @@ pub trait GraphEngine {
         Ok(self.nodes_by_kind(kind, usize::MAX, 0)?.len() as u64)
     }
 
-    /// Return **every** edge in the store (a full scan — the anonymous
+    /// Return **every** edge in the store (a full scan - the anonymous
     /// `MATCH ()-[r]->()`).
     ///
     /// # Errors
@@ -208,8 +208,8 @@ pub trait GraphEngine {
     /// Propagates any [`crate::error::CoreError`] from the underlying store.
     fn nodes_by_kind(&self, kind: &str, limit: usize, offset: usize) -> Result<Vec<Arc<Node>>>;
 
-    /// Export the entire graph as a `drevo-json-v1` [`Dump`] — every node and
-    /// edge plus the id-allocation counters — the interchange format used for
+    /// Export the entire graph as a `drevo-json-v1` [`Dump`] - every node and
+    /// edge plus the id-allocation counters - the interchange format used for
     /// backup, JSON/GraphML round-trips, and cross-engine migration.
     ///
     /// This is the read half of the migration seam:
@@ -230,9 +230,9 @@ pub trait GraphEngine {
     /// [`ImportReport`] separate freshly-inserted from skipped rows.
     ///
     /// # Errors
-    /// * [`crate::error::CoreError::NodeNotFound`] — an edge references an
+    /// * [`crate::error::CoreError::NodeNotFound`] - an edge references an
     ///   endpoint that neither exists nor is supplied by the dump.
-    /// * Other [`crate::error::CoreError`] variants — an id collision against
+    /// * Other [`crate::error::CoreError`] variants - an id collision against
     ///   different content, or a backend failure.
     fn apply_dump(&self, dump: Dump) -> Result<ImportReport>;
 }

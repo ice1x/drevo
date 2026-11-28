@@ -1,4 +1,4 @@
-//! The `Drevo` handle — the Python-side entry point to the database.
+//! The `Drevo` handle - the Python-side entry point to the database.
 //!
 //! Implements RFC §4 (sync surface with GIL released on every storage
 //! I/O) and §5.4 (panic-catch wrapper so a Rust panic never crosses the
@@ -14,13 +14,13 @@
 //!    `close()` / `compact()`).
 //! 2. Every storage call drops the mutex guard BEFORE entering
 //!    `py.allow_threads(...)`, so the GIL release inside the closure
-//!    never happens while a Rust mutex is held — that combination is
+//!    never happens while a Rust mutex is held - that combination is
 //!    a classic deadlock pattern (thread A holds the mutex with the
 //!    GIL released; thread B acquires the GIL and blocks on the
 //!    mutex; thread A's I/O completes but cannot reacquire the GIL
 //!    because B is holding it).
 //! 3. Concurrent reads + writes from N Python threads on the same
-//!    handle therefore run side-by-side at the Python layer — the
+//!    handle therefore run side-by-side at the Python layer - the
 //!    underlying redb backend handles its own write serialisation
 //!    via an internal `RwLock`. The Python-side mutex is short-lived
 //!    (release-on-clone) and never spans an `allow_threads` window.
@@ -29,7 +29,7 @@
 //! ownership of the inner `Drevo`. They `take()` the `Arc` out of the
 //! slot to forbid new operations, then wait (via `Arc::try_unwrap` in
 //! a 1 ms-sleep loop, all under `allow_threads`) for the last
-//! in-flight clone to drop — at that point they own the inner
+//! in-flight clone to drop - at that point they own the inner
 //! `Drevo` by value (close) or by `&mut` (compact). `compact` puts
 //! the inner back when finished.
 //!
@@ -37,7 +37,7 @@
 //!
 //! Every method that touches the backend wraps the Rust call in
 //! [`Python::allow_threads`]. Property getters (`Node.id`, etc.) and
-//! pure constructors (`Direction::Out`) do **not** release the GIL — the
+//! pure constructors (`Direction::Out`) do **not** release the GIL - the
 //! allow_threads round-trip would dominate sub-microsecond accesses.
 //!
 //! ## Panic safety
@@ -73,7 +73,7 @@ pub struct Drevo {
 }
 
 impl Drevo {
-    /// Open an in-memory backend — used by both `open_in_memory` and as
+    /// Open an in-memory backend - used by both `open_in_memory` and as
     /// the fallback path for unit tests.
     fn from_inner(inner: NativeBackend) -> Self {
         Self {
@@ -101,7 +101,7 @@ where
 /// The mutex guard exists for just long enough to clone the inner
 /// `Arc` (cheap atomic refcount bump) and is dropped before this
 /// helper returns. Every caller then runs its storage I/O against
-/// the cloned `Arc` under `py.allow_threads(...)` — at which point
+/// the cloned `Arc` under `py.allow_threads(...)` - at which point
 /// no Rust mutex is held, so the GIL release cannot deadlock against
 /// another thread waiting on the mutex (the bug this layout fixes).
 ///
@@ -142,7 +142,7 @@ fn into_owned(mut arc: Arc<NativeBackend>) -> NativeBackend {
 
 /// Compatibility wrapper preserving the previous `with_db` signature.
 ///
-/// Internally calls [`borrow_db`] — the mutex is released as soon as
+/// Internally calls [`borrow_db`] - the mutex is released as soon as
 /// the inner `Arc<Drevo>` clone is taken, BEFORE the closure `f` runs.
 /// Every storage method below therefore enters
 /// `py.allow_threads(...)` with no Rust mutex held, defusing the
@@ -165,7 +165,7 @@ impl Drevo {
     ///
     /// `path` may be a `str`, `bytes`, or `os.PathLike`. The redb
     /// backend creates the file if it does not exist and acquires an
-    /// exclusive file lock — opening the same path from a second
+    /// exclusive file lock - opening the same path from a second
     /// process raises `drevo.LockedError`.
     #[classmethod]
     fn open(
@@ -182,7 +182,7 @@ impl Drevo {
         })
     }
 
-    /// Open an ephemeral in-memory database — backing store is the
+    /// Open an ephemeral in-memory database - backing store is the
     /// process-local `MemoryBackend`. All data is lost when the handle
     /// is dropped.
     #[classmethod]
@@ -200,7 +200,7 @@ impl Drevo {
     /// Concurrency: takes the `Arc<Drevo>` out of the slot under the
     /// mutex (so no NEW operations can start), drops the guard, then
     /// waits under `py.allow_threads(...)` for any IN-FLIGHT operations
-    /// to drop their cloned `Arc` — at that point `Arc::try_unwrap`
+    /// to drop their cloned `Arc` - at that point `Arc::try_unwrap`
     /// succeeds and the inner `Drevo` is consumed by value to flush.
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         guarded(|| {
@@ -220,13 +220,13 @@ impl Drevo {
         })
     }
 
-    /// `__enter__` — returns the handle so `with Drevo.open(...) as d:`
+    /// `__enter__` - returns the handle so `with Drevo.open(...) as d:`
     /// binds `d`.
     fn __enter__(slf: Py<Self>) -> Py<Self> {
         slf
     }
 
-    /// `__exit__` — close the handle. Exceptions raised inside the
+    /// `__exit__` - close the handle. Exceptions raised inside the
     /// `with` body propagate; the close still runs.
     #[pyo3(signature = (_exc_type=None, _exc_value=None, _traceback=None))]
     fn __exit__(
@@ -247,7 +247,7 @@ impl Drevo {
     /// allocator next-id values.
     ///
     /// Concurrency: the native WAL compactor quiesces writes internally and
-    /// needs only `&self`, so — unlike the old redb backend — this does not
+    /// needs only `&self`, so - unlike the old redb backend - this does not
     /// reclaim exclusive ownership of the handle; it runs like any other read.
     fn compact(&self, py: Python<'_>) -> PyResult<types::CompactReport> {
         guarded(|| {
@@ -258,7 +258,7 @@ impl Drevo {
         })
     }
 
-    /// Lightweight liveness probe — returns `None` (Python `None`) on
+    /// Lightweight liveness probe - returns `None` (Python `None`) on
     /// success, raises `drevo.StorageError` if the backend is
     /// unreachable.
     fn health_check(&self, py: Python<'_>) -> PyResult<()> {
@@ -271,7 +271,7 @@ impl Drevo {
 
     /// Measure storage bloat (#253 slice 1): physical file size vs. logical
     /// data size, plus their ratio, as a `BloatReport`. An on-demand scan of
-    /// the node/edge records — a maintenance / alerting call, not a hot path.
+    /// the node/edge records - a maintenance / alerting call, not a hot path.
     fn bloat_report(&self, py: Python<'_>) -> PyResult<types::BloatReport> {
         guarded(|| {
             with_db(&self.inner, |db| {
@@ -343,7 +343,7 @@ impl Drevo {
         })
     }
 
-    // Note: the redb `migrate` (adjacency-format up/down, #243) is gone — the
+    // Note: the redb `migrate` (adjacency-format up/down, #243) is gone - the
     // native engine has no such on-disk format, so there is nothing to migrate.
     // Legacy redb data moves to native via GraphML export/import. (#446)
 
@@ -738,8 +738,8 @@ impl Drevo {
 
     // ── Cypher (#553) ──────────────────────────────────────────────
 
-    /// Run one Cypher statement in autocommit mode — a write is committed
-    /// when this returns — with named `$params` from a `dict`. Returns a
+    /// Run one Cypher statement in autocommit mode - a write is committed
+    /// when this returns - with named `$params` from a `dict`. Returns a
     /// `CypherResult` (`columns`, rows as dicts, `stats`). The statement runs
     /// without the GIL.
     ///
@@ -835,7 +835,7 @@ impl Drevo {
     }
 
     /// Two-phase commit (#556): roll back an abandoned prepared transaction
-    /// *heuristically* — an operator decision. Unlike `rollback_prepared`,
+    /// *heuristically* - an operator decision. Unlike `rollback_prepared`,
     /// the outcome is remembered, so the coordinator's late
     /// `commit_prepared(gid)` raises `HeuristicRollbackError`.
     fn heuristic_rollback_prepared(&self, py: Python<'_>, gid: &str) -> PyResult<()> {
@@ -848,7 +848,7 @@ impl Drevo {
     }
 
     /// Two-phase commit (#556): every prepared, unresolved transaction, by
-    /// ascending gid — for a coordinator recovering in-doubt transactions.
+    /// ascending gid - for a coordinator recovering in-doubt transactions.
     fn list_prepared(&self) -> PyResult<Vec<crate::transaction::PreparedTransaction>> {
         guarded(|| {
             with_db(&self.inner, |db| {
@@ -893,7 +893,7 @@ impl Drevo {
 
     /// Persist an embedding for a node (overwriting any prior value).
     ///
-    /// Bridges `Drevo::set_embedding` — the node must exist
+    /// Bridges `Drevo::set_embedding` - the node must exist
     /// (`NodeNotFoundError` otherwise). Embeddings live in the durable
     /// `00078` vector store, separate from node properties.
     fn set_embedding(&self, py: Python<'_>, node_id: u64, embedding: Vec<f32>) -> PyResult<()> {
@@ -972,7 +972,7 @@ impl Drevo {
     /// Rebuilds the `00076` HNSW index from the durable store (via
     /// `Drevo::build_vector_index`) and runs an
     /// approximate-nearest-neighbour search. `distance` is the index
-    /// metric (cosine distance by default — smaller is nearer). A
+    /// metric (cosine distance by default - smaller is nearer). A
     /// dimension mismatch between a stored vector and `query`, or between
     /// stored vectors, surfaces as `ValueError`.
     fn vector_search(
@@ -1014,7 +1014,7 @@ mod tests {
     use crate::native_backend::NativeBackend;
     use drevo::model::{NewEdge, NewNode, Properties};
 
-    /// Sanity-check the wrapper at the Rust level — open an in-memory
+    /// Sanity-check the wrapper at the Rust level - open an in-memory
     /// native store, create a node, fetch it back, close. This exercises the
     /// `Arc<Mutex<Option<...>>>` slot life-cycle without needing a
     /// live Python interpreter.

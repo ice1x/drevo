@@ -15,7 +15,7 @@
 //! `.github/workflows/ci.yml` MUST, right after building, assert the
 //! regenerated `drevo.h` matches the committed one via
 //! `git diff --exit-code -- drevo.h`. A stale header then fails the PR
-//! that introduced the drift — on the feature branch, never on `main`.
+//! that introduced the drift - on the feature branch, never on `main`.
 //!
 //! Pure-text test: no `act`, no Docker, no GitHub API. Mirrors the
 //! pattern of `tests/ci_self_hosted_runner_tests.rs`.

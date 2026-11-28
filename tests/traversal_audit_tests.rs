@@ -1,10 +1,10 @@
-//! Audit tests for `src/traversal.rs` — Phase 8.5 task `00107`.
+//! Audit tests for `src/traversal.rs` - Phase 8.5 task `00107`.
 //!
 //! These tests document and pin behaviours that the audit verified:
 //!
 //! * `shortest_path_filtered` and `subgraph_filtered` honour the
 //!   `edge_kind` filter consistently with `bfs` / `dfs`.
-//! * Dijkstra's behaviour on **negative** finite edge weights —
+//! * Dijkstra's behaviour on **negative** finite edge weights -
 //!   the implementation does NOT guarantee optimality and may
 //!   return a non-optimal path. The test pins this so a future
 //!   refactor either (a) keeps the current best-effort semantics
@@ -201,7 +201,7 @@ fn subgraph_filtered_excludes_other_kind_edges() {
 #[test]
 fn subgraph_filtered_does_not_discover_via_filtered_out_edges() {
     // A --[link]--> B --[ref]--> C
-    // Filtered "link" from A: only reaches B (not C — the only edge
+    // Filtered "link" from A: only reaches B (not C - the only edge
     // B->C is "ref" which is filtered out).
     let db = NativeService::in_memory();
     let a = db.create_node(make_node("note", "A")).unwrap();
@@ -269,7 +269,7 @@ fn subgraph_filtered_root_missing_returns_node_not_found() {
 //
 // The Dijkstra implementation does NOT guarantee optimality on negative
 // edge weights. The classical Dijkstra failure mode is that the first
-// time a node is popped from the heap, it is treated as settled — but a
+// time a node is popped from the heap, it is treated as settled - but a
 // negative back-edge can later produce a strictly-better path that
 // Dijkstra has already "committed" away from.
 //
@@ -393,7 +393,7 @@ fn build_random_graph(seed: u32, n_nodes: usize, edge_density: usize) -> (Native
         let from = ids[random_in_range(&mut state, 0, n_nodes)];
         let to = ids[random_in_range(&mut state, 0, n_nodes)];
         let kind = kinds[random_in_range(&mut state, 0, kinds.len())];
-        // Ignore duplicate-edge errors silently — model.rs allows
+        // Ignore duplicate-edge errors silently - model.rs allows
         // parallel edges, so this is a no-op safety belt.
         let _ = db.create_edge(make_edge(from, to, kind));
     }
@@ -416,7 +416,7 @@ fn bfs_dfs_subgraph_same_reachable_set_random_graphs() {
 
             // BFS, DFS, and subgraph each discover the same set of
             // reachable nodes (excluding/including the root according
-            // to each contract — normalise here).
+            // to each contract - normalise here).
             let bfs_set = node_ids(&bfs);
             let dfs_set = node_ids(&dfs);
             let mut sg_set = node_ids(&sg.nodes);

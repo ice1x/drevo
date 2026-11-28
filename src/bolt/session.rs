@@ -1,4 +1,4 @@
-//! Bolt session layer — Phase 11 tasks `00071` and `00072`.
+//! Bolt session layer - Phase 11 tasks `00071` and `00072`.
 //!
 //! Sits on top of the wire codec (`00070`) and drives the per-connection
 //! state machine that official Neo4j drivers (`cypher-shell`,
@@ -36,41 +36,41 @@
 //! Twelve client message families decode through this layer and drive the
 //! state machine end-to-end:
 //!
-//! - `HELLO` (`0x01`) — connection setup; replies with `SUCCESS` carrying
+//! - `HELLO` (`0x01`) - connection setup; replies with `SUCCESS` carrying
 //!   `server` + `connection_id` metadata. Up to Bolt 5.0 it carries the
 //!   credentials; from 5.1 the session then waits in
 //!   [`State::Authentication`](crate::bolt::session::State::Authentication)
 //!   for them.
-//! - `LOGON` (`0x6A`, Bolt 5.1+) — logs in with `scheme` / `principal` /
+//! - `LOGON` (`0x6A`, Bolt 5.1+) - logs in with `scheme` / `principal` /
 //!   `credentials`; `LOGOFF` (`0x6B`) logs out again, outside a transaction.
-//! - `TELEMETRY` (`0x54`, Bolt 5.4+) — acknowledged with `SUCCESS`.
+//! - `TELEMETRY` (`0x54`, Bolt 5.4+) - acknowledged with `SUCCESS`.
 //! - From Bolt 5.0 nodes and relationships in records carry `element_id`
 //!   strings (the ids as text).
-//! - `RUN` (`0x10`) — parses + executes a Cypher query through the graph
+//! - `RUN` (`0x10`) - parses + executes a Cypher query through the graph
 //!   engine (`NativeService` on the durable path, or the KV store via
 //!   [`crate::cypher::executor::execute_on_engine`]), materialises the result, and
 //!   replies with `SUCCESS { fields: [..] }`. Allowed both in autocommit
 //!   mode (`Ready` → `Streaming`) and inside an explicit transaction
 //!   (`TxReady` → `TxStreaming`).
-//! - `PULL` (`0x3F`) — streams up to `n` `RECORD` messages followed by
+//! - `PULL` (`0x3F`) - streams up to `n` `RECORD` messages followed by
 //!   `SUCCESS { has_more: bool }`. Returns to `Ready` or `TxReady`
 //!   depending on which branch the stream came from.
-//! - `DISCARD` (`0x2F`) — drops up to `n` rows without emitting
+//! - `DISCARD` (`0x2F`) - drops up to `n` rows without emitting
 //!   `RECORD`s, then replies `SUCCESS`. Same `Ready` / `TxReady`
 //!   routing as `PULL`.
-//! - `BEGIN` (`0x11`) — opens an explicit transaction (Phase 11 task
+//! - `BEGIN` (`0x11`) - opens an explicit transaction (Phase 11 task
 //!   `00072`). `Ready` → `TxReady`. Each connection opens its own
 //!   [`NativeTx`](crate::native::NativeTx) on the durable engine; a commit
 //!   that conflicts with a concurrent one gets
 //!   `Neo.TransientError.Transaction.Outdated`.
-//! - `COMMIT` (`0x12`) — commits the in-flight transaction. `TxReady` →
+//! - `COMMIT` (`0x12`) - commits the in-flight transaction. `TxReady` →
 //!   `Ready`; the journal is discarded.
-//! - `ROLLBACK` (`0x13`) — rolls back the in-flight transaction.
+//! - `ROLLBACK` (`0x13`) - rolls back the in-flight transaction.
 //!   `TxReady` → `Ready`; the journal is replayed in reverse.
-//! - `RESET` (`0x0F`) — clears any pending stream / failure and returns
+//! - `RESET` (`0x0F`) - clears any pending stream / failure and returns
 //!   to `Ready`. If a transaction was open it is rolled back as part of
 //!   the reset.
-//! - `GOODBYE` (`0x02`) — closes the session; no reply. Any open
+//! - `GOODBYE` (`0x02`) - closes the session; no reply. Any open
 //!   transaction is rolled back on the way out so the next session
 //!   isn't left holding the journal slot.
 //!
@@ -97,7 +97,7 @@
 //!
 //! ## Not in scope
 //!
-//! - TLS — task `00073`.
+//! - TLS - task `00073`.
 //! - Multi-statement transaction isolation across concurrent sessions is
 //!   provided by the durable engine's per-session transactions with
 //!   optimistic-concurrency commit.
@@ -124,7 +124,7 @@ use crate::cypher::executor::{ExecError, Value as CypherValue};
 use crate::cypher::parser::{self, ParseError};
 
 // -------------------------------------------------------------------------
-// Message tag bytes — pinned to the Bolt v4.4 spec.
+// Message tag bytes - pinned to the Bolt v4.4 spec.
 // -------------------------------------------------------------------------
 
 /// `HELLO` request: connection setup.
@@ -173,16 +173,16 @@ const PATH_TAG: u8 = 0x50;
 /// Client → server messages handled by this layer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientMessage {
-    /// `HELLO` — single dictionary field carrying `user_agent` / auth.
+    /// `HELLO` - single dictionary field carrying `user_agent` / auth.
     Hello {
         /// Free-form metadata sent by the driver (user agent, auth scheme, …).
         extra: BTreeMap<String, Value>,
     },
-    /// `GOODBYE` — no fields.
+    /// `GOODBYE` - no fields.
     Goodbye,
-    /// `RESET` — no fields.
+    /// `RESET` - no fields.
     Reset,
-    /// `RUN` — Cypher source + parameters + execution metadata.
+    /// `RUN` - Cypher source + parameters + execution metadata.
     Run {
         /// Cypher source text.
         query: String,
@@ -191,33 +191,33 @@ pub enum ClientMessage {
         /// Per-call metadata (`mode`, `db`, `tx_timeout`, …).
         extra: BTreeMap<String, Value>,
     },
-    /// `BEGIN` — open an explicit transaction (Phase 11 task `00072`).
+    /// `BEGIN` - open an explicit transaction (Phase 11 task `00072`).
     Begin {
         /// Per-transaction metadata (`tx_timeout`, `mode`, `bookmarks`, …).
         extra: BTreeMap<String, Value>,
     },
-    /// `COMMIT` — commit the in-flight explicit transaction.
+    /// `COMMIT` - commit the in-flight explicit transaction.
     Commit,
-    /// `ROLLBACK` — roll back the in-flight explicit transaction.
+    /// `ROLLBACK` - roll back the in-flight explicit transaction.
     Rollback,
-    /// `DISCARD` — drop pending rows.
+    /// `DISCARD` - drop pending rows.
     Discard {
         /// Spec field carries `n` (`-1` = all, `N` = at most N).
         extra: BTreeMap<String, Value>,
     },
-    /// `PULL` — stream pending rows.
+    /// `PULL` - stream pending rows.
     Pull {
         /// Spec field carries `n` (`-1` = all, `N` = at most N).
         extra: BTreeMap<String, Value>,
     },
-    /// `LOGON` (Bolt 5.1+) — `scheme` / `principal` / `credentials`.
+    /// `LOGON` (Bolt 5.1+) - `scheme` / `principal` / `credentials`.
     Logon {
         /// The authentication token.
         auth: BTreeMap<String, Value>,
     },
-    /// `LOGOFF` (Bolt 5.1+) — no fields.
+    /// `LOGOFF` (Bolt 5.1+) - no fields.
     Logoff,
-    /// `TELEMETRY` (Bolt 5.4+) — the driver API in use, as an integer.
+    /// `TELEMETRY` (Bolt 5.4+) - the driver API in use, as an integer.
     Telemetry {
         /// `0` managed transaction, `1` explicit, `2` auto-commit, `3`
         /// driver-level `execute_query`.
@@ -243,7 +243,7 @@ pub enum ServerMessage {
         /// Row values, one per column projected by the trailing `RETURN`.
         fields: Vec<Value>,
     },
-    /// `IGNORED` — sent in response to any non-`RESET` message while in
+    /// `IGNORED` - sent in response to any non-`RESET` message while in
     /// the `Failed` state.
     Ignored,
 }
@@ -291,9 +291,9 @@ pub enum State {
 ///
 /// # Errors
 ///
-/// * [`BoltError::UnknownMarker`] — the structure carries a tag byte
+/// * [`BoltError::UnknownMarker`] - the structure carries a tag byte
 ///   that does not correspond to any client message family.
-/// * [`BoltError::Io`] — a structure field had the wrong shape (e.g.
+/// * [`BoltError::Io`] - a structure field had the wrong shape (e.g.
 ///   `RUN` arrived with two fields instead of three).
 pub fn decode_client(value: &Value) -> BoltResult<ClientMessage> {
     let (tag, fields) = match value {
@@ -446,7 +446,7 @@ mod codes {
     /// error, which drivers do not retry.
     pub const UNSUPPORTED: &str = "Neo.ClientError.Statement.UnsupportedOperationError";
     pub const STORAGE: &str = "Neo.DatabaseError.Statement.ExecutionFailed";
-    /// A statement ran past the configured statement timeout (#547) — the
+    /// A statement ran past the configured statement timeout (#547) - the
     /// code Neo4j drivers already recognise for a timed-out transaction.
     pub const TIMED_OUT: &str = "Neo.ClientError.Transaction.TransactionTimedOut";
     /// A statement or transaction ran past the `tx_timeout` the client set.
@@ -461,7 +461,7 @@ mod codes {
     /// task `00074`.
     pub const UNAUTHORIZED: &str = "Neo.ClientError.Security.Unauthorized";
     /// A commit lost the first-committer-wins race on the durable native
-    /// engine — transient by contract, so official drivers retry the whole
+    /// engine - transient by contract, so official drivers retry the whole
     /// transaction function automatically.
     pub const TRANSIENT_OUTDATED: &str = "Neo.TransientError.Transaction.Outdated";
     /// Writes are paused while a two-phase-commit transaction is prepared
@@ -525,13 +525,13 @@ pub struct Session<'a> {
     /// `scheme`/`principal`/`credentials` tuple before reaching
     /// [`State::Ready`]. Phase 11 task `00074`.
     authenticator: Option<&'a dyn Authenticator>,
-    /// The open registered transaction on the durable engine, if any — set on
+    /// The open registered transaction on the durable engine, if any - set on
     /// `BEGIN`, cleared on `COMMIT` / `ROLLBACK` and the teardown paths
     /// (`RESET` / `GOODBYE` / drop).
     ///
     /// Each connection's `BEGIN` allocates its own id, so concurrent pooled
     /// connections never collide (issue #298), and the lifecycle teardown hooks
-    /// roll back only *this* session's transaction — a pooled driver's `RESET`
+    /// roll back only *this* session's transaction - a pooled driver's `RESET`
     /// on one connection can never disturb a managed transaction in flight on
     /// another (issue #236).
     ///
@@ -554,7 +554,7 @@ pub struct Session<'a> {
     signed_in: Option<crate::security::SignedIn>,
     /// The client's address, for the audit log.
     client: Option<String>,
-    /// How a `db` selector on `RUN` / `BEGIN` maps to a concrete service — a
+    /// How a `db` selector on `RUN` / `BEGIN` maps to a concrete service - a
     /// single-database session ignores it (embedded / sync entry points), a
     /// catalog-backed one resolves it against the shared registry (issue #523).
     resolver: DbResolver,
@@ -596,7 +596,7 @@ enum DbResolver {
     /// No catalog wired: every statement runs on the one service the session was
     /// built with and any `db` selector is ignored. This is the embedded / sync
     /// path (and every build without the `http` feature), where named databases
-    /// do not exist — behaviour is byte-for-byte what it was before issue #523.
+    /// do not exist - behaviour is byte-for-byte what it was before issue #523.
     Single,
     /// Catalog-backed routing (feature `http`): a `db` selector is resolved
     /// against the shared [`DatabaseRegistry`](crate::database_registry::DatabaseRegistry),
@@ -614,7 +614,7 @@ impl<'a> Session<'a> {
     /// Create a session over the durable native store of record. Starts in
     /// [`State::Connected`]; the caller must send `HELLO` next.
     ///
-    /// No authentication is enforced — every `HELLO` is accepted. Use
+    /// No authentication is enforced - every `HELLO` is accepted. Use
     /// [`Session::with_auth_durable`](crate::bolt::session::Session::with_auth_durable)
     /// to require credentials.
     pub fn new_durable(service: std::sync::Arc<crate::native_service::NativeService>) -> Self {
@@ -637,7 +637,7 @@ impl<'a> Session<'a> {
         Self::build(service, None, DbResolver::Registry(registry))
     }
 
-    /// Authenticating counterpart of [`Session::new_durable_with_registry`] —
+    /// Authenticating counterpart of [`Session::new_durable_with_registry`] -
     /// catalog-backed routing plus credential enforcement on every `HELLO`
     /// (issue #523, Phase 11 task `00074`).
     #[cfg(feature = "http")]
@@ -649,8 +649,8 @@ impl<'a> Session<'a> {
         Self::build(service, Some(authenticator), DbResolver::Registry(registry))
     }
 
-    /// Create an authenticating session over the durable native store of record
-    /// — the [`Session::new_durable`] counterpart with credential enforcement.
+    /// Create an authenticating session over the durable native store of record -
+    /// the [`Session::new_durable`] counterpart with credential enforcement.
     /// Every `HELLO` is checked against `authenticator` before the connection
     /// reaches [`State::Ready`]; a `HELLO` with missing / wrong / unsupported
     /// credentials is answered with a `Neo.ClientError.Security.Unauthorized`
@@ -674,7 +674,7 @@ impl<'a> Session<'a> {
         Self {
             service,
             state: State::Connected,
-            // The `server` agent MUST start with `Neo4j/` — the official Neo4j
+            // The `server` agent MUST start with `Neo4j/` - the official Neo4j
             // drivers reject any other product with `UnsupportedServerProduct`.
             // drevo's Bolt surface is a deliberate Neo4j-compatible drop-in, so
             // we report a Neo4j-version-prefixed agent (drevo's own version is
@@ -1047,7 +1047,7 @@ impl<'a> Session<'a> {
         }
         // Up to Bolt 5.0 `HELLO` carries the `scheme` / `principal` /
         // `credentials` tuple; from 5.1 a `LOGON` follows instead. A denial
-        // marks the connection Defunct after the FAILURE is written — the
+        // marks the connection Defunct after the FAILURE is written - the
         // Bolt contract is to close the socket on a failed auth, and the
         // session loops return once they observe `Defunct`.
         self.listed
@@ -1090,7 +1090,7 @@ impl<'a> Session<'a> {
         // isn't blocked by a stale journal slot. We gate on `owns_tx`, not
         // the global `is_tx_active()`: another connection may legitimately
         // hold the slot, and its transaction is none of our business
-        // (issue #236). Errors during rollback are silently swallowed —
+        // (issue #236). Errors during rollback are silently swallowed -
         // the client is already walking away and no reply is delivered.
         self.roll_back_own_tx();
         self.state = State::Defunct;
@@ -1103,7 +1103,7 @@ impl<'a> Session<'a> {
         // RESET inside *our own* explicit transaction rolls it back, matching
         // the Neo4j driver contract: the transaction is gone when the session
         // returns to READY. Each session owns its own `NativeTx`, so this only
-        // ever touches this connection's transaction — a pooled driver's RESET
+        // ever touches this connection's transaction - a pooled driver's RESET
         // on one connection never disturbs one in flight on another (issue
         // #236).
         self.roll_back_own_tx();
@@ -1123,7 +1123,7 @@ impl<'a> Session<'a> {
             return vec![ServerMessage::Failure {
                 metadata: failure_metadata(
                     codes::REQUEST_INVALID,
-                    "BEGIN outside READY state — explicit transactions cannot nest",
+                    "BEGIN outside READY state - explicit transactions cannot nest",
                 ),
             }];
         }
@@ -1512,7 +1512,7 @@ impl<'a> Session<'a> {
             }
         };
         // Two-phase commit (#556): `CALL drevo.tx.prepare($gid)` inside an
-        // explicit transaction prepares *this* transaction — the executor has
+        // explicit transaction prepares *this* transaction - the executor has
         // no handle on the session's transaction, so it is handled here.
         if in_tx {
             if let Some(gid_expr) = prepare_call(&ast) {
@@ -1522,7 +1522,7 @@ impl<'a> Session<'a> {
         // Execute (already returns a fully-materialised ExecResult). Inside an
         // explicit transaction the statement runs on this connection's
         // registered transaction working copy, on the service the transaction
-        // was opened on (issues #298 / #523) — the transaction's database was
+        // was opened on (issues #298 / #523) - the transaction's database was
         // fixed at BEGIN, so a `db` on this RUN is ignored. An autocommit RUN
         // routes to the database named by its own `db` selector (issue #523),
         // falling back to the session default.
@@ -1766,13 +1766,13 @@ impl<'a> Session<'a> {
         let exhausted;
         loop {
             if n >= 0 && emitted >= n {
-                // Pulled the requested batch — check whether more rows are
+                // Pulled the requested batch - check whether more rows are
                 // still queued WITHOUT consuming one. `pending.rows` is a
                 // `std::vec::IntoIter`, so `as_slice()` exposes the remaining
                 // items non-destructively. (The old
                 // `.by_ref().peekable().peek()` built a throwaway `Peekable`
                 // that pulled the next row into its buffer and then dropped
-                // it — silently losing one row at every PULL batch boundary.)
+                // it - silently losing one row at every PULL batch boundary.)
                 exhausted = pending.rows.as_slice().is_empty();
                 break;
             }
@@ -1801,7 +1801,7 @@ impl<'a> Session<'a> {
             self.state = if in_tx { State::TxReady } else { State::Ready };
             md.insert("has_more".to_string(), Value::Boolean(false));
             // `type` per Bolt 4.4 spec: r / w / rw / s. We do not yet
-            // distinguish — a query that mutated rows is captured by
+            // distinguish - a query that mutated rows is captured by
             // ExecStats; we report `rw` so drivers don't assume
             // read-only and accidentally retry.
             md.insert("type".to_string(), Value::String("rw".to_string()));
@@ -1834,7 +1834,7 @@ impl<'a> Session<'a> {
         let exhausted;
         loop {
             if n >= 0 && dropped >= n {
-                // Non-consuming remaining-rows check — see `handle_pull`; the
+                // Non-consuming remaining-rows check - see `handle_pull`; the
                 // old `.by_ref().peekable().peek()` dropped one row per batch.
                 exhausted = pending.rows.as_slice().is_empty();
                 break;
@@ -1871,7 +1871,7 @@ impl Drop for Session<'_> {
 }
 
 // -------------------------------------------------------------------------
-// run_session_sync_durable — drives the loop over a sync Read/Write pair.
+// run_session_sync_durable - drives the loop over a sync Read/Write pair.
 // -------------------------------------------------------------------------
 
 /// Read framed Bolt messages from `reader`, dispatch them through a
@@ -1881,7 +1881,7 @@ impl Drop for Session<'_> {
 ///
 /// # Errors
 ///
-/// * [`BoltError::Eof`] — partial message at the end of the input.
+/// * [`BoltError::Eof`] - partial message at the end of the input.
 /// * Any other [`BoltError`] surfaced by the codec / framing layers.
 ///
 /// Errors raised *by the Cypher engine* are converted to `FAILURE`
@@ -2007,16 +2007,16 @@ fn pack_to_cypher(v: Value) -> Result<CypherValue, String> {
 }
 
 // Bolt PackStream temporal structure tags (Neo4j Bolt spec).
-const TAG_DATE: u8 = 0x44; // 'D' — days since epoch
-const TAG_DATETIME_LEGACY: u8 = 0x46; // 'F' — local seconds + nanos + tz offset
-const TAG_DATETIME_UTC: u8 = 0x49; // 'I' — UTC seconds + nanos + tz offset (Bolt 5.0)
-const TAG_LOCAL_DATETIME: u8 = 0x64; // 'd' — seconds + nanos, no zone
+const TAG_DATE: u8 = 0x44; // 'D' - days since epoch
+const TAG_DATETIME_LEGACY: u8 = 0x46; // 'F' - local seconds + nanos + tz offset
+const TAG_DATETIME_UTC: u8 = 0x49; // 'I' - UTC seconds + nanos + tz offset (Bolt 5.0)
+const TAG_LOCAL_DATETIME: u8 = 0x64; // 'd' - seconds + nanos, no zone
 
 /// Decode a PackStream **temporal** parameter structure into an ISO-8601 string.
 ///
 /// graphiti (and any neo4j-driver client) serialises `datetime` parameters as
 /// PackStream temporal structures. drevo's Cypher engine has no native temporal
-/// type, so we render them as ISO-8601 text — which round-trips cleanly on the
+/// type, so we render them as ISO-8601 text - which round-trips cleanly on the
 /// client via Python's `datetime.fromisoformat` (graphiti `helpers.parse_db_date`).
 /// Non-temporal structures (Node, Relationship, Path, …) remain invalid params.
 fn structure_param_to_cypher(tag: u8, fields: Vec<Value>) -> Result<CypherValue, String> {
@@ -2061,7 +2061,7 @@ fn struct_int(fields: &[Value], idx: usize, tag: u8) -> Result<i64, String> {
 /// Format an instant (epoch seconds + nanoseconds) as ISO-8601. When `utc` is
 /// set the `+00:00` zone suffix is appended (drevo normalises zoned DateTimes to
 /// UTC); otherwise the value is a zone-less LocalDateTime and no suffix is added.
-/// Rendered at microsecond precision — the neo4j driver sends nanos as
+/// Rendered at microsecond precision - the neo4j driver sends nanos as
 /// `micros * 1000`, so 6 fractional digits is exact and `fromisoformat`-safe.
 fn format_iso_datetime(epoch_seconds: i64, nanos: i64, utc: bool) -> String {
     let days = epoch_seconds.div_euclid(86_400);
@@ -2190,7 +2190,7 @@ fn with_element_ids(v: Value) -> Value {
 /// `Path` structure (tag `0x50`).
 ///
 /// The Bolt wire form is three fields: a list of the **distinct** nodes, a list
-/// of the **distinct** unbound relationships (tag `0x72` — id, type,
+/// of the **distinct** unbound relationships (tag `0x72` - id, type,
 /// properties; endpoints are implied by the index sequence), and a flat list of
 /// integer indices. The index list alternates `rel_index, node_index`: the
 /// relationship index is 1-based into the unbound-relationship list and
@@ -2283,7 +2283,7 @@ fn failure_metadata(code: &str, message: &str) -> BTreeMap<String, Value> {
 
 /// Build a `FAILURE` metadata dictionary for protocol-level decode
 /// errors (bad tag, mis-shaped fields). Exposed for callers that hand-
-/// roll a Bolt loop on top of an async transport — see
+/// roll a Bolt loop on top of an async transport - see
 /// [`crate::bolt::listener::accept_and_run_session_durable`].
 pub fn protocol_failure_metadata(message: &str) -> BTreeMap<String, Value> {
     failure_metadata(codes::PROTOCOL_VIOLATION, message)
@@ -2417,7 +2417,7 @@ fn extract_isolation(
 ///
 /// Official Neo4j drivers put the target database in `extra["db"]` (a string)
 /// when the caller passes `session(database="…")`. An absent, empty, or
-/// non-string value means "the session default database" — returned as `None`
+/// non-string value means "the session default database" - returned as `None`
 /// so the resolver falls back to the default.
 /// The access a `BEGIN` or `RUN` asks for (#825): drivers send `mode: "r"`
 /// for a READ session or transaction and omit it, or send `"w"`, for writing.
@@ -2488,7 +2488,7 @@ mod tests {
     fn batched_pull_does_not_drop_rows_across_batches() {
         // Regression: `handle_pull` checked for remaining rows with
         // `.by_ref().peekable().peek()`, which pulled the next row into a
-        // throwaway `Peekable` and then dropped it — silently losing one row
+        // throwaway `Peekable` and then dropped it - silently losing one row
         // at every PULL batch boundary. Pull three rows one at a time and
         // assert none go missing.
         let mut session = Session::new_durable(std::sync::Arc::new(
@@ -2520,7 +2520,7 @@ mod tests {
         assert_eq!(
             records,
             vec![1, 2, 3],
-            "every row must survive batched PULL — none dropped by the exhaustion check"
+            "every row must survive batched PULL - none dropped by the exhaustion check"
         );
     }
 
@@ -2668,7 +2668,7 @@ mod tests {
 
     #[test]
     fn pack_to_cypher_decodes_local_datetime_as_naive() {
-        // LocalDateTime (0x64): seconds, nanos — no zone, so no offset suffix.
+        // LocalDateTime (0x64): seconds, nanos - no zone, so no offset suffix.
         let v = pack_to_cypher(Value::Structure {
             tag: 0x64,
             fields: vec![Value::Integer(0), Value::Integer(0)],
@@ -2804,7 +2804,7 @@ mod tests {
     #[test]
     fn single_session_ignores_db_selector() {
         // Back-compat: a session with no catalog wired runs every statement on
-        // its one service regardless of the `db` selector — exactly the pre-#523
+        // its one service regardless of the `db` selector - exactly the pre-#523
         // behaviour (the selector was silently dropped).
         let mut session = Session::new_durable(std::sync::Arc::new(
             crate::native_service::NativeService::in_memory(),
@@ -2829,7 +2829,7 @@ mod tests {
     }
 
     /// Run an autocommit `MATCH (n) RETURN count(n)` on `session`, routed by
-    /// `extra`, and return the count — draining the stream so the session
+    /// `extra`, and return the count - draining the stream so the session
     /// returns to `Ready`.
     #[cfg(feature = "http")]
     fn count_nodes(session: &mut Session, extra: BTreeMap<String, Value>) -> i64 {
@@ -2871,7 +2871,7 @@ mod tests {
     #[test]
     fn autocommit_run_routes_db_selector_to_named_database() {
         // A write with `db="b"` lands only in database `b`; the default database
-        // stays empty and `b`'s own count sees the row — proving the autocommit
+        // stays empty and `b`'s own count sees the row - proving the autocommit
         // RUN routed to the named catalog entry, not the session default.
         let registry = registry_with(&["b"]);
         let mut session = Session::new_durable_with_registry(registry);
@@ -2896,7 +2896,7 @@ mod tests {
         assert_eq!(
             count_nodes(&mut session, BTreeMap::new()),
             0,
-            "the default database must stay untouched — routing kept the write in `b`"
+            "the default database must stay untouched - routing kept the write in `b`"
         );
     }
 

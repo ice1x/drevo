@@ -1,35 +1,35 @@
-//! Phase 9 task `00056` — GraphML export integration tests.
+//! Phase 9 task `00056` - GraphML export integration tests.
 //!
 //! Cover the native engine's `export_graphml` surface (the string codec on
 //! `NativeService`); the filesystem round-trip is exercised with `std::fs`
 //! over that codec. The assertions below focus on:
 //!
-//! 1. **Well-formedness** — output starts with `<?xml`, declares the GraphML
+//! 1. **Well-formedness** - output starts with `<?xml`, declares the GraphML
 //!    namespace, opens `<graph id="drevo" edgedefault="directed">`, and
 //!    closes every element opened.
-//! 2. **Completeness** — every node id appears as `<node id="n{id}">`, every
+//! 2. **Completeness** - every node id appears as `<node id="n{id}">`, every
 //!    edge id appears as `<edge id="e{id}" source="n{from}" target="n{to}">`,
 //!    and all key declarations (`d_uuid`, `d_kind`, `d_title`, `d_body`,
 //!    `d_body_html`, `d_created_at`, `d_updated_at`, `d_props`,
 //!    `d_e_uuid`, `d_e_kind`, `d_e_weight`, `d_e_created_at`, `d_e_props`)
 //!    are present.
-//! 3. **XML escaping** — `<`, `>`, `&`, `"`, `'` in titles / bodies become
+//! 3. **XML escaping** - `<`, `>`, `&`, `"`, `'` in titles / bodies become
 //!    `&lt;`, `&gt;`, `&amp;`, `&quot;`, `&apos;`.
-//! 4. **Property fidelity** — node and edge `Properties` are serialised as
+//! 4. **Property fidelity** - node and edge `Properties` are serialised as
 //!    a JSON literal under `d_props` / `d_e_props` and round-trip through
 //!    `serde_json::from_str` to the original map.
-//! 5. **Determinism** — calling `export_graphml` twice on the same database
+//! 5. **Determinism** - calling `export_graphml` twice on the same database
 //!    yields byte-identical output; two databases with identical logical
 //!    content (modulo uuids / timestamps) yield identical output once those
 //!    volatile fields are stripped.
-//! 6. **Determinism across instances** — two databases with identical logical
+//! 6. **Determinism across instances** - two databases with identical logical
 //!    content yield identical GraphML (modulo volatile fields).
-//! 7. **Filesystem round-trip** — writing `export_graphml`'s output to a
+//! 7. **Filesystem round-trip** - writing `export_graphml`'s output to a
 //!    `tempfile::TempDir` path with `std::fs` and reading it back yields the
 //!    exact bytes.
-//! 8. **Unicode** — CJK, emoji, and Cyrillic content in titles / bodies /
+//! 8. **Unicode** - CJK, emoji, and Cyrillic content in titles / bodies /
 //!    property keys survives a JSON-string round-trip inside the GraphML.
-//! 9. **Empty graph** — exporting a freshly-opened database still yields a
+//! 9. **Empty graph** - exporting a freshly-opened database still yields a
 //!    valid GraphML document with zero `<node>` / `<edge>` elements.
 
 use drevo::model::{NewEdge, NewNode, Properties};
@@ -184,7 +184,7 @@ fn export_graphml_emits_every_edge_with_source_and_target() {
     let (_, edge_ids) = populate_sample_graph(&db);
     let xml = db.export_graphml().unwrap();
     for eid in &edge_ids {
-        // Match just the id portion — source/target are validated below by
+        // Match just the id portion - source/target are validated below by
         // re-parsing the JSON wrapped in each `d_e_props`.
         assert!(
             xml.contains(&format!("<edge id=\"e{eid}\"")),
@@ -255,7 +255,7 @@ fn export_graphml_escapes_special_chars_in_node_text() {
 fn extract_data_value<'a>(xml: &'a str, anchor: &str, key: &str) -> Option<&'a str> {
     // Find the anchor (e.g. the opening `<node id="n3">`), then within the
     // following element (until the matching close) return the text between
-    // `<data key="$key">…</data>`. The result is still XML-escaped — pass
+    // `<data key="$key">…</data>`. The result is still XML-escaped - pass
     // through [`xml_unescape`] before feeding it to a JSON / text parser.
     let start = xml.find(anchor)?;
     let needle = format!("<data key=\"{key}\">");
@@ -264,7 +264,7 @@ fn extract_data_value<'a>(xml: &'a str, anchor: &str, key: &str) -> Option<&'a s
     Some(&xml[kstart..kend])
 }
 
-/// Inverse of the GraphML exporter's text escaping — turns `&lt;` /
+/// Inverse of the GraphML exporter's text escaping - turns `&lt;` /
 /// `&gt;` / `&amp;` / `&quot;` / `&apos;` back into the original
 /// character so an extracted `<data>` body becomes a plain UTF-8 string
 /// (and, when the original content was JSON, valid JSON again).
@@ -432,7 +432,7 @@ fn export_graphml_preserves_unicode_in_node_text() {
 }
 
 // ---------------------------------------------------------------
-// 9. Order — nodes/edges emitted in id order
+// 9. Order - nodes/edges emitted in id order
 // ---------------------------------------------------------------
 
 #[test]

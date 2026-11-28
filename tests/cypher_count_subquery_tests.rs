@@ -1,8 +1,8 @@
-//! End-to-end Cypher `COUNT { ... }` counting-subquery tests — Phase 10
+//! End-to-end Cypher `COUNT { ... }` counting-subquery tests - Phase 10
 //! follow-up task `00153`.
 //!
 //! A counting subquery `COUNT { [MATCH] pattern [WHERE predicate] }` returns the
-//! **number** of matches of the enclosed pattern, relative to the current row —
+//! **number** of matches of the enclosed pattern, relative to the current row -
 //! anchored on any variables the surrounding query has already bound. It is the
 //! integer-valued sibling of the existential subquery (`00152`): where
 //! `EXISTS { p }` tests whether at least one match exists, `COUNT { p }` counts
@@ -15,17 +15,17 @@
 //!
 //! * `COUNT { (a)-[:R]->(b) }` evaluates to the integer match count,
 //! * a leading `MATCH` keyword is accepted and equivalent,
-//! * a bare node `COUNT { (n) }` is legal (the braces disambiguate) — it counts
+//! * a bare node `COUNT { (n) }` is legal (the braces disambiguate) - it counts
 //!   the anchored node when it matches the inline filter,
 //! * an inner `WHERE` filters the matches before they are counted,
 //! * the pattern is anchored on already-bound variables (each row only counts
 //!   its own matches); new variables in the subquery are subquery-scoped,
-//! * it composes in any expression slot — a `WHERE` comparison, a `RETURN`
+//! * it composes in any expression slot - a `WHERE` comparison, a `RETURN`
 //!   column, `ORDER BY`, arithmetic,
 //! * a head variable already bound to `null` (an unmatched `OPTIONAL MATCH`
 //!   node) makes the subquery `null` (three-valued logic) rather than a type
 //!   error, and no match yields `0` (never `null`),
-//! * the counting subquery is *not* the `count(*)` aggregation — `count(*)` and
+//! * the counting subquery is *not* the `count(*)` aggregation - `count(*)` and
 //!   `count(x)` keep their aggregation meaning,
 //!
 //! plus the five scenario domains (CBT journal, story editor, task manager,
@@ -165,7 +165,7 @@ fn bare_node_subquery_counts_the_anchored_node_match() {
         &d,
     );
     // `COUNT { (p {active: true}) }` re-tests the anchored node against the
-    // inline property filter — 1 for Ann, 0 for Bob.
+    // inline property filter - 1 for Ann, 0 for Bob.
     let rows = run(
         "MATCH (p:Person)
          RETURN p.name AS name, COUNT { (p {active: true}) } AS n
@@ -457,7 +457,7 @@ fn bug_tracker_issues_with_multiple_active_assignees() {
 
 #[test]
 fn count_without_brace_is_the_aggregation_not_a_subquery() {
-    // `count(*)` keeps its aggregation meaning — this parses and runs as a
+    // `count(*)` keeps its aggregation meaning - this parses and runs as a
     // normal aggregate, not a subquery.
     let d = db();
     run("CREATE (a:Person)  CREATE (b:Person)", &d);

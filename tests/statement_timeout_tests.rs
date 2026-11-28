@@ -1,4 +1,4 @@
-//! Opt-in statement timeout — issue #547 (second half).
+//! Opt-in statement timeout - issue #547 (second half).
 //!
 //! Running Cypher off the async workers keeps the server *live* while a slow
 //! statement runs, but the statement itself still runs to completion and
@@ -8,7 +8,7 @@
 //! held. Over Bolt that is Neo4j's `Neo.ClientError.Transaction.TransactionTimedOut`.
 //!
 //! These tests lock:
-//! - off by default — no statement is ever cut short unless configured;
+//! - off by default - no statement is ever cut short unless configured;
 //! - a CPU-bound expression (`reduce`) and a traversal-bound pattern (the
 //!   trail-enumerating `shortestPath` fallback) both stop near the limit;
 //! - fast statements are unaffected, and the deadline never leaks into the
@@ -82,7 +82,7 @@ fn a_traversal_bound_statement_stops_near_the_limit() {
     // `[*2..]` keeps the trail-enumerating shortestPath fallback (#546). On a
     // dense component with unreachable targets (nodes 60..79 are isolated) it
     // enumerates every trail to the bound without evaluating any expression
-    // per step — the loop itself has to honour the deadline.
+    // per step - the loop itself has to honour the deadline.
     let svc = NativeService::in_memory();
     exec(&svc, "UNWIND range(0, 79) AS i CREATE (:D {i: i})").expect("nodes");
     exec(

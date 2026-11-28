@@ -1,4 +1,4 @@
-//! In-process registry of named native databases — the multi-database catalog
+//! In-process registry of named native databases - the multi-database catalog
 //! (issue #523, RFC `docs/rfc-native-core.md` #307 Phase 2).
 //!
 //! One drevo process serves a single durable graph today; this registry lets it
@@ -11,9 +11,9 @@
 //!
 //! # Durability
 //!
-//! A registry can be **in-memory** ([`new`](crate::database_registry::DatabaseRegistry::new) — used by
+//! A registry can be **in-memory** ([`new`](crate::database_registry::DatabaseRegistry::new) - used by
 //! tests and the in-memory server) or **durable**
-//! ([`with_durable_dir`](crate::database_registry::DatabaseRegistry::with_durable_dir) — used by the
+//! ([`with_durable_dir`](crate::database_registry::DatabaseRegistry::with_durable_dir) - used by the
 //! shipping WAL-backed server). In durable mode each non-default database lives
 //! in its own WAL directory `<data_dir>/databases/<name>/native.wal`, so a
 //! `CREATE DATABASE` survives a restart: `with_durable_dir` re-opens every such
@@ -24,8 +24,8 @@
 //!
 //! [`create`](crate::database_registry::DatabaseRegistry::create) picks the mode from the registry:
 //! durable registries open a WAL, in-memory registries stay in memory. Query
-//! routing to a chosen database — the HTTP selector, the Bolt `db` field, and
-//! Cypher `USE` — landed in the routing slices; this closes the persistence gap
+//! routing to a chosen database - the HTTP selector, the Bolt `db` field, and
+//! Cypher `USE` - landed in the routing slices; this closes the persistence gap
 //! that made non-default databases ephemeral.
 //!
 //! # Access
@@ -50,7 +50,7 @@ use crate::native_service::NativeService;
 /// database's own `native.wal` so the two never collide.
 pub(crate) const DATABASES_SUBDIR: &str = "databases";
 
-/// WAL filename inside each per-database directory — the same basename the
+/// WAL filename inside each per-database directory - the same basename the
 /// default store uses under the data dir, so the layout is uniform.
 pub(crate) const DB_WAL_FILE: &str = "native.wal";
 
@@ -81,10 +81,10 @@ const MAX_DB_NAME_LEN: usize = 63;
 /// not-found → 404, protected-default → 409.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RegistryError {
-    /// The requested name is not a legal database name — see
+    /// The requested name is not a legal database name - see
     /// [`validate_db_name`] for the rule.
     #[error(
-        "invalid database name '{0}': names must be 1–63 characters of \
+        "invalid database name '{0}': names must be 1-63 characters of \
          [A-Za-z0-9_-] and begin with a letter, digit, or underscore"
     )]
     InvalidName(String),
@@ -97,12 +97,12 @@ pub enum RegistryError {
     #[error("database '{0}' not found")]
     NotFound(String),
 
-    /// The default database cannot be dropped — it is the store the process was
+    /// The default database cannot be dropped - it is the store the process was
     /// pointed at and the fallback for un-named requests.
     #[error("the default database '{0}' cannot be dropped")]
     ProtectedDefault(String),
 
-    /// A durable-storage operation failed — opening a per-database WAL on
+    /// A durable-storage operation failed - opening a per-database WAL on
     /// create / restore, or deleting a dropped database's directory. The
     /// `String` is the underlying error rendered for the log / HTTP body (kept
     /// as a `String` so the variant stays `Clone`/`Eq` like its siblings).
@@ -122,9 +122,9 @@ pub enum RegistryError {
 
 /// Validate a database name.
 ///
-/// A legal name is 1–63 bytes, contains only ASCII `[A-Za-z0-9_-]`, and begins
+/// A legal name is 1-63 bytes, contains only ASCII `[A-Za-z0-9_-]`, and begins
 /// with a letter, digit, or underscore (not `-`). This is a pure syntactic
-/// check; it says nothing about whether the name is free or reserved — the
+/// check; it says nothing about whether the name is free or reserved - the
 /// registry's [`create_in_memory`](DatabaseRegistry::create_in_memory) and
 /// [`remove`](DatabaseRegistry::remove) enforce uniqueness and default
 /// protection.
@@ -365,7 +365,7 @@ impl DatabaseRegistry {
     }
 
     /// Make the database named `name` read-only (`true`) or read-write
-    /// (`false`) — `ALTER DATABASE name SET ACCESS READ ONLY | READ WRITE`.
+    /// (`false`) - `ALTER DATABASE name SET ACCESS READ ONLY | READ WRITE`.
     /// A durable registry remembers it across restarts.
     ///
     /// # Errors
@@ -550,7 +550,7 @@ impl DatabaseRegistry {
         self.read().len()
     }
 
-    /// Always `false` — the default database is never absent. Present so
+    /// Always `false` - the default database is never absent. Present so
     /// Clippy's `len_without_is_empty` stays satisfied and callers read
     /// naturally.
     #[must_use]
@@ -589,7 +589,7 @@ impl DatabaseRegistry {
     /// registry's mode, and register it.
     ///
     /// A durable registry ([`with_durable_dir`](Self::with_durable_dir)) opens a
-    /// WAL at `<data_dir>/databases/<name>/native.wal` — so the database
+    /// WAL at `<data_dir>/databases/<name>/native.wal` - so the database
     /// survives a restart; an in-memory registry ([`new`](Self::new)) creates an
     /// ephemeral service. This is the entry point the HTTP `POST /databases` and
     /// Cypher `CREATE DATABASE` handlers call so behaviour follows the server's
@@ -628,7 +628,7 @@ impl DatabaseRegistry {
     }
 
     /// Open (creating its directory) the durable WAL for `name`. Split out so
-    /// the wasm build — which has no `NativeService::open` — never references it.
+    /// the wasm build - which has no `NativeService::open` - never references it.
     #[cfg(not(target_arch = "wasm32"))]
     fn open_durable(data_dir: &Path, name: &str) -> Result<NativeService, RegistryError> {
         let dir = Self::db_dir(data_dir, name);
@@ -644,7 +644,7 @@ impl DatabaseRegistry {
 
     /// The wasm counterpart: a durable registry cannot exist on wasm
     /// (`with_durable_dir` is not compiled there), so `create` never reaches a
-    /// `Some(data_dir)` arm — this stub keeps the non-wasm call site typed
+    /// `Some(data_dir)` arm - this stub keeps the non-wasm call site typed
     /// without pulling in the (absent) durable engine.
     #[cfg(target_arch = "wasm32")]
     fn open_durable(_data_dir: &Path, name: &str) -> Result<NativeService, RegistryError> {
@@ -670,7 +670,7 @@ impl DatabaseRegistry {
     /// - [`RegistryError::ProtectedDefault`] if `name` is the default database.
     /// - [`RegistryError::NotFound`] if no database named `name` is registered.
     /// - [`RegistryError::Storage`] if the database's directory cannot be
-    ///   deleted (the catalog entry is already gone at that point — the database
+    ///   deleted (the catalog entry is already gone at that point - the database
     ///   is unreachable, but its files lingered).
     pub fn remove(&self, name: &str) -> Result<(), RegistryError> {
         if self.read_only {
@@ -865,7 +865,7 @@ mod tests {
         })
         .expect("create node in a");
 
-        // `a` sees it; `b` and the default are untouched — isolation.
+        // `a` sees it; `b` and the default are untouched - isolation.
         assert_eq!(a.list_nodes_by_kind("note", 10, 0).len(), 1);
         assert_eq!(b.list_nodes_by_kind("note", 10, 0).len(), 0);
         assert_eq!(
@@ -878,7 +878,7 @@ mod tests {
 
     #[test]
     fn create_on_in_memory_registry_stays_in_memory() {
-        // `create` on a `new()` registry (no data dir) is the in-memory path —
+        // `create` on a `new()` registry (no data dir) is the in-memory path -
         // no filesystem, same result as `create_in_memory`.
         let reg = default_registry();
         reg.create("mem").expect("create in-memory via create()");
@@ -945,7 +945,7 @@ mod tests {
         drop(reg);
         drop(default);
 
-        // A fresh registry over the same data dir re-opens `foo` with its data —
+        // A fresh registry over the same data dir re-opens `foo` with its data -
         // the restart-recovery contract.
         let (_default2, reg2) = durable_registry_at(data_dir);
         assert!(

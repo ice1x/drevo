@@ -1,7 +1,7 @@
-//! Per-entity conflict detection (issue #749, slices 2–3): explicit
+//! Per-entity conflict detection (issue #749, slices 2-3): explicit
 //! transactions that touched different records both commit; only a real
-//! overlap — the same node or relationship, or a relationship whose endpoint
-//! the other deleted — still fails with `Conflict`. `Isolation::Serializable`
+//! overlap - the same node or relationship, or a relationship whose endpoint
+//! the other deleted - still fails with `Conflict`. `Isolation::Serializable`
 //! keeps the older whole-graph rule, per graph or per transaction.
 
 use drevo_core::engine::GraphEngine;

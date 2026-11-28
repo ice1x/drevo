@@ -1,6 +1,6 @@
 //! Guards for the durable-native serving layer (`NativeService`, RFC #307
 //! Phase 4/7): the store of record IS the WAL-backed native graph, and the
-//! full index stack — label, property, value cache, full-text — serves
+//! full index stack - label, property, value cache, full-text - serves
 //! Cypher, staying correct across writes, restarts, and concurrency.
 
 use std::collections::HashMap;
@@ -240,7 +240,7 @@ fn vector_query_is_served_on_the_native_engine() {
 #[test]
 fn fts_search_relationships_is_served_on_the_native_engine() {
     // Edge full-text (fts.searchRelationships, #229) reads the native
-    // relationship FTS index the service syncs from the change-feed — no KV
+    // relationship FTS index the service syncs from the change-feed - no KV
     // secondary. An edge's document is its string properties.
     let service = NativeService::in_memory();
     run(
@@ -313,7 +313,7 @@ fn semantic_reindex_backfills_embeddings_on_native() {
             Value::Integer(0),
         ]]
     );
-    // A second pass is a no-op — everything is already embedded (idempotent).
+    // A second pass is a no-op - everything is already embedded (idempotent).
     let again = run(
         &service,
         "CALL drevo.semantic.reindex('Doc', 'emb', 100) YIELD embedded RETURN embedded",
@@ -602,7 +602,7 @@ fn keywords_are_extracted_on_native() {
 fn update_bumps_recency_and_survives_a_restart() {
     // `update_node` must advance `updated_at` so the touched node leads
     // `list_recent` (parity with the KV engine's `apply_patch`), and the bumped
-    // timestamp must be durable — the WAL records the full node record, so a
+    // timestamp must be durable - the WAL records the full node record, so a
     // cold reopen recovers the same recency order rather than the create order.
     use drevo::model::{NewNode, NodePatch, Properties};
 

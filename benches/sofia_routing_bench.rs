@@ -5,10 +5,10 @@
 //! `Junction` node with `lat` and `lon`; every stretch of a way between two
 //! consecutive OSM nodes becomes a relationship:
 //!
-//! * `ROAD` — a stretch cars may drive, in each direction they may drive it,
+//! * `ROAD` - a stretch cars may drive, in each direction they may drive it,
 //!   with `car_s` (seconds at the street's speed) and, unless it is a
 //!   motorway, `walk_s` (seconds on foot at 1.4 m/s);
-//! * `PATH` — a footway, path, cycleway, pedestrian street or flight of
+//! * `PATH` - a footway, path, cycleway, pedestrian street or flight of
 //!   steps, with `walk_s` only.
 //!
 //! Driving is `relTypes: ['ROAD'], direction: 'OUTGOING', cost: 'car_s'`, so
@@ -41,15 +41,15 @@
 //! crow flies, picked with a fixed seed among junctions a car can drive
 //! between:
 //!
-//! * `car_route` and `walk_route` — the native
+//! * `car_route` and `walk_route` - the native
 //!   [`NativeService::weighted_path`](drevo::native_service::NativeService::weighted_path) with A* (a heuristic over `lat`/`lon`)
 //!   and without (bidirectional Dijkstra);
-//! * `car_route_cypher` — the same A* search through
+//! * `car_route_cypher` - the same A* search through
 //!   `CALL drevo.path.weighted`, the way a client calls it;
-//! * `car_route_shortest_path` — [`NativeService::shortest_path_filtered`](drevo::native_service::NativeService::shortest_path_filtered),
+//! * `car_route_shortest_path` - [`NativeService::shortest_path_filtered`](drevo::native_service::NativeService::shortest_path_filtered),
 //!   a one-directional Dijkstra over the relationship `weight`, which holds
 //!   `car_s` too;
-//! * `adjacency_sweep` — reading the outgoing relationships of every
+//! * `adjacency_sweep` - reading the outgoing relationships of every
 //!   drivable junction once: copied as full records, read by reference (what
 //!   a search does), and as ids only, to put the per-route numbers in
 //!   proportion.

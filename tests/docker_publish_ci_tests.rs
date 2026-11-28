@@ -2,7 +2,7 @@
 //!
 //! Phase 8 task 00051: build the production drevo image from
 //! `Dockerfile` and push it to GitHub Container Registry
-//! (`ghcr.io/ice1x/drevo`) on every semver tag (`v*`) — the image is a
+//! (`ghcr.io/ice1x/drevo`) on every semver tag (`v*`) - the image is a
 //! release artifact (changed 2026-07-30 from per-push-to-`main`, which
 //! back then blocked the single self-hosted runner with a ~40-min QEMU
 //! build every merge; the workflow now runs GitHub-hosted on
@@ -10,7 +10,7 @@
 //! the image but never push, so a forked-PR clone cannot publish under
 //! the project's namespace.
 //!
-//! These tests parse `.github/workflows/docker-publish.yml` as text —
+//! These tests parse `.github/workflows/docker-publish.yml` as text -
 //! no Docker daemon, no GHCR credentials, no `act` runner needed.
 //! They mirror the pattern of `tests/dockerfile_tests.rs` and
 //! `tests/k8s_manifests_tests.rs`: pin every wire-format invariant
@@ -21,30 +21,30 @@
 //!
 //! 1.  The workflow file lives at the canonical path so other tooling
 //!     (Renovate, dependabot, branch-protection rules) can find it.
-//! 2.  Triggers — push of `v*` tags (release-only; NOT push-to-`main`).
+//! 2.  Triggers - push of `v*` tags (release-only; NOT push-to-`main`).
 //!     Plus a `workflow_dispatch` so ops can re-publish without a code
 //!     change.
-//! 3.  Permissions — `contents: read` + `packages: write` only. No
+//! 3.  Permissions - `contents: read` + `packages: write` only. No
 //!     `actions: write`, no `id-token: write`. Smallest possible token
 //!     surface for a publish workflow (see the GitHub OIDC hardening
 //!     guide).
-//! 4.  Registry & image — `ghcr.io` and `ghcr.io/ice1x/drevo`. The
+//! 4.  Registry & image - `ghcr.io` and `ghcr.io/ice1x/drevo`. The
 //!     namespace matches the value baked into `k8s/base/deployment.yaml`
 //!     (`image: ghcr.io/ice1x/drevo:<tag>`); a drift here would break
 //!     the K8s deployment after the very first publish.
-//! 5.  Auth — `docker/login-action` against `ghcr.io` with
+//! 5.  Auth - `docker/login-action` against `ghcr.io` with
 //!     `${{ github.actor }}` + `${{ secrets.GITHUB_TOKEN }}`. No PAT.
-//! 6.  Build / push — `docker/build-push-action` with
+//! 6.  Build / push - `docker/build-push-action` with
 //!     `push: ${{ github.event_name != 'pull_request' }}` so PRs build
 //!     and exercise the Dockerfile but never push under the project's
 //!     namespace.
-//! 7.  Multi-arch — `linux/amd64,linux/arm64`. amd64 is native on the
+//! 7.  Multi-arch - `linux/amd64,linux/arm64`. amd64 is native on the
 //!     GitHub-hosted `ubuntu-24.04` runner; arm64 is emulated under QEMU
 //!     and matters because the project's developer baseline is Apple
 //!     Silicon (the README "Performance Targets" section calibrates
 //!     against Apple Silicon) and arm64 K8s nodes (Graviton, Ampere) are
 //!     common.
-//! 8.  Metadata / tagging — `docker/metadata-action` emits, at minimum:
+//! 8.  Metadata / tagging - `docker/metadata-action` emits, at minimum:
 //!     a SHA tag (`sha-<short>`), `latest` only on the default branch,
 //!     and semver tags `vMAJOR.MINOR.PATCH` / `vMAJOR.MINOR` from git
 //!     tags. The first two tags are what the K8s overlays' `newTag`
@@ -66,7 +66,7 @@ fn workflow_path() -> PathBuf {
 fn read_workflow() -> String {
     fs::read_to_string(workflow_path()).unwrap_or_else(|e| {
         panic!(
-            "failed to read {}: {} — task 00051 requires this file",
+            "failed to read {}: {} - task 00051 requires this file",
             workflow_path().display(),
             e
         )
@@ -83,7 +83,7 @@ fn read_workflow_code_only() -> String {
         .map(|line| {
             // Trim a trailing comment if the `#` appears outside a
             // quoted string. The current workflow has no `#` inside
-            // strings, so a plain split is sufficient — flag and tighten
+            // strings, so a plain split is sufficient - flag and tighten
             // if a future edit introduces one.
             let trimmed = line.trim_start();
             if trimmed.starts_with('#') {
@@ -141,7 +141,7 @@ fn docker_publish_workflow_has_name() {
 #[test]
 fn docker_publish_does_not_trigger_on_push_to_main() {
     // Changed 2026-07-30: the image is a RELEASE artifact, published on
-    // `v*` tags only — NOT on every push to `main`. Back then, on the
+    // `v*` tags only - NOT on every push to `main`. Back then, on the
     // single self-hosted runner, the ~40-min QEMU multi-arch build
     // serialised behind and blocked every merge, so the per-merge trigger
     // was removed. `:latest` tracks the newest release tag; `make release`
@@ -150,7 +150,7 @@ fn docker_publish_does_not_trigger_on_push_to_main() {
     // The push trigger must NOT filter by branch (no branch push at all).
     assert!(
         !w.contains("branches:"),
-        "workflow must NOT trigger on a branch push (e.g. `main`) — the image publishes on \
+        "workflow must NOT trigger on a branch push (e.g. `main`) - the image publishes on \
          `v*` tags only; a per-merge multi-arch build is redundant release work"
     );
 }
@@ -186,7 +186,7 @@ fn docker_publish_does_not_trigger_on_pull_request() {
         .join("\n");
     assert!(
         !trimmed.contains("pull_request:"),
-        "workflow MUST NOT declare a `pull_request:` trigger — the PR-time \
+        "workflow MUST NOT declare a `pull_request:` trigger - the PR-time \
          multi-arch build cost ~19 min per PR under QEMU emulation and \
          duplicates ci.yml's compilation. Remove the trigger entirely; \
          do not narrow it with paths."
@@ -220,7 +220,7 @@ fn docker_publish_grants_contents_read() {
     let w = read_workflow();
     assert!(
         w.contains("contents: read"),
-        "workflow must declare `contents: read` (least-privilege — checkout needs it)"
+        "workflow must declare `contents: read` (least-privilege - checkout needs it)"
     );
 }
 
@@ -229,7 +229,7 @@ fn docker_publish_does_not_grant_actions_write() {
     let w = read_workflow_code_only();
     assert!(
         !w.contains("actions: write"),
-        "workflow must not grant `actions: write` — a publish job does not need to mutate \
+        "workflow must not grant `actions: write` - a publish job does not need to mutate \
          workflow runs. Keep the token surface minimal."
     );
 }
@@ -239,7 +239,7 @@ fn docker_publish_does_not_grant_id_token_write() {
     let w = read_workflow_code_only();
     assert!(
         !w.contains("id-token: write"),
-        "workflow must not request OIDC `id-token: write` — GHCR auth uses the GITHUB_TOKEN, not \
+        "workflow must not request OIDC `id-token: write` - GHCR auth uses the GITHUB_TOKEN, not \
          a cloud-provider OIDC exchange. Re-add only if a future task introduces cosign / SLSA."
     );
 }
@@ -260,26 +260,26 @@ fn docker_publish_targets_ghcr() {
 #[test]
 fn docker_publish_image_namespace_matches_k8s_deployment() {
     // The K8s Deployment manifest pins
-    //   image: ghcr.io/ice1x/drevo:<tag>
-    // — a drift in the publish workflow would silently break the
+    //   image: ghcr.io/ice1x/drevo:<tag> -
+    // a drift in the publish workflow would silently break the
     // first cluster pull after the workflow lands.
     let w = read_workflow();
     let dep = read_k8s_deployment();
     assert!(
         dep.contains("ghcr.io/ice1x/drevo"),
         "precondition: k8s/base/deployment.yaml is expected to reference \
-         `ghcr.io/ice1x/drevo` (task 00049). If this fails, the precondition broke — fix that \
+         `ghcr.io/ice1x/drevo` (task 00049). If this fails, the precondition broke - fix that \
          first."
     );
     assert!(
         w.contains("ghcr.io/ice1x/drevo") || w.contains("ice1x/drevo"),
-        "workflow must publish to `ghcr.io/ice1x/drevo` — the same image namespace the K8s \
+        "workflow must publish to `ghcr.io/ice1x/drevo` - the same image namespace the K8s \
          deployment pulls from"
     );
 }
 
 // ------------------------------------------------------------------
-// 5. Auth — login-action
+// 5. Auth - login-action
 // ------------------------------------------------------------------
 
 #[test]
@@ -292,7 +292,7 @@ fn docker_publish_authenticates_without_login_action_or_keychain() {
     let w = read_workflow();
     assert!(
         !w.contains("uses: docker/login-action"),
-        "workflow must NOT use docker/login-action — it triggers the macOS osxkeychain credsStore \
+        "workflow must NOT use docker/login-action - it triggers the macOS osxkeychain credsStore \
          (the comment block may still reference it by name to explain why)"
     );
     assert!(
@@ -306,7 +306,7 @@ fn docker_publish_login_uses_github_token() {
     let w = read_workflow();
     assert!(
         w.contains("secrets.GITHUB_TOKEN"),
-        "workflow must authenticate to ghcr.io with `secrets.GITHUB_TOKEN` — not a personal \
+        "workflow must authenticate to ghcr.io with `secrets.GITHUB_TOKEN` - not a personal \
          access token, not a deploy key, not a hardcoded credential"
     );
 }
@@ -348,14 +348,14 @@ fn docker_publish_uses_build_push_action() {
     let w = read_workflow();
     assert!(
         w.contains("docker/build-push-action"),
-        "workflow must use `docker/build-push-action` (the official action — gives us SBOM, \
+        "workflow must use `docker/build-push-action` (the official action - gives us SBOM, \
          provenance, multi-arch, and cache hooks in one step)"
     );
 }
 
 #[test]
 fn docker_publish_only_pushes_on_non_pr_events() {
-    // PR builds must NOT push — a fork PR clone with no special perms
+    // PR builds must NOT push - a fork PR clone with no special perms
     // still triggers `pull_request`, and we don't want them publishing
     // under the project namespace.
     let w = read_workflow();
@@ -381,7 +381,7 @@ fn docker_publish_dockerfile_is_default() {
         || w.contains("file: docker/");
     assert!(
         !mentions_other_dockerfile,
-        "workflow must build from the repo-root `Dockerfile` — there is no secondary \
+        "workflow must build from the repo-root `Dockerfile` - there is no secondary \
          Dockerfile in this project (task 00045)"
     );
 }
@@ -395,7 +395,7 @@ fn docker_publish_builds_amd64() {
     let w = read_workflow();
     assert!(
         w.contains("linux/amd64"),
-        "workflow must build `linux/amd64` — the canonical x86_64 server target"
+        "workflow must build `linux/amd64` - the canonical x86_64 server target"
     );
 }
 
@@ -404,7 +404,7 @@ fn docker_publish_builds_arm64() {
     let w = read_workflow();
     assert!(
         w.contains("linux/arm64"),
-        "workflow must build `linux/arm64` — the project's developer baseline is Apple Silicon \
+        "workflow must build `linux/arm64` - the project's developer baseline is Apple Silicon \
          (see README `Performance Targets`), and arm64 K8s nodes (Graviton, Ampere) are \
          increasingly common in production"
     );
@@ -447,7 +447,7 @@ fn docker_publish_refuses_a_duplicate_no_change_tag() {
     // A release is now just a `v*` tag. Guard the CI-cut path the same way
     // scripts/release.sh guards the local path: if the tag being built points at
     // the same commit as the previous release tag, the image would be identical
-    // bar its version/build-date — refuse instead of publishing a duplicate.
+    // bar its version/build-date - refuse instead of publishing a duplicate.
     let w = read_workflow();
     // Needs full history/tags to resolve the previous tag.
     assert!(
@@ -474,7 +474,7 @@ fn docker_publish_uses_metadata_action() {
     let w = read_workflow();
     assert!(
         w.contains("docker/metadata-action"),
-        "workflow must use `docker/metadata-action` to derive image tags from the git ref — \
+        "workflow must use `docker/metadata-action` to derive image tags from the git ref - \
          hand-rolled tag logic in shell drifts from semver"
     );
 }
@@ -487,7 +487,7 @@ fn docker_publish_emits_sha_tag() {
     assert!(
         w.contains("type=sha"),
         "workflow must include `type=sha` in `docker/metadata-action.tags` so every published \
-         image carries an immutable `sha-<short>` tag — required for reproducible K8s rollouts"
+         image carries an immutable `sha-<short>` tag - required for reproducible K8s rollouts"
     );
 }
 
@@ -497,7 +497,7 @@ fn docker_publish_emits_semver_tags_from_git_tags() {
     assert!(
         w.contains("type=semver"),
         "workflow must include `type=semver` rules so a `v0.1.0` git tag produces image tags \
-         `0.1.0` and `0.1` — required for the future release flow"
+         `0.1.0` and `0.1` - required for the future release flow"
     );
 }
 
@@ -506,12 +506,12 @@ fn docker_publish_emits_latest_on_release_tags() {
     let w = read_workflow();
     // Changed 2026-07-30: the workflow runs on `v*` tags (not `main`), so
     // `:latest` is gated on a version tag ref rather than the default
-    // branch — it tracks the newest release.
+    // branch - it tracks the newest release.
     let latest_gated =
         w.contains("latest") && (w.contains("refs/tags/v") || w.contains("startsWith(github.ref"));
     assert!(
         latest_gated,
-        "workflow must emit the `latest` tag on `v*` release tags — e.g. \
+        "workflow must emit the `latest` tag on `v*` release tags - e.g. \
          `type=raw,value=latest,enable=${{{{ startsWith(github.ref, 'refs/tags/v') }}}}`. \
          `:latest` should track the newest release, not a feature-branch build."
     );
@@ -544,7 +544,7 @@ fn phase_history_marks_00051_done() {
 }
 
 // ------------------------------------------------------------------
-// 10. Sibling-workflow non-regression — the main CI must not learn
+// 10. Sibling-workflow non-regression - the main CI must not learn
 // publish duties. Keep concerns separate.
 // ------------------------------------------------------------------
 
@@ -557,13 +557,13 @@ fn main_ci_workflow_does_not_push_images() {
     let ci = fs::read_to_string(ci_path).expect("failed to read ci.yml");
     assert!(
         !ci.contains("docker/login-action"),
-        "the main CI workflow (ci.yml) must NOT log in to a container registry — publish \
+        "the main CI workflow (ci.yml) must NOT log in to a container registry - publish \
          duties belong to docker-publish.yml so a CI test job can never push a \
          half-broken image"
     );
     assert!(
         !ci.contains("docker/build-push-action"),
-        "the main CI workflow (ci.yml) must NOT use docker/build-push-action — publish duties \
+        "the main CI workflow (ci.yml) must NOT use docker/build-push-action - publish duties \
          belong to docker-publish.yml"
     );
 }

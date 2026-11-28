@@ -153,7 +153,7 @@ async fn unknown_route_returns_404() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00038 — Node CRUD endpoints
+// Task 00038 - Node CRUD endpoints
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -271,7 +271,7 @@ async fn list_nodes_by_kind_paginates() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00039 — Edge endpoints
+// Task 00039 - Edge endpoints
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -451,7 +451,7 @@ async fn get_node_edges_invalid_direction_returns_400() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00040 — Traversal endpoints
+// Task 00040 - Traversal endpoints
 // ---------------------------------------------------------------------
 
 /// Build a small chain of nodes `a -> b -> c -> d` connected by
@@ -717,7 +717,7 @@ async fn get_node_subgraph_missing_returns_404() {
 }
 
 // ---------------------------------------------------------------------
-// Search endpoint (task 00041) — POST /search/fts
+// Search endpoint (task 00041) - POST /search/fts
 // ---------------------------------------------------------------------
 
 async fn seed_search_corpus(app: &axum::Router) -> (u64, u64, u64) {
@@ -894,7 +894,7 @@ async fn search_fts_limit_zero_returns_empty() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00042 — Admin endpoints (GET /status)
+// Task 00042 - Admin endpoints (GET /status)
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -940,7 +940,7 @@ async fn get_status_uptime_is_monotonic() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00043 — Unified JSON error handling
+// Task 00043 - Unified JSON error handling
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -1016,7 +1016,7 @@ async fn shortest_path_missing_params_includes_status_400() {
 }
 
 // =====================================================================
-// Task 00044 — End-to-end integration tests
+// Task 00044 - End-to-end integration tests
 //
 // These tests exercise full workflows through the HTTP API, combining
 // multiple endpoints in realistic sequences that mirror how a real
@@ -1581,7 +1581,7 @@ async fn integration_pagination_consistency() {
 // ---------------------------------------------------------------------
 
 // =====================================================================
-// Task 00109 — query-string boundary validation
+// Task 00109 - query-string boundary validation
 //
 // The HTTP API audit (audit/AUDIT-http-api.md, findings F4/F5) requires
 // regression coverage for: `limit` cap saturation on /nodes and /edges,
@@ -1611,7 +1611,7 @@ async fn list_nodes_limit_above_cap_is_clamped() {
     let (status, value) = send(&app, "GET", "/nodes?kind=note&limit=9999", None).await;
     assert_eq!(status, StatusCode::OK);
     let nodes = value["nodes"].as_array().expect("nodes array");
-    // Three seeded nodes — fewer than the cap; the point is no error.
+    // Three seeded nodes - fewer than the cap; the point is no error.
     assert_eq!(nodes.len(), 3);
 }
 
@@ -1679,7 +1679,7 @@ async fn get_node_neighbors_depth_zero_returns_empty() {
 
     // depth=0 follows the BFS contract verified in
     // src/traversal.rs::bfs_depth_zero_returns_empty: zero hops means
-    // an empty neighbor list. Crucially, this must NOT 404 — a missing
+    // an empty neighbor list. Crucially, this must NOT 404 - a missing
     // start node still returns 404 (handler line ~501 in src/api.rs),
     // so callers can distinguish "node has no neighbors at depth 0"
     // from "node doesn't exist".
@@ -1694,7 +1694,7 @@ async fn get_node_neighbors_depth_zero_returns_empty() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00055 — JSON export / import endpoints
+// Task 00055 - JSON export / import endpoints
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -1800,7 +1800,7 @@ async fn post_import_json_rejects_missing_body_with_400() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00056 — GraphML export endpoint
+// Task 00056 - GraphML export endpoint
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -1872,7 +1872,7 @@ async fn get_export_graphml_empty_database_still_well_formed() {
 }
 
 // ---------------------------------------------------------------------
-// Task 00057 — GraphML import endpoint (POST /import/graphml)
+// Task 00057 - GraphML import endpoint (POST /import/graphml)
 // ---------------------------------------------------------------------
 
 /// Fetch the full GraphML export from an app as a `String`.
@@ -2084,7 +2084,7 @@ async fn get_facets_unknown_collapse_mode_is_rejected() {
     assert!(body["error"].as_str().unwrap().contains("collapse"));
 }
 
-// ── Phase 15 task 00093 — Web UI kinetics served over HTTP ───────────────
+// ── Phase 15 task 00093 - Web UI kinetics served over HTTP ───────────────
 
 /// Fetch a `/ui` asset over the real router and return `(status,
 /// content_type, body_text)`. The shared `send` helper assumes a JSON
@@ -2123,7 +2123,7 @@ async fn ui_index_serves_fcose_kinetics_to_client() {
     assert_eq!(status, StatusCode::OK);
     assert!(content_type.contains("text/html"));
     // The kinetics extensions reach the browser, vendored same-origin
-    // (not a CDN — see src/web_ui.rs / PR #189).
+    // (not a CDN - see src/web_ui.rs / PR #189).
     assert!(body.contains("cytoscape-fcose"));
     assert!(body.contains("/ui/vendor/cytoscape-fcose.js"));
     assert!(body.contains("id=\"cy-tooltip\""));
@@ -2278,7 +2278,7 @@ async fn ui_report_module_serves_to_client() {
     assert!(body.contains("issueUrl"));
 }
 
-// ── #253 slice 1 — storage-bloat observability ──────────────────────────
+// ── #253 slice 1 - storage-bloat observability ──────────────────────────
 
 #[tokio::test]
 async fn storage_bloat_endpoint_rejects_post() {
@@ -2287,7 +2287,7 @@ async fn storage_bloat_endpoint_rejects_post() {
     assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
 }
 
-// ── Storage UI panel — per-keyspace breakdown ───────────────────────────
+// ── Storage UI panel - per-keyspace breakdown ───────────────────────────
 
 #[tokio::test]
 async fn storage_keyspaces_endpoint_rejects_post() {
@@ -2345,7 +2345,7 @@ async fn metrics_endpoint_exposes_storage_file_bytes_gauge() {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-database catalog lifecycle (issue #523) — `GET`/`POST /databases`,
+// Multi-database catalog lifecycle (issue #523) - `GET`/`POST /databases`,
 // `DELETE /databases/{name}`. Query routing to a non-default database is a
 // follow-up slice; here we exercise create / list / drop and their errors.
 // ---------------------------------------------------------------------------
@@ -2360,7 +2360,7 @@ async fn databases_lifecycle_create_list_drop() {
     assert_eq!(dbs["databases"], json!(["drevo"]));
     assert_eq!(dbs["default"], "drevo");
 
-    // Create a second database — 201 with the updated, sorted list.
+    // Create a second database - 201 with the updated, sorted list.
     let (status, created) = send(
         &app,
         "POST",
@@ -2376,7 +2376,7 @@ async fn databases_lifecycle_create_list_drop() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(dbs["databases"], json!(["analytics", "drevo"]));
 
-    // Drop it — 200 with the list back to just the default.
+    // Drop it - 200 with the list back to just the default.
     let (status, after) = send(&app, "DELETE", "/databases/analytics", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(after["databases"], json!(["drevo"]));
@@ -2428,7 +2428,7 @@ async fn drop_unknown_database_is_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-database query routing over `/cypher` (issue #523 slice 2) — `USE`,
+// Per-database query routing over `/cypher` (issue #523 slice 2) - `USE`,
 // `SHOW DATABASES`, and `CREATE DATABASE` handled against the registry.
 // ---------------------------------------------------------------------------
 
@@ -2454,7 +2454,7 @@ async fn cypher_use_routes_query_to_named_database() {
     .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
 
-    // The default database is untouched — isolation.
+    // The default database is untouched - isolation.
     let (status, body) = send(
         &app,
         "POST",

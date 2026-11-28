@@ -18,7 +18,7 @@
 //! looked up. This is deliberate: the executor turns a pattern value back into
 //! JSON to probe the index, and that round-trip is byte-exact only for these
 //! types. Restricting both the index and the probe to them guarantees the index
-//! is a true **superset** of the matches (never a false negative) — floats,
+//! is a true **superset** of the matches (never a false negative) - floats,
 //! lists, maps, and null fall back to the full scan, and the executor's exact
 //! per-candidate check runs regardless. The reserved `_labels` property is
 //! skipped (the [`NativeLabelIndex`](crate::native_label_index::NativeLabelIndex)
@@ -68,7 +68,7 @@ use crate::model::Node;
 use crate::native::{NativeGraph, WalOp};
 use crate::value_encoding::encode_value;
 
-/// Reserved property key holding a node's secondary Cypher labels — owned by the
+/// Reserved property key holding a node's secondary Cypher labels - owned by the
 /// [`NativeLabelIndex`](crate::native_label_index::NativeLabelIndex), so this
 /// index skips it.
 const SECONDARY_LABELS_KEY: &str = "_labels";
@@ -158,7 +158,7 @@ pub struct NativePropertyIndex {
     /// (string / bool / list / map). A range scan is refused for any such key:
     /// in drevo, ordering a number against one of those raises a type error, and
     /// serving the range from the numeric maps would silently *exclude* the
-    /// offending node instead — turning an error into a wrong success. Only a
+    /// offending node instead - turning an error into a wrong success. Only a
     /// purely numeric (plus optionally null) key is range-served.
     range_blocked: HashMap<String, u64>,
     /// node id → the keys it contributes a range-blocking value to, so the
@@ -168,7 +168,7 @@ pub struct NativePropertyIndex {
     cursor: u64,
 }
 
-/// Whether `value` blocks range scans on its key — a non-numeric, non-null value
+/// Whether `value` blocks range scans on its key - a non-numeric, non-null value
 /// (string / bool / list / map) that an ordering comparison against a number
 /// would type-error on in drevo. `null` does not block: `null <op> n` is `null`
 /// (the row filters out) rather than an error, so excluding it never diverges.
@@ -220,7 +220,7 @@ impl NativePropertyIndex {
 
     /// Node ids whose `key` property satisfies `value OP bound` for a **numeric**
     /// `bound`, as a *superset* of the real matches (the caller's exact check
-    /// trims false positives). Returns `None` when `bound` is not a number — a
+    /// trims false positives). Returns `None` when `bound` is not a number - a
     /// numeric range never matches a non-numeric property (Cypher compares them
     /// as `null`), and a string/other bound is simply not served here, so the
     /// caller falls back to a full scan.
@@ -249,7 +249,7 @@ impl NativePropertyIndex {
 
         // A key that also holds a non-numeric value cannot be range-served
         // without diverging from drevo's type-error semantics (see the field
-        // docs) — leave the whole predicate to the exact filter.
+        // docs) - leave the whole predicate to the exact filter.
         if self.range_blocked.get(key).copied().unwrap_or(0) > 0 {
             return None;
         }
@@ -313,8 +313,8 @@ impl NativePropertyIndex {
         }
     }
 
-    /// Insert or replace a node's property postings — exact (string / bool /
-    /// integer) and ordered numeric (integer / float) — so it can be found by an
+    /// Insert or replace a node's property postings - exact (string / bool /
+    /// integer) and ordered numeric (integer / float) - so it can be found by an
     /// equality lookup or a range scan. A node with no such property is untracked.
     fn index_node(&mut self, node: &Node) {
         self.remove_node(node.id);
@@ -322,7 +322,7 @@ impl NativePropertyIndex {
         // Cypher properties (aliases, overridden by an explicit properties
         // entry of the same name). Index the *effective* property set the same
         // way, or `MATCH (n {title: ...})` through this index would wrongly
-        // drop every node whose title lives only in the model field — a false
+        // drop every node whose title lives only in the model field - a false
         // negative, which the superset contract forbids.
         let title_alias = (!node.title.is_empty() && !node.properties.contains_key("title"))
             .then(|| JsonValue::String(node.title.clone()));
@@ -569,7 +569,7 @@ mod alias_tests {
     fn model_title_and_body_are_indexed_as_alias_properties() {
         // The executor surfaces `title` / `body` as ordinary Cypher
         // properties, so `MATCH (n {title: 'ada'})` probes the index under
-        // the "title" key — the model fields must be indexed there or the
+        // the "title" key - the model fields must be indexed there or the
         // probe returns a false negative (found by the differential corpus).
         let g = node("ada", "hello", Properties::default());
         let idx = synced(&g);

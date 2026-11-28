@@ -1,13 +1,13 @@
-//! Louvain community detection — Phase 15 task `00098`.
+//! Louvain community detection - Phase 15 task `00098`.
 //!
 //! Partitions an undirected, weighted projection of the graph into communities
 //! by greedily maximising [modularity], using the multi-level method of Blondel
 //! et al. (2008):
 //!
-//! 1. **Local moving** — start with every node in its own community; repeatedly
+//! 1. **Local moving** - start with every node in its own community; repeatedly
 //!    move each node into the neighbouring community that yields the largest
 //!    positive modularity gain, until no move improves modularity.
-//! 2. **Aggregation** — collapse each community into a single super-node
+//! 2. **Aggregation** - collapse each community into a single super-node
 //!    (intra-community edges become a self-loop; inter-community edges are
 //!    summed), then repeat step 1 on the smaller graph.
 //!
@@ -17,7 +17,7 @@
 //!
 //! The directed graph is projected to undirected first (see
 //! [`AdjacencyList::undirected`]): reciprocal edges sum, self-loops are kept.
-//! The algorithm is fully deterministic — nodes are always processed in the
+//! The algorithm is fully deterministic - nodes are always processed in the
 //! snapshot's stable order, with no randomisation.
 //!
 //! [modularity]: https://en.wikipedia.org/wiki/Modularity_(networks)
@@ -117,7 +117,7 @@ impl Level {
 
 /// Run Louvain community detection over `graph`.
 ///
-/// Always terminates. An empty graph — or one with no edge weight at all —
+/// Always terminates. An empty graph - or one with no edge weight at all -
 /// yields one singleton community per node, modularity `0.0`, and `0` levels.
 pub fn louvain(graph: &AdjacencyList, config: &LouvainConfig) -> LouvainResult {
     let n0 = graph.node_count();
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn single_clique_is_one_community() {
-        // A 4-clique — no reason to split.
+        // A 4-clique - no reason to split.
         let g = AdjacencyList::from_parts(
             vec![1, 2, 3, 4],
             vec![

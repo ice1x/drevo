@@ -1,17 +1,17 @@
-//! Ollivier–Ricci edge curvature — issue #526.
+//! Ollivier-Ricci edge curvature - issue #526.
 //!
 //! Ricci curvature adapts a differential-geometry notion of curvature to a
 //! graph, per **edge**. It marks the graph's bridges and bottlenecks:
 //!
-//! * a **negatively** curved edge tends to lie *between* communities — mass in
+//! * a **negatively** curved edge tends to lie *between* communities - mass in
 //!   the two endpoints' neighbourhoods is hard to align, so it must travel far;
 //!   these are good cut candidates (community boundaries, bottlenecks).
-//! * a **positively** curved edge sits *inside* a dense cluster — the two
+//! * a **positively** curved edge sits *inside* a dense cluster - the two
 //!   neighbourhoods overlap, so almost no mass has to move.
 //!
 //! # Definition (Ollivier, 2009)
 //!
-//! Each node `x` carries a probability measure — a *lazy one-step random walk*
+//! Each node `x` carries a probability measure - a *lazy one-step random walk*
 //! with idleness `alpha`:
 //!
 //! ```text
@@ -34,15 +34,15 @@
 //!
 //! # Conventions (matching the rest of the suite)
 //!
-//! Computed over the **undirected** projection of the graph, and — like
+//! Computed over the **undirected** projection of the graph, and - like
 //! [`betweenness`](crate::algorithms::betweenness) and
-//! [`closeness`](crate::algorithms::closeness) — the ground metric is the
+//! [`closeness`](crate::algorithms::closeness) - the ground metric is the
 //! **unweighted** hop distance; edge weights do not affect the result. Every
 //! undirected edge is scored once, keyed by `(from_id, to_id)` with
 //! `from_id < to_id`, so results are deterministic across runs.
 //!
 //! Because every point in `mu_x`'s support is a neighbour of `x` (or `x`
-//! itself) and likewise for `y`, and `x`–`y` are adjacent, the ground distance
+//! itself) and likewise for `y`, and `x`-`y` are adjacent, the ground distance
 //! between any two support points is at most `3` (`a → x → y → b`). The metric
 //! is therefore computed directly (`0`/`1`/`2`/`3` by adjacency and
 //! common-neighbour tests) with no traversal.
@@ -62,7 +62,7 @@ use super::{AdjacencyList, AlgorithmError};
 /// implementations use).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RicciConfig {
-    /// Idleness `alpha` — the probability mass the lazy random walk keeps at
+    /// Idleness `alpha` - the probability mass the lazy random walk keeps at
     /// the node itself; the remaining `1 - alpha` is spread uniformly over the
     /// node's neighbours. Must be finite and in the closed interval `[0, 1]`.
     /// The canonical value is `0.5`; `alpha = 0` is the plain one-step walk and
@@ -91,14 +91,14 @@ impl RicciConfig {
     }
 }
 
-/// The Ollivier–Ricci curvature of one undirected edge.
+/// The Ollivier-Ricci curvature of one undirected edge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RicciEdge {
     /// Smaller endpoint node ID.
     pub from_id: u64,
     /// Larger endpoint node ID.
     pub to_id: u64,
-    /// Ollivier–Ricci curvature `kappa(from, to)`. Negative on bridge-like
+    /// Ollivier-Ricci curvature `kappa(from, to)`. Negative on bridge-like
     /// edges between communities, positive inside dense clusters. Bounded above
     /// by `1`; the lower bound depends on the graph (roughly `-2` for a long
     /// path's interior at `alpha = 0`).
@@ -112,7 +112,7 @@ pub struct RicciResult {
     pub per_edge: Vec<RicciEdge>,
 }
 
-/// Compute the Ollivier–Ricci curvature of every undirected edge of `graph`.
+/// Compute the Ollivier-Ricci curvature of every undirected edge of `graph`.
 ///
 /// Always terminates. Works on the undirected projection: reciprocal and
 /// parallel directed edges collapse to a single undirected edge (scored once),
@@ -121,7 +121,7 @@ pub struct RicciResult {
 ///
 /// Cost is one optimal-transport solve per edge over the two endpoints'
 /// 1-hop neighbourhoods, so it is `O(edges × d²·log d)`-ish in the endpoint
-/// degrees `d` — cheap on the sparse graphs the target scenarios produce, but
+/// degrees `d` - cheap on the sparse graphs the target scenarios produce, but
 /// quadratic per edge in the degree, so a very dense hub is the worst case.
 pub fn ricci_curvature(graph: &AdjacencyList, config: &RicciConfig) -> RicciResult {
     let n = graph.node_count();
@@ -267,7 +267,7 @@ fn earth_mover_distance(mass_a: &[f64], mass_b: &[f64], cost: impl Fn(usize, usi
 ///
 /// Residual edges are stored in adjacency-paired form: edge `e` and its reverse
 /// `e ^ 1`. Shortest (min-cost) augmenting paths are found with a
-/// Bellman-Ford/SPFA relaxation — costs are non-negative on forward arcs and the
+/// Bellman-Ford/SPFA relaxation - costs are non-negative on forward arcs and the
 /// min-cost-flow invariant keeps the residual graph free of negative cycles, so
 /// the relaxation is safe and each augmentation pushes flow along a cheapest
 /// path.
@@ -348,7 +348,7 @@ impl Mcmf {
             }
 
             if !dist[sink].is_finite() {
-                break; // no augmenting path — all supply routed.
+                break; // no augmenting path - all supply routed.
             }
 
             // Bottleneck residual capacity along the reconstructed path.
@@ -532,7 +532,7 @@ mod tests {
     fn the_interior_edge_of_a_path_is_ricci_flat() {
         // Path 1-2-3-4. Its interior edge 2-3 joins two structurally identical
         // degree-2 nodes: the lazy walk reshapes from one to the other at zero
-        // net transport cost, so the curvature is exactly 0 — a path is the
+        // net transport cost, so the curvature is exactly 0 - a path is the
         // graph analogue of a flat 1-D lattice. The end edges touch a degree-1
         // leaf and are positively curved, so they sit strictly above the flat
         // middle.

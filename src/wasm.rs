@@ -116,7 +116,7 @@ impl WasmDrevo {
     /// Close the database and release resources.
     ///
     /// After calling `close()`, all other methods will throw. The native
-    /// engine has no fallible `close()` — dropping the service releases it
+    /// engine has no fallible `close()` - dropping the service releases it
     /// (an in-memory service holds nothing durable), so this just clears
     /// the handle.
     #[wasm_bindgen]
@@ -354,7 +354,7 @@ impl WasmDrevo {
     /// edges with `kind == edge_kind`.
     ///
     /// Pass an empty string for `edge_kind` to disable the filter
-    /// (equivalent to [`Self::shortest_path`]) — matches the
+    /// (equivalent to [`Self::shortest_path`]) - matches the
     /// empty-string-sentinel convention used by `bfs` / `dfs` /
     /// `neighbors` on the WASM surface.
     ///
@@ -463,6 +463,6 @@ impl WasmDrevo {
 }
 
 // Unit tests for wasm bindings require a JS runtime (wasm-pack test).
-// Native integration tests are in tests/wasm_tests.rs — they exercise the
+// Native integration tests are in tests/wasm_tests.rs - they exercise the
 // same NativeService API surface that WasmDrevo delegates to, validating
 // correctness of JSON roundtrips and error handling without a WASM runtime.

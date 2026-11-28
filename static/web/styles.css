@@ -1,4 +1,4 @@
-/* drevo browser — Web UI styles (Phase 15 task 00092+).
+/* drevo browser - Web UI styles (Phase 15 task 00092+).
    No CSS framework / preprocessor: a single hand-rolled stylesheet keeps
    the embedded asset map (include_str! in src/web_ui.rs) small.
 
@@ -700,7 +700,7 @@ body {
 .node-menu button:hover,
 .node-menu button:focus-visible { background: var(--bg-elev); outline: none; }
 
-/* Cytoscape canvas — fills the rest of the main area. */
+/* Cytoscape canvas - fills the rest of the main area. */
 .graph-canvas {
   flex: 1;
   background: var(--bg);
@@ -802,7 +802,7 @@ body {
   margin-bottom: 0.4rem;
 }
 
-/* Status bar — non-modal feedback line at the bottom. */
+/* Status bar - non-modal feedback line at the bottom. */
 .statusbar {
   display: flex;
   justify-content: space-between;
@@ -845,7 +845,7 @@ body {
 .statusbar .status-error { color: var(--danger); }
 .statusbar .status-ok { color: var(--accent-2); }
 
-/* Storage panel — topbar trigger + modal overlay. */
+/* Storage panel - topbar trigger + modal overlay. */
 .storage-toggle {
   margin-left: auto;
   width: 34px;
@@ -863,11 +863,11 @@ body {
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 .storage-toggle:hover { border-color: var(--accent); }
-/* The theme toggle no longer needs to grab the free space — the storage
-   button does — so the trio sits together on the right. */
+/* The theme toggle no longer needs to grab the free space - the storage
+   button does - so the trio sits together on the right. */
 .storage-toggle + .theme-toggle { margin-left: 0.4rem; }
 
-/* Settings (⚙) button — same box as the storage toggle, sitting between it
+/* Settings (⚙) button - same box as the storage toggle, sitting between it
    and the theme toggle. */
 .settings-toggle {
   width: 34px;
@@ -1032,7 +1032,7 @@ body {
 }
 .storage-bench-run:disabled { opacity: 0.6; cursor: progress; }
 .storage-bench { padding: 0 1.1rem 0.25rem; }
-/* Shrink is the primary maintenance action — give it an accent so it reads as
+/* Shrink is the primary maintenance action - give it an accent so it reads as
    the deliberate, state-changing button (it rebuilds the live file). */
 .storage-shrink {
   border-color: var(--accent);

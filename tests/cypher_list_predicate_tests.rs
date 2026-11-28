@@ -1,4 +1,4 @@
-//! End-to-end Cypher list-predicate tests — Phase 10 follow-up task `00147`.
+//! End-to-end Cypher list-predicate tests - Phase 10 follow-up task `00147`.
 //!
 //! The list predicate functions `all(var IN list WHERE pred)`,
 //! `any(...)`, `none(...)`, and `single(...)` evaluate `list`, bind each
@@ -6,10 +6,10 @@
 //! predicate under three-valued logic, and fold the per-element results into
 //! a single boolean (or `NULL`) per the quantifier:
 //!
-//! * `all`    — every element satisfies the predicate (empty list → `true`),
-//! * `any`    — some element satisfies it (empty list → `false`),
-//! * `none`   — no element satisfies it (empty list → `true`),
-//! * `single` — exactly one element satisfies it (empty list → `false`).
+//! * `all`    - every element satisfies the predicate (empty list → `true`),
+//! * `any`    - some element satisfies it (empty list → `false`),
+//! * `none`   - no element satisfies it (empty list → `true`),
+//! * `single` - exactly one element satisfies it (empty list → `false`).
 //!
 //! They are the boolean siblings of the list comprehension (`00146`): where a
 //! comprehension transforms a list into a list, a predicate collapses a list
@@ -303,7 +303,7 @@ fn task_sprint_with_exactly_one_blocker() {
         "CREATE (:Sprint {name: 'S3', blocked: [false, false, false]})",
         &d,
     );
-    // Sprints with exactly one blocked task — the ones worth a single nudge.
+    // Sprints with exactly one blocked task - the ones worth a single nudge.
     let rows = run(
         "MATCH (s:Sprint) WHERE single(b IN s.blocked WHERE b = true) RETURN s.name AS n ORDER BY n",
         &d,

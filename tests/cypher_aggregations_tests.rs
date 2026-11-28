@@ -1,4 +1,4 @@
-//! End-to-end Cypher aggregation tests — Phase 10 task `00066`.
+//! End-to-end Cypher aggregation tests - Phase 10 task `00066`.
 //!
 //! Exercises the COUNT / SUM / AVG / MIN / MAX / COLLECT aggregation
 //! functions together with implicit GROUP BY semantics across the five
@@ -53,7 +53,7 @@ fn string(rows: &[Vec<Value>], r: usize, c: usize) -> String {
     }
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_count_thoughts_per_mood() {
@@ -153,7 +153,7 @@ fn cbt_distinct_distortions_collected() {
     );
 }
 
-// ===== Scenario 2 — Story editor ============================================
+// ===== Scenario 2 - Story editor ============================================
 
 #[test]
 fn story_total_words_per_act() {
@@ -208,7 +208,7 @@ fn story_min_max_tension_globally() {
     assert_eq!(int(&rows, 0, 1), 9);
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_manager_open_count_per_assignee() {
@@ -283,7 +283,7 @@ fn task_manager_distinct_assignees_collected() {
     assert_eq!(int(&rows, 0, 0), 3);
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_line_item_total_revenue_per_product() {
@@ -363,7 +363,7 @@ fn erp_avg_line_item_price_per_warehouse_via_relationship() {
     assert!((float(&rows, 1, 1) - 1500.0).abs() < 1e-9);
 }
 
-// ===== Scenario 5 — Bug tracker =============================================
+// ===== Scenario 5 - Bug tracker =============================================
 
 #[test]
 fn bug_tracker_count_per_severity() {

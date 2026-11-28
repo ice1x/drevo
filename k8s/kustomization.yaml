@@ -1,4 +1,4 @@
-# drevo — top-level Kustomize wrapper.
+# drevo - top-level Kustomize wrapper.
 #
 # Phase 8 tasks 00049 (base manifests) + 00050 (overlays). This thin
 # wrapper preserves the historical `kubectl apply -k k8s/` ergonomics

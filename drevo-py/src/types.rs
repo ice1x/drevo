@@ -1,9 +1,9 @@
 //! Frozen `#[pyclass]` wrappers for the public data types.
 //!
-//! Implements RFC §3.2 — each Rust type from `drevo::model` gets a
+//! Implements RFC §3.2 - each Rust type from `drevo::model` gets a
 //! mirror class on the Python side. Per the RFC §3.2 "Plain-data
 //! classes" line, every wrapper uses `#[pyclass(frozen)]` so instances
-//! are hashable, `__eq__`-able, and `__repr__`-able by default — mutation
+//! are hashable, `__eq__`-able, and `__repr__`-able by default - mutation
 //! goes through the `*Patch` types, exactly mirroring the Rust API.
 //!
 //! UUIDs cross the boundary as 16-byte `bytes`. The pure-Python shim
@@ -13,7 +13,7 @@
 //!
 //! `Node.properties` / `Edge.properties` are round-tripped through
 //! [`pythonize`] so they appear on the Python side as native
-//! `dict[str, object]` — JSON-serialisable, mypy-friendly, no opaque
+//! `dict[str, object]` - JSON-serialisable, mypy-friendly, no opaque
 //! handles. The conversion direction is symmetric: Python `dict[str,
 //! Any]` → `serde_json::Value` on input, `serde_json::Value` → Python
 //! object on output.
@@ -34,7 +34,7 @@ use pythonize::{depythonize, pythonize};
 // is happy; `#[pyo3(name = "...")]` re-exports them as the screaming-
 // snake aliases used in Python code.
 
-/// Direction of edge traversal — exported to Python as
+/// Direction of edge traversal - exported to Python as
 /// `drevo.Direction.OUT` / `drevo.Direction.IN` / `drevo.Direction.BOTH`.
 #[pyclass(eq, eq_int, name = "Direction")]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,7 +66,7 @@ impl From<Direction> for model::Direction {
 ///
 /// `pythonize` walks the `serde_json::Value` tree once and produces a
 /// fresh `dict` keyed by string. Returns an empty dict when the input
-/// map is empty, never `None` — Python users expect attribute access on
+/// map is empty, never `None` - Python users expect attribute access on
 /// every node to succeed.
 pub(crate) fn props_to_py<'py>(
     py: Python<'py>,
@@ -232,7 +232,7 @@ impl Edge {
         &self.inner.kind
     }
 
-    /// Ranking weight (always finite — NaN/±Inf rejected on write).
+    /// Ranking weight (always finite - NaN/±Inf rejected on write).
     #[getter]
     fn weight(&self) -> f32 {
         self.inner.weight
@@ -267,7 +267,7 @@ impl Edge {
 // `New*` types are NOT frozen on the Python side because they are
 // constructed by user code (`drevo.NewNode(kind=..., title=...)`); they
 // only become a frozen Node once `Drevo.create_node` returns. Per RFC
-// §3.2 the user-facing type is a Python dataclass — but PyO3 cannot
+// §3.2 the user-facing type is a Python dataclass - but PyO3 cannot
 // generate `@dataclass` decorators; the equivalent is `#[pyclass]` with
 // `__init__` accepting keyword args. We accept named kwargs in the
 // constructor and surface read-only getters.
@@ -400,7 +400,7 @@ impl NewEdge {
 
 // ── NodePatch / EdgePatch ──────────────────────────────────────────────
 
-/// Partial update for an existing node — see [`drevo::model::NodePatch`].
+/// Partial update for an existing node - see [`drevo::model::NodePatch`].
 #[pyclass(name = "NodePatch")]
 #[derive(Clone, Default)]
 pub struct NodePatch {
@@ -441,7 +441,7 @@ impl NodePatch {
     }
 }
 
-/// Partial update for an existing edge — see [`drevo::model::EdgePatch`].
+/// Partial update for an existing edge - see [`drevo::model::EdgePatch`].
 #[pyclass(name = "EdgePatch")]
 #[derive(Clone, Default)]
 pub struct EdgePatch {
@@ -480,7 +480,7 @@ impl EdgePatch {
 
 // ── ScoredNode ─────────────────────────────────────────────────────────
 
-/// FTS search result — pair of a node + its TF-IDF score.
+/// FTS search result - pair of a node + its TF-IDF score.
 #[pyclass(frozen, name = "ScoredNode")]
 #[derive(Clone)]
 pub struct ScoredNode {
@@ -515,7 +515,7 @@ impl ScoredNode {
 
 // ── SubGraph ───────────────────────────────────────────────────────────
 
-/// Bounded-depth slice of the graph — pair of node + edge lists.
+/// Bounded-depth slice of the graph - pair of node + edge lists.
 #[pyclass(frozen, name = "SubGraph")]
 #[derive(Clone)]
 pub struct SubGraph {
@@ -645,7 +645,7 @@ impl WeightedPath {
 
 // ── CompactReport ──────────────────────────────────────────────────────
 
-/// Result of [`crate::handle::Drevo::compact`] — operator-facing
+/// Result of [`crate::handle::Drevo::compact`] - operator-facing
 /// before/after byte counts + checkpointed allocator state.
 #[pyclass(frozen, name = "CompactReport")]
 #[derive(Clone)]
@@ -713,7 +713,7 @@ impl CompactReport {
 // ── ImportReport ───────────────────────────────────────────────────────
 
 /// Result of [`crate::handle::Drevo::import_graphml`] /
-/// [`crate::handle::Drevo::import_graphml_from_path`] — how many rows were
+/// [`crate::handle::Drevo::import_graphml_from_path`] - how many rows were
 /// newly inserted vs. skipped as byte-equal duplicates (idempotent re-import).
 #[pyclass(frozen, name = "ImportReport")]
 #[derive(Clone)]
@@ -775,7 +775,7 @@ impl ImportReport {
 
 // ── BloatReport ────────────────────────────────────────────────────────
 
-/// Result of [`crate::handle::Drevo::bloat_report`] (#253 slice 1) — physical
+/// Result of [`crate::handle::Drevo::bloat_report`] (#253 slice 1) - physical
 /// file size vs. logical data size and their ratio, so callers can detect
 /// reclaimable copy-on-write high-water-mark bloat.
 #[pyclass(frozen, name = "BloatReport")]
@@ -799,21 +799,21 @@ impl BloatReport {
         self.inner.file_bytes
     }
 
-    /// Summed size of **all** stored rows — records plus every secondary
+    /// Summed size of **all** stored rows - records plus every secondary
     /// index. The real data footprint and the denominator of `bloat_ratio`.
     #[getter]
     fn stored_bytes(&self) -> u64 {
         self.inner.stored_bytes
     }
 
-    /// Summed size of the node + edge record rows — the irreducible logical
+    /// Summed size of the node + edge record rows - the irreducible logical
     /// graph data, excluding indexes.
     #[getter]
     fn logical_bytes(&self) -> u64 {
         self.inner.logical_bytes
     }
 
-    /// `stored_bytes - logical_bytes` — the secondary-index footprint (FTS,
+    /// `stored_bytes - logical_bytes` - the secondary-index footprint (FTS,
     /// adjacency, property/uuid/title/kind keys, vectors). Legitimate overhead,
     /// not reclaimable bloat.
     #[getter]
@@ -833,7 +833,7 @@ impl BloatReport {
         self.inner.edge_count
     }
 
-    /// `file_bytes / stored_bytes` — physical bytes per byte of real stored
+    /// `file_bytes / stored_bytes` - physical bytes per byte of real stored
     /// data. None when unmeasurable (in-memory backend) or there is no data
     /// yet. A value well above 1 signals reclaimable bloat; near 1 means the
     /// file is already minimal.

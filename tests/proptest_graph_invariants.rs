@@ -1,4 +1,4 @@
-//! Phase 9 task `00057` — property-based tests for graph invariants.
+//! Phase 9 task `00057` - property-based tests for graph invariants.
 //!
 //! This file upgrades the per-seed xorshift32 fuzzer in
 //! `tests/db_invariants_tests.rs` (the "Phase 9 proptest precursor" section)
@@ -6,13 +6,13 @@
 //! `.claude/skills/drevo-database/SKILL.md` §"Invariants" must hold after
 //! **every** step of an arbitrary CRUD sequence:
 //!
-//! 1. Adjacency consistency — every `out_edges[from_id]` entry is mirrored
+//! 1. Adjacency consistency - every `out_edges[from_id]` entry is mirrored
 //!    in `in_edges[to_id]`, and vice versa.
-//! 2. Cascading delete — deleting a node removes all incident edges,
+//! 2. Cascading delete - deleting a node removes all incident edges,
 //!    adjacency entries, and FTS entries.
-//! 3. FTS reindex on update — changing `title` or `body` deindexes the old
+//! 3. FTS reindex on update - changing `title` or `body` deindexes the old
 //!    trigrams and indexes the new ones.
-//! 4. UUID immutability — once assigned, a node/edge UUID never changes,
+//! 4. UUID immutability - once assigned, a node/edge UUID never changes,
 //!    even on update.
 //!
 //! Strategy:
@@ -29,7 +29,7 @@
 //!   `native_fts_tests`.
 //!
 //! `proptest` shrinks any failing case to a minimal reproducer
-//! automatically — the `.proptest-regressions/` cache then locks the
+//! automatically - the `.proptest-regressions/` cache then locks the
 //! reproducer in so a future contributor cannot accidentally regress it.
 
 use drevo::model::{Direction, EdgePatch, NewEdge, NewNode, NodePatch, Properties};
@@ -61,7 +61,7 @@ enum Op {
         /// Index into `node_ids` (modulo length).
         to_idx: usize,
         kind: String,
-        /// Finite f32 — NaN/Inf are filtered at strategy level.
+        /// Finite f32 - NaN/Inf are filtered at strategy level.
         weight: f32,
     },
     UpdateNodeTitle {
@@ -93,7 +93,7 @@ enum Op {
 }
 
 /// A reasonably small character set that exercises ASCII, digits, spaces,
-/// punctuation, and one Cyrillic / one CJK character — the same range the
+/// punctuation, and one Cyrillic / one CJK character - the same range the
 /// Unicode-edge-case tests in `tests/db_invariants_tests.rs` cover.
 ///
 /// Confining the alphabet keeps the search space small enough that the
@@ -129,7 +129,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     let title = small_string_strategy(20);
     let body = small_string_strategy(40);
 
-    // Finite f32 in a sane range — NaN/Inf are rejected at the validation
+    // Finite f32 in a sane range - NaN/Inf are rejected at the validation
     // layer and we don't want every test run to immediately bottom out on
     // `DrevoError::InvalidWeight`.
     let weight: BoxedStrategy<f32> = (-100.0f32..100.0f32)
@@ -208,7 +208,7 @@ fn new_edge(from_id: u64, to_id: u64, kind: &str, weight: f32) -> NewEdge {
 /// human-readable violations, empty when the graph is consistent.
 fn adjacency_violations(db: &NativeService, node_ids: &[u64], edge_ids: &[u64]) -> Vec<String> {
     let mut v = Vec::new();
-    // #1 — every tracked (live) edge resolves, its endpoints exist, and it is
+    // #1 - every tracked (live) edge resolves, its endpoints exist, and it is
     // mirrored in both endpoints' adjacency lists.
     for &eid in edge_ids {
         let edge = match db.get_edge(eid) {
@@ -249,7 +249,7 @@ fn adjacency_violations(db: &NativeService, node_ids: &[u64], edge_ids: &[u64]) 
             ));
         }
     }
-    // #2 — no live node's adjacency references a node that no longer exists
+    // #2 - no live node's adjacency references a node that no longer exists
     // (a cascade delete must remove every incident edge).
     for &nid in node_ids {
         for e in db.edges_of(nid, Direction::Both) {
@@ -267,7 +267,7 @@ fn adjacency_violations(db: &NativeService, node_ids: &[u64], edge_ids: &[u64]) 
 /// Apply an op-sequence to a fresh in-memory `NativeService` and assert that
 /// the graph stays internally consistent after every step.
 ///
-/// Per-op errors (e.g. `NodeNotFound`) are tolerated —
+/// Per-op errors (e.g. `NodeNotFound`) are tolerated -
 /// the harness's job is *not* to construct a perfectly-coherent sequence,
 /// it's to ensure the database stays internally consistent **regardless**
 /// of which ops succeeded.
@@ -318,7 +318,7 @@ fn invariants_hold_under_ops(ops: &[Op]) -> Result<(), TestCaseError> {
                         ..Default::default()
                     },
                 ) {
-                    // Invariant #4 — UUID never changes on update.
+                    // Invariant #4 - UUID never changes on update.
                     if let Some(before_uuid) = before {
                         prop_assert_eq!(
                             updated.uuid,
@@ -419,7 +419,7 @@ fn invariants_hold_under_ops(ops: &[Op]) -> Result<(), TestCaseError> {
                 let _ = db.delete_node(id);
                 node_uuids.remove(&id);
                 // Cascading delete may have killed edges referencing this
-                // node — drop them from our tracking so subsequent
+                // node - drop them from our tracking so subsequent
                 // EdgeUpdate ops don't hit `EdgeNotFound` every time.
                 edge_ids.retain(|eid| {
                     db.get_edge(*eid)
@@ -494,7 +494,7 @@ proptest! {
         invariants_hold_under_ops(&ops)?;
     }
 
-    /// FTS searches never return a deleted node — corollary of invariant #2
+    /// FTS searches never return a deleted node - corollary of invariant #2
     /// (cascading delete) on the FTS sub-index.
     #[test]
     fn fts_never_returns_deleted_node(
@@ -523,7 +523,7 @@ proptest! {
             }
         }
 
-        // Search by every alive node's title — must hit only alive nodes.
+        // Search by every alive node's title - must hit only alive nodes.
         for id in &alive_ids {
             if let Ok(node) = db.get_node(*id) {
                 if node.title.is_empty() {

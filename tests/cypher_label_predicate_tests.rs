@@ -1,4 +1,4 @@
-//! Label predicates as boolean expressions — issue #568.
+//! Label predicates as boolean expressions - issue #568.
 //!
 //! In Neo4j `n:Label` (and `n:A:B`) is an ordinary boolean expression, so it
 //! combines with `OR` / `AND` / `NOT`, can be projected in `RETURN`, and works

@@ -1,4 +1,4 @@
-//! End-to-end Cypher `similar(...)` predicate tests — Phase 12 task `00077`.
+//! End-to-end Cypher `similar(...)` predicate tests - Phase 12 task `00077`.
 //!
 //! `similar(vector, query, threshold)` is drevo's joint graph+vector
 //! extension: it lets a single Cypher query both traverse the graph and
@@ -46,7 +46,7 @@ fn err(source: &str, drevo: &NativeService, params: HashMap<String, Value>) -> E
     drevo.execute(&q, params).expect_err("expected error")
 }
 
-/// Build a `Value::List` embedding from `f64` components — the runtime
+/// Build a `Value::List` embedding from `f64` components - the runtime
 /// shape a JSON-array node property takes on inside the executor.
 fn vec_value(components: &[f64]) -> Value {
     Value::List(components.iter().copied().map(Value::Float).collect())
@@ -202,7 +202,7 @@ fn missing_embedding_yields_null_and_filters_row() {
         query_param(&[1.0, 0.0]),
     );
     // The node lacking an embedding evaluates similar(...) to NULL, which
-    // WHERE treats as falsy — only the embedded node survives.
+    // WHERE treats as falsy - only the embedded node survives.
     assert_eq!(names(&rows), vec!["with_vec".to_string()]);
 }
 
@@ -321,7 +321,7 @@ fn cbt_journal_finds_thoughts_with_similar_emotional_signature() {
 #[test]
 fn graph_rag_expands_similarity_hit_into_neighbourhood() {
     // The canonical graph-RAG idiom: find documents similar to a query,
-    // then traverse a `cites` edge to pull in connected context — one
+    // then traverse a `cites` edge to pull in connected context - one
     // query mixing vector search and graph traversal.
     let db = db();
     create_doc(&db, "seed", &[1.0, 0.0]);

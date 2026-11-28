@@ -1,4 +1,4 @@
-# Phase 16 task `00122` — Python CI matrix, cibuildwheel-driven.
+# Phase 16 task `00122` - Python CI matrix, cibuildwheel-driven.
 #
 # This workflow is the **definition-of-done gate** for Phase 16
 # (drevo-py Python Graph-RAG SDK). It runs the three test layers
@@ -24,9 +24,9 @@
 #
 #   {platform: [macos, linux]} = 2 cells.
 #
-#   * macos — cibuildwheel builds natively on the self-hosted macOS
+#   * macos - cibuildwheel builds natively on the self-hosted macOS
 #     runner (no container).
-#   * linux — cibuildwheel pulls the manylinux container image and
+#   * linux - cibuildwheel pulls the manylinux container image and
 #     runs the entire build + test inside it ON the self-hosted
 #     macOS host. Apple Virtualization Framework makes the Linux
 #     container native on Apple Silicon (`linux/arm64`).
@@ -42,7 +42,7 @@
 # `cp313-*` only. drevo-py wheels are built with `abi3-py310`: a
 # single binary that runs on every CPython 3.10+ interpreter
 # without a recompile. Multi-minor testing would produce identical
-# wheels and run identical tests — see KG decision
+# wheels and run identical tests - see KG decision
 # `decision_python_ci_matrix_pin_to_latest_only`.
 #
 # ## CIBW_TEST_COMMAND
@@ -81,7 +81,7 @@ name: Python CI matrix
 # pytest/mypy/ruff/black steps via `maturin develop`). So the matrix
 # now runs only on `push:main` + `workflow_dispatch`, exactly like the
 # already-de-PR-triggered `python-wheels.yml` / `docker-publish.yml` /
-# `cross-compile.yml` — the established pattern in the "Active CI
+# `cross-compile.yml` - the established pattern in the "Active CI
 # operations note" of README.md. PR Python coverage is unchanged
 # (python-ci.yml still gates every PR); what a PR loses is the
 # pre-merge *Linux-wheel-build* check, which is recovered on `push:main`
@@ -109,13 +109,13 @@ jobs:
   test_matrix:
     name: cibuildwheel ${{ matrix.platform }} / cp313
     # Each platform cell runs on its native GitHub-hosted runner (free +
-    # unlimited on a public repo) — macOS wheels on macos-latest, Linux wheels
+    # unlimited on a public repo) - macOS wheels on macos-latest, Linux wheels
     # on ubuntu-24.04. Previously both cells ran on one `[self-hosted, macOS]`
     # Mac to avoid billed minutes; that reason is gone with the public-repo move.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
-      # Don't cancel the other cell when one fails — keeps the
+      # Don't cancel the other cell when one fails - keeps the
       # platform-divergence signal intact.
       fail-fast: false
       matrix:
@@ -141,13 +141,13 @@ jobs:
       # `ruff` and `black` are PINNED. They were previously unpinned, so
       # cibuildwheel resolved whatever was latest at run time. ruff 0.16.0
       # tightened its import-sort / lint defaults and started reporting 144
-      # errors against unchanged drevo-py sources — turning `main` red on
+      # errors against unchanged drevo-py sources - turning `main` red on
       # every push from #200 onward with no code change. Pinning to the
       # versions the project actually lints against (verified green on
       # Python 3.13: `ruff==0.15.1` clean, `black==24.10.0` "49 files left
       # unchanged") freezes that behavior. NB: an `[tool.ruff.lint.isort]
       # known-first-party` config does NOT fix ruff 0.16.0 (still 123
-      # errors) — the pin is the fix. Bump deliberately + re-verify locally.
+      # errors) - the pin is the fix. Bump deliberately + re-verify locally.
       CIBW_TEST_REQUIRES: "pytest>=7 mypy ruff==0.15.1 black==24.10.0 faker hypothesis"
       # Run the full test suite against the just-built wheel.
       # `{package}` expands to `drevo-py/` (the dir cibuildwheel is
@@ -160,7 +160,7 @@ jobs:
         mypy --strict {package}/python/drevo/ &&
         ruff check {package}/python/ {package}/tests/ &&
         black --check {package}/python/ {package}/tests/
-      # Per-cell platform override — selects native macOS or
+      # Per-cell platform override - selects native macOS or
       # Linux-in-container.
       CIBW_PLATFORM: ${{ matrix.platform }}
 
@@ -183,7 +183,7 @@ jobs:
           python-version: '3.13'
 
       - name: Set up Rust toolchain (macOS native build)
-        # Only needed for the macOS cibuildwheel cell — the Linux
+        # Only needed for the macOS cibuildwheel cell - the Linux
         # cell installs Rust INSIDE the manylinux container via
         # CIBW_BEFORE_ALL_LINUX above. Running dtolnay's action on
         # the macOS cell ensures `rustup show` (CIBW_BEFORE_BUILD_MACOS)
@@ -196,7 +196,7 @@ jobs:
         run: python -m pip install --upgrade pip "cibuildwheel==2.21.3"
 
       - name: Run cibuildwheel (build + test wheel)
-        # `drevo-py` is the package dir cibuildwheel points at —
+        # `drevo-py` is the package dir cibuildwheel points at -
         # contains `pyproject.toml` declaring maturin as the build
         # backend. The output dir holds the produced wheels; we
         # don't upload them (this is a test workflow, not a release

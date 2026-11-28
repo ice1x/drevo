@@ -43,22 +43,22 @@ assert_eq!(blockers[0].title, "Review release notes");
 
 ## What's inside
 
-- `native::NativeGraph` — the engine: CRUD on nodes and edges, traversal,
+- `native::NativeGraph` - the engine: CRUD on nodes and edges, traversal,
   O(1) snapshots, transactions (`begin` / `commit`) and two-phase commit,
   durable mode via `open_durable`, and read-only stores via `open_read_only`
   (the log is never written, so it can sit on read-only media) or
   `set_read_only`.
-- `engine::GraphEngine` — the trait the operations are written against;
+- `engine::GraphEngine` - the trait the operations are written against;
   implemented by the graph and by each open transaction.
-- `model` — `Node`, `Edge`, and their create/patch inputs.
+- `model` - `Node`, `Edge`, and their create/patch inputs.
 - `native_fts` (BM25 full-text search), `native_label_index`,
-  `native_property_index` — secondary indexes that follow the graph through its
+  `native_property_index` - secondary indexes that follow the graph through its
   change feed.
-- `csr` — compressed-sparse-row adjacency for whole-graph parallel scans.
-- `replica`, `delta`, `hlc`, `lww` — WAL-shipping read replicas and
+- `csr` - compressed-sparse-row adjacency for whole-graph parallel scans.
+- `replica`, `delta`, `hlc`, `lww` - WAL-shipping read replicas and
   multi-writer merge (hybrid logical clocks, last-writer-wins CRDTs).
-- `dump` — the whole graph as one serde value, for backup and transfer.
-- `backup` — online physical backups of a durable store (full, or the log
+- `dump` - the whole graph as one serde value, for backup and transfer.
+- `backup` - online physical backups of a durable store (full, or the log
   bytes since the previous one) with checksummed manifests, and `restore`.
 
 ## Design notes

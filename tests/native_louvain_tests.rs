@@ -39,7 +39,7 @@ fn edge(engine: &impl GraphEngine, from: u64, to: u64) {
 }
 
 /// Two triangles {0,1,2} and {3,4,5}, each edge added both directions, joined by
-/// a single weak link 2→3 — a textbook two-community graph.
+/// a single weak link 2→3 - a textbook two-community graph.
 fn two_clusters<E: GraphEngine>(engine: &E) -> Vec<u64> {
     let ids: Vec<u64> = (0..6).map(|i| node(engine, &format!("n{i}"))).collect();
     let e = |a: usize, b: usize| {
@@ -65,7 +65,7 @@ fn native_louvain_matches_the_reference_over_the_raw_edge_list() {
     let nat_comm = louvain_native(&native, &cfg).communities;
 
     // Reference: the same serial Louvain over an adjacency list built straight
-    // from the known edge list — two triangles {0,1,2} and {3,4,5} (each edge
+    // from the known edge list - two triangles {0,1,2} and {3,4,5} (each edge
     // added both ways) joined by a single one-way bridge 2->3.
     let bidir = |a: usize, b: usize| [(ids[a], ids[b], 1.0f32), (ids[b], ids[a], 1.0f32)];
     let mut edges = Vec::new();

@@ -4,8 +4,8 @@
 //! (see [`crate::native::NativeGraph::next_stamp`]), a replica can summarise
 //! everything it has seen as a [`VersionVector`]: the greatest [`Hlc`]
 //! observed from each origin. Handing that vector to a peer lets the peer compute
-//! the **minimal** set of writes the holder is missing —
-//! [`delta_since`](crate::native::NativeGraph::delta_since) — and the holder
+//! the **minimal** set of writes the holder is missing -
+//! [`delta_since`](crate::native::NativeGraph::delta_since) - and the holder
 //! folds them back in by Last-Writer-Wins on the stamp
 //! ([`apply_delta`](crate::native::NativeGraph::apply_delta)). Two replicas that
 //! exchange deltas in both directions converge.
@@ -17,8 +17,8 @@
 //! [`stamp_tombstone`](crate::native::NativeGraph)), so a delta ships
 //! [`DeleteNode`](crate::delta::StampedChange::DeleteNode) /
 //! [`DeleteEdge`](crate::delta::StampedChange::DeleteEdge) alongside its
-//! upserts. Each entity therefore has a single Last-Writer-Wins timeline —
-//! upsert or tombstone, whichever stamp is greater — and a delete on one replica
+//! upserts. Each entity therefore has a single Last-Writer-Wins timeline -
+//! upsert or tombstone, whichever stamp is greater - and a delete on one replica
 //! removes the record on the other once the delta is applied. A later upsert
 //! (a greater stamp) resurrects it, exactly as LWW dictates.
 //!
@@ -76,7 +76,7 @@ use crate::model::Properties;
 /// delta the remote is missing.
 ///
 /// The empty vector ([`VersionVector::new`]) has seen nothing, so a
-/// `delta_since` against it returns the sender's entire live state — a full
+/// `delta_since` against it returns the sender's entire live state - a full
 /// bootstrap.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionVector {
@@ -106,7 +106,7 @@ impl VersionVector {
         self.max.get(&origin).copied()
     }
 
-    /// Whether this vector has already observed `stamp` — that is, it has seen a
+    /// Whether this vector has already observed `stamp` - that is, it has seen a
     /// write from the same origin at an equal-or-later [`Hlc`]. A dominated
     /// stamp is *not* new to the holder and is excluded from a delta.
     #[must_use]
@@ -163,7 +163,7 @@ impl VersionVector {
 
 /// An edge on the wire, carrying its endpoints by `uuid` so a receiver can remap
 /// them into its own id space. The wrapped [`Edge`]'s own `id`, `from_id` and
-/// `to_id` are the *sender's* local ids — meaningful only to the sender; the
+/// `to_id` are the *sender's* local ids - meaningful only to the sender; the
 /// edge's identity is `edge.uuid` and its endpoints are [`from_uuid`] /
 /// [`to_uuid`].
 ///
@@ -191,10 +191,10 @@ pub enum StampedChange {
     Node(Node, Stamp),
     /// An edge upsert at this stamp, with its endpoints carried by `uuid`.
     Edge(StampedEdge),
-    /// A node deletion at this stamp — the tombstoned node's `uuid` and the
+    /// A node deletion at this stamp - the tombstoned node's `uuid` and the
     /// causal stamp of the delete. Wins over any node upsert with a lesser stamp.
     DeleteNode([u8; 16], Stamp),
-    /// An edge deletion at this stamp — the tombstoned edge's `uuid` and the
+    /// An edge deletion at this stamp - the tombstoned edge's `uuid` and the
     /// causal stamp of the delete.
     DeleteEdge([u8; 16], Stamp),
 }
@@ -210,7 +210,7 @@ impl StampedChange {
     }
 
     /// Whether this change carries a node upsert (an upserted node's endpoints
-    /// must exist before an edge referencing them — see [`apply_phase`]).
+    /// must exist before an edge referencing them - see [`apply_phase`]).
     ///
     /// [`apply_phase`]: Self::apply_phase
     #[must_use]
@@ -221,7 +221,7 @@ impl StampedChange {
     /// The phase in which this change must be applied within a delta, lowest
     /// first: upsert nodes (0) → upsert edges (1) → delete edges (2) → delete
     /// nodes (3). Endpoints thus exist before an edge that references them, and a
-    /// node deletion — which cascades to its incident edges — runs last.
+    /// node deletion - which cascades to its incident edges - runs last.
     #[must_use]
     pub fn apply_phase(&self) -> u8 {
         match self {
@@ -253,7 +253,7 @@ impl Delta {
         self.changes.len()
     }
 
-    /// Whether the batch is empty — the receiver is already caught up.
+    /// Whether the batch is empty - the receiver is already caught up.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
@@ -294,7 +294,7 @@ mod tests {
     fn observe_keeps_the_greatest_per_origin() {
         let mut vv = VersionVector::new();
         vv.observe(stamp(5, 0, 1));
-        vv.observe(stamp(3, 9, 1)); // older — ignored
+        vv.observe(stamp(3, 9, 1)); // older - ignored
         vv.observe(stamp(2, 0, 2)); // different origin
         assert_eq!(vv.get(origin(1)), Some(Hlc::new(5, 0)));
         assert_eq!(vv.get(origin(2)), Some(Hlc::new(2, 0)));
@@ -306,10 +306,10 @@ mod tests {
     fn dominates_is_greater_or_equal_on_the_same_origin() {
         let mut vv = VersionVector::new();
         vv.observe(stamp(5, 2, 1));
-        assert!(vv.dominates(stamp(5, 2, 1))); // equal — seen
-        assert!(vv.dominates(stamp(4, 9, 1))); // older — seen
-        assert!(!vv.dominates(stamp(5, 3, 1))); // newer — missing
-        assert!(!vv.dominates(stamp(5, 2, 2))); // other origin — missing
+        assert!(vv.dominates(stamp(5, 2, 1))); // equal - seen
+        assert!(vv.dominates(stamp(4, 9, 1))); // older - seen
+        assert!(!vv.dominates(stamp(5, 3, 1))); // newer - missing
+        assert!(!vv.dominates(stamp(5, 2, 2))); // other origin - missing
     }
 
     #[test]

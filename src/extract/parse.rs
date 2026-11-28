@@ -1,8 +1,8 @@
 //! Reading a model's extraction answer.
 //!
 //! The model is asked for one JSON object, `{"entities": [...], "facts":
-//! [...]}`. [`parse_response`] reads it — tolerating a markdown code fence or
-//! words around the object — and [`accept`] keeps the items that hold up:
+//! [...]}`. [`parse_response`] reads it - tolerating a markdown code fence or
+//! words around the object - and [`accept`] keeps the items that hold up:
 //! each surface or quote is located in the text (see
 //! [`crate::extract::offsets::verify_or_repair`]), types are
 //! upper-cased and must be allowed, relations are upper-snake-cased and

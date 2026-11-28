@@ -4,7 +4,7 @@ Where ``tests/unit/test_uuid_shim_properties.py`` fuzzes the pure-Python
 boundary, these fuzz the *serialization* boundary: arbitrary
 JSON-shaped property dicts written through ``create_node`` /
 ``create_edge`` must come back equal from ``get_node`` / ``get_edge``.
-This is the high-value place for fuzzing in the bindings — the property
+This is the high-value place for fuzzing in the bindings - the property
 bag crosses Python -> PyO3 -> serde_json -> redb and back, so hand-picked
 examples easily miss an encoding edge case (Unicode, empty strings, large
 integers, ``None``, deeply varied keys).
@@ -39,9 +39,9 @@ def _unique_title() -> str:
 
 # The ``drevo_db`` fixture is function-scoped and is therefore shared
 # across all generated examples within one test (Hypothesis does not
-# re-run fixtures per example). That is harmless here — every example
+# re-run fixtures per example). That is harmless here - every example
 # creates its own fresh nodes/edges with unique titles and asserts only
-# on those — so we silence the health check that would otherwise flag the
+# on those - so we silence the health check that would otherwise flag the
 # shared fixture.
 _FUZZ = settings(
     max_examples=75,
@@ -76,7 +76,7 @@ class TestPropertyRoundTrip:
     @given(props=_property_bags)
     def test_node_properties_round_trip(self, drevo_db: drevo.Drevo, props: dict) -> None:
         # A unique title per example keeps the duplicate-title guard out of
-        # the way — the property bag is what we are actually fuzzing.
+        # the way - the property bag is what we are actually fuzzing.
         node = drevo_db.create_node(
             drevo.NewNode(kind="fuzz_node", title=_unique_title(), properties=props)
         )

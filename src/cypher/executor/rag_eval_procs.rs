@@ -80,7 +80,7 @@ fn size(n: usize) -> Value {
 impl Executor<'_> {
     /// `CALL drevo.rag.evaluate(questions[, config]) YIELD question,
     /// strategy, hit, recall, precision, mrr, tokens, durationMs, nodeIds,
-    /// recallRetrieved` — one row per question and strategy, questions in
+    /// recallRetrieved` - one row per question and strategy, questions in
     /// order, strategies in the config's order.
     pub(super) fn proc_rag_evaluate(
         &self,
@@ -110,7 +110,7 @@ impl Executor<'_> {
 
     /// `CALL drevo.rag.evaluateSummary(questions[, config]) YIELD strategy,
     /// questions, hitRate, meanRecall, meanPrecision, mrr, p50Ms, p95Ms,
-    /// meanTokens` — the runs of `drevo.rag.evaluate` averaged, one row per
+    /// meanTokens` - the runs of `drevo.rag.evaluate` averaged, one row per
     /// strategy.
     pub(super) fn proc_rag_evaluate_summary(
         &self,
@@ -189,7 +189,7 @@ impl Executor<'_> {
     }
 
     /// The strategies to run: those named, each checked to be runnable here,
-    /// or by default every strategy this server can run with `config` —
+    /// or by default every strategy this server can run with `config` -
     /// `'vector'` only with an embedder and a `label`, `'rag-global'` only
     /// when the config's `communityLayer` holds a community. The outer error
     /// is a storage failure; the inner one names the strategy that cannot

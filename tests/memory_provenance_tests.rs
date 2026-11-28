@@ -898,7 +898,7 @@ fn employment_from_half_past_midnight(svc: &NativeService) {
 fn facts_at_normalises_timezone_offsets() {
     let svc = NativeService::in_memory();
     employment_from_half_past_midnight(&svc);
-    // 02:00+02:00 is 00:00 UTC — before the fact began.
+    // 02:00+02:00 is 00:00 UTC - before the fact began.
     let res = run_ok(
         &svc,
         "CALL drevo.memory.factsAt('Dana', '2024-03-01T02:00:00+02:00') YIELD relation \
@@ -929,8 +929,8 @@ fn facts_at_rejects_a_non_timestamp() {
     );
     assert!(
         res.is_err(),
-        "#808: factsAt('Dana', 'yesterday') must be refused — 'yesterday' is not an \
-         RFC 3339 timestamp — but it is accepted and compared as a string: {res:?}"
+        "#808: factsAt('Dana', 'yesterday') must be refused - 'yesterday' is not an \
+         RFC 3339 timestamp - but it is accepted and compared as a string: {res:?}"
     );
 }
 

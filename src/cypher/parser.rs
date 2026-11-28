@@ -1,4 +1,4 @@
-//! Cypher parser — Phase 10 task `00062`.
+//! Cypher parser - Phase 10 task `00062`.
 //!
 //! The parser consumes the `Vec<Token>` produced by
 //! [`crate::cypher::lexer::tokenize`] and produces a
@@ -15,7 +15,7 @@
 //! syntactic problem; the lexer is fail-fast by design and the parser
 //! follows the same convention for the initial Phase 10 cut. (A
 //! recovering parser that collects multiple errors per source is
-//! tracked as a follow-up — for the executor and Bolt drivers, a single
+//! tracked as a follow-up - for the executor and Bolt drivers, a single
 //! good error message at the first failure point is sufficient.)
 //!
 //! ## Keyword-as-identifier policy
@@ -23,15 +23,15 @@
 //! Cypher's grammar allows most keywords to appear as ordinary names in
 //! certain positions:
 //!
-//! - After `.` — property names (`n.in`, `n.start`).
-//! - After `:` — label and relationship-type names (`MATCH (n:Match)`).
+//! - After `.` - property names (`n.in`, `n.start`).
+//! - After `:` - label and relationship-type names (`MATCH (n:Match)`).
 //! - In map keys (`{end: 1}`).
 //! - As function names (`count(...)`).
 //!
 //! The parser accepts both [`crate::cypher::lexer::TokenKind::Identifier`]
 //! and any keyword in those positions via a single internal helper. Bare
 //! variable positions (e.g. `MATCH (foo)`, `AS foo`) accept an identifier or
-//! a soft keyword — one that only ever stands between operands or inside a
+//! a soft keyword - one that only ever stands between operands or inside a
 //! clause (`starts`, `ends`, `contains`, `in`, `is`, `on`, `by`, `asc`,
 //! `desc`, `and`, `or`, `xor`; see
 //! [`crate::cypher::lexer::TokenKind::names_a_variable`]). Using a clause
@@ -44,7 +44,7 @@ use crate::cypher::lexer::{tokenize, LexError, Span, Token, TokenKind};
 /// A parse error.
 ///
 /// Carries the source [`Span`] of the offending input so callers can
-/// render `^^^` markers under the source — the same convention as
+/// render `^^^` markers under the source - the same convention as
 /// [`LexError`].
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ParseError {
@@ -374,7 +374,7 @@ impl Parser {
         }
     }
 
-    /// Consume a "name" — an identifier or any keyword acting as an
+    /// Consume a "name" - an identifier or any keyword acting as an
     /// identifier. Used for property names, label names, relationship
     /// types, map keys, and function names.
     fn consume_name(&mut self) -> ParseResult<(String, Span)> {
@@ -389,7 +389,7 @@ impl Parser {
                 // A reserved keyword used in an identifier position (label,
                 // relationship type, property / map key). The lexer matches
                 // keywords case-insensitively, so the `TokenKind` has lost
-                // the original casing — recover the *written* text from the
+                // the original casing - recover the *written* text from the
                 // source by the token's byte span. This keeps `[:CONTAINS]`
                 // a `CONTAINS` relationship type and `n.In` an `In` property
                 // (Neo4j preserves the written casing of labels / types /
@@ -639,8 +639,8 @@ impl Parser {
         self.consume(); // CREATE
                         // Neo4j schema DDL (issue #532): `CREATE [type] INDEX …` /
                         // `CREATE CONSTRAINT …`. `INDEX`/`CONSTRAINT`/`VECTOR`/… are soft
-                        // keywords (identifiers), so a normal `CREATE (pattern)` — which always
-                        // begins with `(` or a `var =` path binding — is never mistaken for DDL.
+                        // keywords (identifiers), so a normal `CREATE (pattern)` - which always
+                        // begins with `(` or a `var =` path binding - is never mistaken for DDL.
         if self.is_soft_keyword("CONSTRAINT") {
             // Node UNIQUE, NOT NULL and NODE KEY constraints are enforced
             // (#604, #606); every other form (relationship, property types)
@@ -656,7 +656,7 @@ impl Parser {
                 span,
             }));
         }
-        // `CREATE VECTOR INDEX …` — the one DDL drevo acts on (#532).
+        // `CREATE VECTOR INDEX …` - the one DDL drevo acts on (#532).
         if self.is_soft_keyword("VECTOR") && self.is_soft_keyword_at(1, "INDEX") {
             self.consume(); // VECTOR
             return self.parse_create_vector_index(span);
@@ -719,7 +719,7 @@ impl Parser {
     /// ON (n.a.b [, n.c.*]…) [OPTIONS {…}]` (#578), or with `kind` = `Text`
     /// the rest of `TEXT INDEX … ON (n.prop)` (#589), with `Point` the rest of
     /// `POINT INDEX … FOR (n:Label) ON (n.lat, n.lon)` (#764). `Ok(None)` when
-    /// the statement is valid Neo4j DDL drevo treats as a no-op — a
+    /// the statement is valid Neo4j DDL drevo treats as a no-op - a
     /// relationship pattern, a range index on only top-level properties, or a
     /// point index on one point-valued property (top-level or nested); the caller then
     /// rewinds and accepts it as such. For a range index errors also make the
@@ -1096,7 +1096,7 @@ impl Parser {
     /// drevo's cosine scan needs neither.
     fn parse_create_vector_index(&mut self, span: Span) -> ParseResult<Clause> {
         self.expect_soft_keyword("INDEX")?;
-        // The index name is required — `db.index.vector.queryNodes` addresses it.
+        // The index name is required - `db.index.vector.queryNodes` addresses it.
         if self.is_soft_keyword("IF") || self.is_soft_keyword("FOR") {
             return Err(ParseError::Expected {
                 expected: "a name after CREATE VECTOR INDEX".to_string(),
@@ -1166,7 +1166,7 @@ impl Parser {
         self.eat(&TokenKind::Dot, "`.` before the index property")?;
         let (property, _) = self.consume_name()?;
         self.eat(&TokenKind::RParen, "`)` after the index property")?;
-        // Swallow an optional trailing `OPTIONS {…}` (and anything else) — the
+        // Swallow an optional trailing `OPTIONS {…}` (and anything else) - the
         // statement ends here for drevo's purposes.
         self.consume_to_statement_end();
         Ok(Clause::CreateVectorIndex(CreateVectorIndex {
@@ -1420,7 +1420,7 @@ impl Parser {
 
     fn parse_set_item(&mut self) -> ParseResult<SetItem> {
         // The LHS of a SET item is a property-access chain or a bare
-        // variable — never a full expression with arithmetic / comparison
+        // variable - never a full expression with arithmetic / comparison
         // (those operators would swallow the `=` we need for the
         // assignment). Use [`parse_postfix_chain`] for that.
         let target = self.parse_postfix_chain()?;
@@ -1746,7 +1746,7 @@ impl Parser {
     fn parse_projection_item(&mut self) -> ParseResult<ProjectionItem> {
         if matches!(self.peek_kind(), TokenKind::Star) {
             // `*` alone is the wildcard. But `*` can also legally appear
-            // inside an expression as multiplication — except as the FIRST
+            // inside an expression as multiplication - except as the FIRST
             // token of a projection it is always the wildcard (Cypher
             // grammar). The look-ahead-1 check is enough.
             self.consume();
@@ -2094,7 +2094,7 @@ impl Parser {
         }
     }
 
-    /// `:expr[:expr…]` — a Neo4j 5 label expression (#572). The caller has
+    /// `:expr[:expr…]` - a Neo4j 5 label expression (#572). The caller has
     /// not consumed the colon. Extra `:` segments (the legacy `:A:B` chain)
     /// are conjoined. `pipe_ok` is false inside a comprehension filter, where
     /// a top-level `|` belongs to the comprehension.
@@ -2237,9 +2237,9 @@ impl Parser {
     /// Pratt parser. `min_bp` is the minimum binding power the right side
     /// must beat to continue absorbing operators.
     ///
-    /// This is the single funnel for all expression recursion — grouped
+    /// This is the single funnel for all expression recursion - grouped
     /// expressions `(…)`, prefix operators, list elements, subquery
-    /// predicates, and infix right-hand sides all re-enter here — so the
+    /// predicates, and infix right-hand sides all re-enter here - so the
     /// [`MAX_EXPRESSION_DEPTH`] guard is applied at this one place. The body
     /// lives in [`Parser::parse_expression_bp_inner`]; this wrapper only
     /// maintains the depth counter so every `?` early-return still decrements.
@@ -2259,7 +2259,7 @@ impl Parser {
     fn parse_expression_bp_inner(&mut self, min_bp: u8) -> ParseResult<Expression> {
         let mut lhs = self.parse_prefix()?;
 
-        // `n:Label[:Label…]` — a label predicate binds tighter than any infix
+        // `n:Label[:Label…]` - a label predicate binds tighter than any infix
         // operator, so `n:A OR n:B` is `(n:A) OR (n:B)` and `NOT n:A` is
         // `NOT (n:A)`. SET / REMOVE parse their `n:Label` items through
         // `parse_postfix_chain`, which never reaches here.
@@ -2396,7 +2396,7 @@ impl Parser {
             }
             TokenKind::LParen => {
                 // A `(` opens either a grouped expression (`(a + 1)`) or a
-                // pattern predicate (`(a)-[:R]->(b)` — an existence test). Both
+                // pattern predicate (`(a)-[:R]->(b)` - an existence test). Both
                 // start with `(`, so we *speculatively* parse a path pattern and
                 // only commit when it has at least one relationship; otherwise
                 // the cursor is rolled back and the `(` falls through to the
@@ -2418,7 +2418,7 @@ impl Parser {
             TokenKind::LBracket => self.parse_list_literal()?,
             TokenKind::LBrace => Expression::Map(self.parse_map_literal()?),
             TokenKind::Case => self.parse_case()?,
-            // `all(x IN list WHERE pred)` — `ALL` is a keyword token (it also
+            // `all(x IN list WHERE pred)` - `ALL` is a keyword token (it also
             // appears in `UNION ALL`), so the identifier path below never sees
             // it; the predicate form is the only use of `ALL` in expression
             // position.
@@ -2426,7 +2426,7 @@ impl Parser {
                 self.consume(); // ALL
                 self.parse_list_predicate(ListPredicateKind::All, tok_span)?
             }
-            // `EXISTS { [MATCH] pattern [WHERE pred] }` — an existential
+            // `EXISTS { [MATCH] pattern [WHERE pred] }` - an existential
             // subquery. `EXISTS` is a reserved keyword token, so it never
             // reaches the identifier path; the brace form is its only use in
             // expression position (the deprecated `exists(n.prop)` function form
@@ -2509,7 +2509,7 @@ impl Parser {
                         }
                     }
                 }
-                // `base { .key, .*, key: expr, var }` — a map projection. A
+                // `base { .key, .*, key: expr, var }` - a map projection. A
                 // `{` only reaches the postfix loop *after* a primary; a
                 // standalone map literal is consumed by `parse_prefix`'s
                 // `LBrace` arm before this loop runs, so claiming `{` here is
@@ -2582,7 +2582,7 @@ impl Parser {
                 span,
             });
         }
-        // Pattern comprehension `[ (a)-[:R]->(b) WHERE pred | proj ]` — its first
+        // Pattern comprehension `[ (a)-[:R]->(b) WHERE pred | proj ]` - its first
         // token is `(`, the start of a node pattern. A list literal whose first
         // element is parenthesised (`[(1+2)]`, `[(a)]`, `[(a {x:1})]`) also opens
         // with `(`, so we *speculatively* parse a path pattern and only commit
@@ -2599,7 +2599,7 @@ impl Parser {
         // tighter than the `WHERE` / `|` that follow); `parse_expression`
         // stops at `WHERE` / `|` since neither is an expression operator.
         let first = self.parse_expression()?;
-        // `[var IN list WHERE pred | proj]` — a list comprehension is signalled
+        // `[var IN list WHERE pred | proj]` - a list comprehension is signalled
         // by a `WHERE` or `|` immediately after the `var IN list` prefix.
         if matches!(self.peek_kind(), TokenKind::Where | TokenKind::Pipe) {
             return self.finish_list_comprehension(first, span);
@@ -2661,15 +2661,15 @@ impl Parser {
     /// when the cursor (just past the opening `[`) sits on `(`.
     ///
     /// The bracket is only a pattern comprehension when the leading `(`
-    /// introduces a genuine **path** — a node pattern followed by at least one
-    /// relationship — that is in turn followed by `WHERE` or `|`. A
+    /// introduces a genuine **path** - a node pattern followed by at least one
+    /// relationship - that is in turn followed by `WHERE` or `|`. A
     /// parenthesised expression element of a list literal (`[(1+2)]`, `[(a)]`,
     /// `[(a {x:1})]`) parses as a node pattern with no relationship, so it fails
     /// the "at least one relationship" test; on any non-match the speculative
     /// cursor is rolled back to `checkpoint` and `Ok(None)` is returned so the
     /// caller resumes ordinary list-literal parsing. Once the commit point
     /// (a valid path + `WHERE` / `|`) is reached, a later syntax error is a real
-    /// error rather than a roll-back signal — `| projection` is mandatory.
+    /// error rather than a roll-back signal - `| projection` is mandatory.
     fn try_parse_pattern_comprehension(&mut self, span: Span) -> ParseResult<Option<Expression>> {
         let checkpoint = self.pos;
         let pattern = match self.parse_path_pattern() {
@@ -2712,8 +2712,8 @@ impl Parser {
     ///
     /// A `(` opens both a grouped expression (`(a + 1)`, `(a)`, `(a).name`) and
     /// a pattern predicate (an existence test over a path). Only a path with at
-    /// least one **relationship** is a predicate; a bare parenthesised node —
-    /// which is what a grouped expression looks like to [`parse_path_pattern`] —
+    /// least one **relationship** is a predicate; a bare parenthesised node -
+    /// which is what a grouped expression looks like to [`parse_path_pattern`] -
     /// fails the "at least one relationship" test, so on any non-match the
     /// speculative cursor is rolled back to `checkpoint` and `Ok(None)` is
     /// returned so the caller resumes ordinary grouped-expression parsing. This
@@ -2745,15 +2745,15 @@ impl Parser {
     /// once the `EXISTS` keyword has been consumed.
     ///
     /// The braces are mandatory (the deprecated `exists(n.prop)` function form
-    /// is not supported — `n.prop IS NOT NULL` replaces it). Inside, a leading
+    /// is not supported - `n.prop IS NOT NULL` replaces it). Inside, a leading
     /// `MATCH` keyword is optional and equivalent, a single path pattern is
     /// required, and an optional `WHERE` filters the matches before the
     /// existence test. Because the braces already delimit the pattern, a bare
-    /// node (`EXISTS { (n) }`) is legal here — there is no grouping ambiguity to
+    /// node (`EXISTS { (n) }`) is legal here - there is no grouping ambiguity to
     /// resolve as there is for a bare [pattern predicate](Self::try_parse_pattern_predicate).
     fn parse_exists_subquery(&mut self, span: Span) -> ParseResult<Expression> {
         self.eat(&TokenKind::LBrace, "`{` after EXISTS")?;
-        // An optional leading `MATCH` keyword — `EXISTS { MATCH (a)-->(b) }` is
+        // An optional leading `MATCH` keyword - `EXISTS { MATCH (a)-->(b) }` is
         // equivalent to `EXISTS { (a)-->(b) }`.
         if matches!(self.peek_kind(), TokenKind::Match) {
             self.consume();
@@ -2776,8 +2776,8 @@ impl Parser {
     /// Parse a counting subquery `COUNT { [MATCH] pattern [WHERE pred] }` once
     /// the `COUNT` identifier has been consumed and the cursor sits on `{`.
     ///
-    /// Structurally identical to [`parse_exists_subquery`](Self::parse_exists_subquery)
-    /// — the braces are mandatory and disambiguate the pattern from a grouped
+    /// Structurally identical to [`parse_exists_subquery`](Self::parse_exists_subquery) -
+    /// the braces are mandatory and disambiguate the pattern from a grouped
     /// expression (so a bare node `COUNT { (n) }` is legal), a leading `MATCH`
     /// keyword is optional and equivalent, a single path pattern is required,
     /// and an optional inner `WHERE` filters the matches before they are
@@ -2857,7 +2857,7 @@ impl Parser {
 
     fn parse_count_subquery(&mut self, span: Span) -> ParseResult<Expression> {
         self.eat(&TokenKind::LBrace, "`{` after COUNT")?;
-        // An optional leading `MATCH` keyword — `COUNT { MATCH (a)-->(b) }` is
+        // An optional leading `MATCH` keyword - `COUNT { MATCH (a)-->(b) }` is
         // equivalent to `COUNT { (a)-->(b) }`.
         if matches!(self.peek_kind(), TokenKind::Match) {
             self.consume();
@@ -2881,7 +2881,7 @@ impl Parser {
     /// function-name token has been consumed and the cursor sits on `(`.
     ///
     /// The `WHERE predicate` is mandatory (unlike a list comprehension's
-    /// optional filter), matching Neo4j — `all(x IN list)` is a parse error.
+    /// optional filter), matching Neo4j - `all(x IN list)` is a parse error.
     fn parse_list_predicate(
         &mut self,
         kind: ListPredicateKind,
@@ -2907,7 +2907,7 @@ impl Parser {
     /// name has been consumed and the cursor sits on `(`.
     ///
     /// The accumulator and loop variables must be bare identifiers; the `=`,
-    /// `,`, `IN` and `|` separators are all mandatory, matching Neo4j — any
+    /// `,`, `IN` and `|` separators are all mandatory, matching Neo4j - any
     /// missing piece surfaces as a parse error.
     fn parse_reduce(&mut self, span: Span) -> ParseResult<Expression> {
         self.eat(&TokenKind::LParen, "`(` after `reduce`")?;
@@ -2970,12 +2970,12 @@ impl Parser {
 
     fn parse_identifier_or_call(&mut self) -> ParseResult<Expression> {
         let (first, first_span) = self.consume_variable()?;
-        // `COUNT { [MATCH] pattern [WHERE pred] }` — a counting subquery. Unlike
+        // `COUNT { [MATCH] pattern [WHERE pred] }` - a counting subquery. Unlike
         // `EXISTS`, `count` is not a reserved keyword token (it is the ordinary
         // aggregation identifier `count(*)`), so the brace form is detected here
         // by a bare `count` name immediately followed by `{`. A `count(` call
         // (the aggregation) and a bare `count` variable both keep the `(` /
-        // non-`{` paths below, so claiming `count {` is purely additive — an
+        // non-`{` paths below, so claiming `count {` is purely additive - an
         // identifier followed by `{` was a parse error before this task.
         if first.eq_ignore_ascii_case("count") && matches!(self.peek_kind(), TokenKind::LBrace) {
             return self.parse_count_subquery(first_span);
@@ -2995,7 +2995,7 @@ impl Parser {
             if let Some(kind) = list_predicate_kind(&first) {
                 return self.parse_list_predicate(kind, first_span);
             }
-            // `reduce(acc = init, var IN list | expr)` — like the list
+            // `reduce(acc = init, var IN list | expr)` - like the list
             // predicates, this is a bare name immediately followed by `(`
             // that takes a bespoke form rather than comma-separated arguments,
             // so it is dispatched before the generic call path. `reduce` is not
@@ -3093,7 +3093,7 @@ impl Parser {
 /// Therefore `PREFIX_BP` sits between `*` (40) and `^` (51).
 const PREFIX_BP: u8 = 45;
 /// `NOT` binds tighter than the boolean infixes but looser than
-/// comparison — so `NOT a = b` parses as `NOT (a = b)`.
+/// comparison - so `NOT a = b` parses as `NOT (a = b)`.
 const NOT_BP: u8 = 18;
 
 #[derive(Debug, Clone, Copy)]
@@ -3426,7 +3426,7 @@ mod tests {
 
     // ---- keyword-as-identifier casing -------------------------------------
     // A reserved keyword used in an *identifier* position (label, rel-type,
-    // property/map key) must round-trip with its written casing — keyword
+    // property/map key) must round-trip with its written casing - keyword
     // recognition is case-insensitive, but the name is whatever the source
     // wrote. Regression: `consume_name` used to `.to_lowercase()` the
     // canonical keyword form, so `[:CONTAINS]` became `contains`.
@@ -3738,7 +3738,7 @@ mod tests {
     fn empty_map_projection_parses() {
         // `n {}` is a projection with no selectors (projects to an empty map);
         // a leading `{` is consumed by the prefix path, so the bare `{}` form
-        // requires a preceding base — exactly this case.
+        // requires a preceding base - exactly this case.
         let q = p("RETURN n {} AS m");
         match first_return_expr(&q) {
             Expression::MapProjection { selectors, .. } => assert!(selectors.is_empty()),
@@ -3830,7 +3830,7 @@ mod tests {
 
     #[test]
     fn bracket_with_lone_node_pattern_falls_through_to_variable_list() {
-        // `[(a)]` is a list literal `[a]` — a bare node has no relationship, so
+        // `[(a)]` is a list literal `[a]` - a bare node has no relationship, so
         // it is not a pattern comprehension; the speculative parse rolls back.
         let q = p("RETURN [(a)]");
         match first_return_expr(&q) {
@@ -3932,7 +3932,7 @@ mod tests {
         };
         match m.where_clause.as_ref().expect("a WHERE predicate") {
             Expression::ExistsSubquery { pattern, .. } => {
-                assert!(pattern.tail.is_empty(), "bare node — no relationship");
+                assert!(pattern.tail.is_empty(), "bare node - no relationship");
                 assert_eq!(pattern.head.variable.as_deref(), Some("n"));
             }
             other => panic!("expected existential subquery, got {other:?}"),
@@ -4018,7 +4018,7 @@ mod tests {
         };
         match expr {
             Expression::CountSubquery { pattern, .. } => {
-                assert!(pattern.tail.is_empty(), "bare node — no relationship");
+                assert!(pattern.tail.is_empty(), "bare node - no relationship");
                 assert_eq!(pattern.head.variable.as_deref(), Some("n"));
             }
             other => panic!("expected counting subquery, got {other:?}"),
@@ -4047,7 +4047,7 @@ mod tests {
 
     #[test]
     fn count_subquery_without_brace_is_a_bare_variable() {
-        // `count` not followed by `{` or `(` is an ordinary identifier — neither
+        // `count` not followed by `{` or `(` is an ordinary identifier - neither
         // the aggregation nor the subquery is claimed.
         let q = p("MATCH (count) RETURN count");
         let Clause::Return(r) = &q.parts[0].query.clauses[1] else {
@@ -4074,7 +4074,7 @@ mod tests {
     fn parenthesised_arithmetic_is_still_grouping() {
         let q = p("RETURN (1 + 2) * 3");
         // The grouped `(1 + 2)` is the LHS of a `*`, so the top node is a Binary
-        // multiply — not a pattern predicate.
+        // multiply - not a pattern predicate.
         match first_return_expr(&q) {
             Expression::Binary { op, .. } => assert_eq!(*op, BinaryOp::Mul),
             other => panic!("expected grouped arithmetic, got {other:?}"),
@@ -4083,7 +4083,7 @@ mod tests {
 
     #[test]
     fn pattern_comprehension_without_projection_pipe_is_an_error() {
-        // The `| projection` is mandatory — once a path + `WHERE` commits to a
+        // The `| projection` is mandatory - once a path + `WHERE` commits to a
         // comprehension, a missing `|` is a real error (not a roll-back signal).
         assert!(parse("RETURN [(p)-[:KNOWS]->(f) WHERE f.age > 1]").is_err());
     }
@@ -4093,7 +4093,7 @@ mod tests {
         // `[(p)-[:KNOWS]->(f)]` has no `WHERE`/`|`, so the comprehension parse
         // rolls back; the element then parses as a *pattern predicate* (a path
         // is a boolean existence test in expression position), giving a
-        // single-element list — additive on the prior parse-error behaviour.
+        // single-element list - additive on the prior parse-error behaviour.
         let q = p("RETURN [(p)-[:KNOWS]->(f)]");
         match first_return_expr(&q) {
             Expression::List { items, .. } => {
@@ -4163,7 +4163,7 @@ mod tests {
     #[test]
     fn bare_identifier_named_shortestpath_is_not_a_wrapper() {
         // A node variable that happens to be spelled `shortestpath` is an
-        // ordinary variable — the wrapper is only claimed before a `(`.
+        // ordinary variable - the wrapper is only claimed before a `(`.
         let q = p("MATCH (shortestpath) RETURN shortestpath");
         let sp = &first_match(&q).patterns[0];
         assert_eq!(sp.shortest, None);

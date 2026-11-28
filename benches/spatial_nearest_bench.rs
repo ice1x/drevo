@@ -2,16 +2,16 @@
 //! on a synthetic city the size of Sofia's road graph.
 //!
 //! The city is 243,049 junctions spread at random over Sofia's bounding box
-//! (42.62–42.76 N, 23.22–23.42 E), the size of the Sofia OpenStreetMap road
+//! (42.62-42.76 N, 23.22-23.42 E), the size of the Sofia OpenStreetMap road
 //! graph; 85% are drivable (`r: 1`), the rest are footways. 4,800 tram and
 //! bus stops are spread over the same box. Both labels have a point index on
 //! `(lat, lon)`.
 //!
 //! Each query is a random point in the box:
 //!
-//! * `junction` — the nearest drivable junction (`k: 1, where: {r: 1}`), the
+//! * `junction` - the nearest drivable junction (`k: 1, where: {r: 1}`), the
 //!   start of a street route;
-//! * `stops` — the five nearest stops within 500 m (`k: 5, maxMeters: 500`),
+//! * `stops` - the five nearest stops within 500 m (`k: 5, maxMeters: 500`),
 //!   the start of a transit route.
 //!
 //! The same junction lookups also run without a point index, over a few

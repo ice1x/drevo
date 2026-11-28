@@ -35,7 +35,7 @@ mod tests {
 
     #[test]
     fn build_hnsw_from_iterator_is_backend_agnostic() {
-        // Feed (id, Vector) pairs from any source — here a plain Vec, standing
+        // Feed (id, Vector) pairs from any source - here a plain Vec, standing
         // in for the native engine's own embedding scan (issue #446).
         let vectors = vec![
             (1u64, Vector::from(vec![1.0, 0.0, 0.0])),

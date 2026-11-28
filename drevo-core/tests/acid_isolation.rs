@@ -1,12 +1,12 @@
-//! ACID conformance — **I (Isolation)** for the default `native-durable`
+//! ACID conformance - **I (Isolation)** for the default `native-durable`
 //! engine, exercised as **Rust** tests directly against the `drevo-core`
 //! [`NativeGraph`] seam (no HTTP layer).
 //!
 //! The engine's guaranteed level is **MVCC snapshot isolation**: a reader that
-//! holds a [`GraphSnapshot`](drevo_core::native::GraphSnapshot) — or an open
-//! transaction, which reads from the snapshot it began at — sees one frozen,
+//! holds a [`GraphSnapshot`](drevo_core::native::GraphSnapshot) - or an open
+//! transaction, which reads from the snapshot it began at - sees one frozen,
 //! consistent version of the graph, regardless of concurrent writers, and a
-//! write–write race is rejected as a conflict rather than silently losing an
+//! write-write race is rejected as a conflict rather than silently losing an
 //! update. This file is the authoritative proof of that level; deeper MVCC
 //! mechanics live in the top crate's `mvcc_*` suites.
 //!
@@ -26,7 +26,7 @@ fn node(title: &str) -> NewNode {
     }
 }
 
-/// No dirty read: uncommitted writes are invisible to any other reader —
+/// No dirty read: uncommitted writes are invisible to any other reader -
 /// a fresh snapshot and a concurrently-open transaction both see nothing,
 /// while the writing transaction sees its own buffered write (read-your-writes).
 #[test]
@@ -83,7 +83,7 @@ fn repeatable_read_snapshot_is_unaffected_by_later_commits() {
 }
 
 /// Lost update prevented: two transactions that began from the same state and
-/// both write the **same node** cannot both commit — the second is rejected as
+/// both write the **same node** cannot both commit - the second is rejected as
 /// a [`CommitError::Conflict`] (optimistic concurrency), and applies nothing.
 #[test]
 fn lost_update_is_prevented_by_a_commit_conflict() {

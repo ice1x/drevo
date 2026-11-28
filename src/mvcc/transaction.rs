@@ -6,7 +6,7 @@
 //! * a monotonic **transaction id** ([`Xid`]) allocator,
 //! * a **commit log** mapping every allocated id to its [`XidStatus`]
 //!   (in-progress / committed / aborted), and
-//! * a **[`Snapshot`]** — the `(xmin, xmax, active-set)` triple captured at
+//! * a **[`Snapshot`]** - the `(xmin, xmax, active-set)` triple captured at
 //!   a point in time that decides, together with the commit log, which
 //!   tuple versions a reader is allowed to see.
 //!
@@ -23,7 +23,7 @@ use super::error::{MvccError, Result};
 /// A monotonically increasing transaction identifier.
 ///
 /// Real transactions start at `1`; [`INVALID_XID`] (`0`) is reserved as a
-/// sentinel meaning "no transaction" — it is the `xmax` of a live tuple
+/// sentinel meaning "no transaction" - it is the `xmax` of a live tuple
 /// version (one that has never been deleted) and is never handed out by
 /// [`TransactionManager::begin`].
 pub type Xid = u64;
@@ -58,7 +58,7 @@ pub enum XidStatus {
 /// # Concurrency
 ///
 /// All mutation goes through a single [`RwLock`]. Allocation and
-/// commit/abort take the write lock (short critical sections — a counter
+/// commit/abort take the write lock (short critical sections - a counter
 /// bump and a map insert); [`status`](Self::status) and
 /// [`snapshot`](Self::snapshot) take the read lock so many readers can
 /// capture snapshots concurrently.
@@ -81,7 +81,7 @@ struct Registry {
     /// keyed by `xmin` with a reference count. The smallest key is the GC
     /// horizon: no version a registered reader can still see lies below it.
     /// Plain [`snapshot`](TransactionManager::snapshot)s are *not* tracked
-    /// here — they are one-shot reads the collector need not respect.
+    /// here - they are one-shot reads the collector need not respect.
     active_snaps: BTreeMap<Xid, u64>,
 }
 
@@ -156,7 +156,7 @@ impl TransactionManager {
 
     /// Look up the commit status of a transaction id.
     ///
-    /// An id that was never allocated reports [`XidStatus::Aborted`] — its
+    /// An id that was never allocated reports [`XidStatus::Aborted`] - its
     /// (non-existent) writes must never be considered visible. [`INVALID_XID`]
     /// likewise reports `Aborted`.
     ///
@@ -193,7 +193,7 @@ impl TransactionManager {
     /// Capture a [`Snapshot`] from an already-held registry guard.
     ///
     /// Factored out so [`begin_snapshot`](Self::begin_snapshot) can capture the
-    /// view **and** register its `xmin` under a *single* write-lock section —
+    /// view **and** register its `xmin` under a *single* write-lock section -
     /// see the atomicity note there. Pure: it only reads `reg`.
     fn snapshot_locked(reg: &Registry, my_xid: Xid) -> Snapshot {
         let xmax = reg.next;
@@ -224,7 +224,7 @@ impl TransactionManager {
     /// is fine for one-shot reads completed before the next vacuum.
     ///
     /// The receiver is `&Arc<Self>` so the returned guard can own a manager
-    /// handle and therefore be `Send + 'static` — movable into reader threads.
+    /// handle and therefore be `Send + 'static` - movable into reader threads.
     ///
     /// # Errors
     ///
@@ -232,7 +232,7 @@ impl TransactionManager {
     pub fn begin_snapshot(self: &Arc<Self>, my_xid: Xid) -> Result<SnapshotGuard> {
         // ATOMIC capture + register: the snapshot's view (`xmax`, `active`,
         // `xmin`) is read from the SAME write-locked registry section that then
-        // pins `xmin` into `active_snaps`. This closes a TOCTOU race — capturing
+        // pins `xmin` into `active_snaps`. This closes a TOCTOU race - capturing
         // under a read lock and registering under a *separate* write lock left a
         // window in which the collector could read a `gc_horizon` that excluded
         // this not-yet-registered snapshot, advance past a version the snapshot
@@ -288,12 +288,12 @@ impl TransactionManager {
         //  * the oldest registered reader snapshot's `xmin` (a long reader that
         //    already captured its view), and
         //  * the oldest **in-progress** transaction id (a writer that is not yet
-        //    committed). A version this writer retired — `xmax == w` — is still
+        //    committed). A version this writer retired - `xmax == w` - is still
         //    visible to any snapshot that captures `w` in its active set, and
         //    such a snapshot can be taken (and atomically registered) at any
         //    instant while `w` runs. If the horizon ignored in-progress writers,
         //    a vacuum could read a horizon above `w`, commit `w`, and reclaim
-        //    that version before/just as a reader pins it — the bug this closes.
+        //    that version before/just as a reader pins it - the bug this closes.
         //    This is PostgreSQL's `OldestXmin`: the min xid of every running
         //    transaction, not only registered readers.
         //
@@ -360,17 +360,17 @@ impl Default for TransactionManager {
 ///
 /// Captured by [`TransactionManager::snapshot`]. A snapshot plus the
 /// manager's commit log is enough to decide, deterministically and
-/// stably, whether any tuple version is visible — see
+/// stably, whether any tuple version is visible - see
 /// [`Snapshot::sees_effect`] and
 /// [`Version::is_visible`](super::version::Version::is_visible).
 ///
 /// The three fields are the classic PostgreSQL triple:
 ///
-/// * `xmin` — the lowest still-active id. Every id `< xmin` had already
+/// * `xmin` - the lowest still-active id. Every id `< xmin` had already
 ///   finished (committed or aborted) when the snapshot was taken.
-/// * `xmax` — the next id to be allocated. Every id `>= xmax` started
+/// * `xmax` - the next id to be allocated. Every id `>= xmax` started
 ///   *after* the snapshot and is therefore invisible.
-/// * `active` — the ids that were in progress at snapshot time. They stay
+/// * `active` - the ids that were in progress at snapshot time. They stay
 ///   invisible to this snapshot **even if they commit later**, which is
 ///   exactly what gives snapshot isolation its stable view.
 #[derive(Debug, Clone)]
@@ -407,16 +407,16 @@ impl Snapshot {
     ///
     /// The rules, applied in order:
     ///
-    /// 1. [`INVALID_XID`] has no effect — not visible.
+    /// 1. [`INVALID_XID`] has no effect - not visible.
     /// 2. The snapshot's own transaction always sees its own writes.
-    /// 3. An id `>= xmax` started after the snapshot — not visible.
+    /// 3. An id `>= xmax` started after the snapshot - not visible.
     /// 4. An id captured in the `active` set was in progress at snapshot
-    ///    time — not visible (and stays so even after it commits).
+    ///    time - not visible (and stays so even after it commits).
     /// 5. Otherwise the id had completed before the snapshot; it is
     ///    visible iff the commit log records it [`XidStatus::Committed`].
     ///
-    /// Steps 3–5 only ever consult the commit log for ids that had already
-    /// finished at snapshot time, whose status is final — so the result is
+    /// Steps 3-5 only ever consult the commit log for ids that had already
+    /// finished at snapshot time, whose status is final - so the result is
     /// stable for the life of the snapshot regardless of later commits.
     ///
     /// # Errors

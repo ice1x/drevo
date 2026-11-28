@@ -35,13 +35,13 @@ fn main() {
 /// stays `0.0.0` and would otherwise be what the running server reported.
 ///
 /// Resolution order (first that yields a value wins):
-///  1. `DREVO_VERSION` build env — how the release image gets a correct version
+///  1. `DREVO_VERSION` build env - how the release image gets a correct version
 ///     even though `.git` is excluded from the Docker build context
 ///     (`scripts/release.sh` passes `--build-arg DREVO_VERSION=<next>`).
-///  2. `git describe --tags` on the surrounding checkout — a correct version for
+///  2. `git describe --tags` on the surrounding checkout - a correct version for
 ///     native/dev builds straight from a git clone (e.g. `0.0.4`, or
 ///     `0.0.4-3-g<sha>` a few commits past the tag).
-///  3. `CARGO_PKG_VERSION` — last-resort fallback for a git-less, arg-less build
+///  3. `CARGO_PKG_VERSION` - last-resort fallback for a git-less, arg-less build
 ///     (e.g. a source tarball or a plain `docker build`); keeps the build
 ///     infallible. Because the release flow never bumps `Cargo.toml`, this is
 ///     the placeholder `0.0.0`, which [`resolve_version`] reports as
@@ -72,7 +72,7 @@ fn emit_version() {
 /// Like the version, a release image cannot `git` (its Docker context excludes
 /// `.git`), so a `DREVO_GIT_SHA` build-arg takes precedence; a native/dev build
 /// falls back to `git rev-parse`. When neither is available the env is left
-/// unset — `option_env!` then yields `None` — so the build stays infallible.
+/// unset - `option_env!` then yields `None` - so the build stays infallible.
 fn emit_git_sha() {
     println!("cargo:rerun-if-env-changed=DREVO_GIT_SHA");
     let sha = std::env::var("DREVO_GIT_SHA")
@@ -105,7 +105,7 @@ fn git_short_sha() -> Option<String> {
 /// Expose an ISO-8601 build timestamp as the optional compile-time
 /// `DREVO_BUILD_DATE` env (surfaced by `CALL drevo.info()`, issue #303).
 ///
-/// Populated only when the build supplies it — the release flow passes a
+/// Populated only when the build supplies it - the release flow passes a
 /// `DREVO_BUILD_DATE` build-arg. build.rs deliberately does not invent a
 /// timestamp: doing so would make every build non-reproducible and pull in a
 /// date-formatting dependency. When unset, `option_env!` yields `None`.

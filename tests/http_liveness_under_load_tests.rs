@@ -1,8 +1,8 @@
-//! Liveness while Cypher is busy — issue #547.
+//! Liveness while Cypher is busy - issue #547.
 //!
 //! On the live server a slow statement plus a handful of follow-up requests
 //! parked every tokio worker (Cypher ran synchronously on the async worker
-//! threads), so even `GET /health` — which takes no lock — stopped answering
+//! threads), so even `GET /health` - which takes no lock - stopped answering
 //! until a container restart.
 //!
 //! The test starts the real axum server on a **two-worker** runtime, keeps
@@ -125,7 +125,7 @@ fn health_answers_while_more_slow_statements_than_workers_run() {
         assert_eq!(code, 200, "slow statement completes normally");
         assert!(
             done > answered,
-            "a slow statement finished before /health answered — the check was vacuous"
+            "a slow statement finished before /health answered - the check was vacuous"
         );
     }
 }

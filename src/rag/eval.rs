@@ -4,8 +4,8 @@
 //! budget and scores what each one would have handed over, and
 //! `drevo.rag.evaluateSummary` averages the scores per strategy.
 //!
-//! This module holds the pure parts — the strategies, reading the gold set,
-//! the metrics and their aggregation — tested without an engine:
+//! This module holds the pure parts - the strategies, reading the gold set,
+//! the metrics and their aggregation - tested without an engine:
 //!
 //! ```
 //! use drevo::rag::eval::{score, Strategy};
@@ -29,7 +29,7 @@ use crate::cypher::executor::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Strategy {
     /// The top `k` nodes of `label` by embedding similarity alone, as
-    /// `drevo.semantic.query` ranks them — the baseline.
+    /// `drevo.semantic.query` ranks them - the baseline.
     Vector,
     /// The top `k` BM25 matches.
     Fts,

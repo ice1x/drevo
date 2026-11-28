@@ -52,7 +52,7 @@ pub enum DrevoError {
     /// `drevo-database` §"Edge" defines `weight: f32` for Dijkstra ranking;
     /// `Edge` derives `PartialEq` which `f32::NAN != f32::NAN` would break.
     /// Cross-link: `audit/AUDIT-model.md` F4.
-    #[error("invalid edge weight: {0} — weight must be a finite f32")]
+    #[error("invalid edge weight: {0} - weight must be a finite f32")]
     InvalidWeight(f32),
 
     /// An I/O error occurred.
@@ -68,7 +68,7 @@ pub enum DrevoError {
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// A vector operation failed — a malformed embedding, a dimension
+    /// A vector operation failed - a malformed embedding, a dimension
     /// mismatch, or a zero-magnitude operand. Raised by the Phase 12
     /// persistence layer (`00078`) when a stored [`crate::vector::Vector`]
     /// cannot be inserted into the HNSW index it is rebuilding, and
@@ -81,8 +81,8 @@ pub enum DrevoError {
     /// A second explicit transaction (`Drevo::tx_begin`) was requested
     /// while one is already active or being rolled back. The MVP
     /// undo-log layer (Phase 11 task `00072`) allows only a single
-    /// in-flight transaction per `Drevo` handle —
-    /// concurrent isolation lands with MVCC (`00080`–`00084`). Maps to
+    /// in-flight transaction per `Drevo` handle -
+    /// concurrent isolation lands with MVCC (`00080`-`00084`). Maps to
     /// the Bolt status code `Neo.TransientError.Transaction.Outdated`.
     #[error("transaction already active")]
     TransactionAlreadyActive,
@@ -106,7 +106,7 @@ pub enum DrevoError {
     /// `Neo.TransientError.Database.Unavailable`.
     #[error(
         "database needs migration: on-disk adjacency format v{found_major} \
-         predates this build's v{required_major} — run `drevo migrate up` \
+         predates this build's v{required_major} - run `drevo migrate up` \
          (backs up first) to upgrade"
     )]
     NeedsMigration {
@@ -169,8 +169,8 @@ pub type Result<T> = std::result::Result<T, DrevoError>;
 /// The six shared variants map **one-to-one** (so a `NodeNotFound` raised deep
 /// in the native engine still surfaces as `DrevoError::NodeNotFound`, which the
 /// migrate seam and CRUD tests match on). The catch-all
-/// [`CoreError::Backend`](drevo_core::error::CoreError::Backend) — which only a
-/// concrete backend produces, never the native engine — degrades to
+/// [`CoreError::Backend`](drevo_core::error::CoreError::Backend) - which only a
+/// concrete backend produces, never the native engine - degrades to
 /// [`DrevoError::Io`], carrying its rendered message. This is the direction used
 /// whenever a core-returning call (the `GraphEngine` seam, a dump helper) is `?`
 /// -lifted into a `DrevoError` context.
@@ -226,7 +226,7 @@ impl From<DrevoError> for drevo_core::error::CoreError {
             DrevoError::ConstraintViolation { kind, message } => {
                 C::ConstraintViolation(drevo_core::native::ConstraintViolation { kind, message })
             }
-            // No structured counterpart in the core — keep the message.
+            // No structured counterpart in the core - keep the message.
             other => C::Backend(other.to_string()),
         }
     }
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn shared_variants_round_trip_losslessly_core_to_drevo_to_core() {
         // Each shared variant survives CoreError → DrevoError → CoreError with
-        // its payload intact — the property the migrate seam and the native
+        // its payload intact - the property the migrate seam and the native
         // engine rely on so `DrevoError::NodeNotFound(id)` stays matchable.
         let cases = [
             CoreError::NodeNotFound(42),

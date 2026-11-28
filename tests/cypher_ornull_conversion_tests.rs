@@ -1,4 +1,4 @@
-//! End-to-end Cypher fully-lenient (`*OrNull`) conversion function tests —
+//! End-to-end Cypher fully-lenient (`*OrNull`) conversion function tests -
 //! Phase 10 follow-up task `00158`.
 //!
 //! Task `00138` shipped the scalar conversion family (`toInteger` / `toFloat` /
@@ -14,8 +14,8 @@
 //! Semantics mirror Neo4j:
 //!
 //! * A `NULL` argument yields `NULL` (NULL-propagating on the single argument).
-//! * Any value that cannot be converted — an unparseable string, an
-//!   out-of-shape type (a List, a Map), a node — yields `NULL` rather than an
+//! * Any value that cannot be converted - an unparseable string, an
+//!   out-of-shape type (a List, a Map), a node - yields `NULL` rather than an
 //!   error. `toStringOrNull` is the one with behaviour distinct from its strict
 //!   sibling: scalar `toString` *errors* on a non-stringifiable value, whereas
 //!   `toStringOrNull` yields `NULL`.
@@ -164,7 +164,7 @@ fn to_string_or_null_stringifies_scalars() {
 fn to_string_or_null_is_lenient_where_strict_to_string_errors() {
     let db = db();
     // The strict scalar `toString` raises InvalidFunctionCall on a List/Map;
-    // `toStringOrNull` yields NULL instead — the key behavioural difference.
+    // `toStringOrNull` yields NULL instead - the key behavioural difference.
     assert_eq!(one("RETURN toStringOrNull([1, 2]) AS v", &db), Value::Null);
     assert_eq!(one("RETURN toStringOrNull({a: 1}) AS v", &db), Value::Null);
     // Contrast: strict toString errors on the same input.
@@ -313,7 +313,7 @@ fn task_manager_id_to_string_for_display() {
 fn story_editor_chapter_numbers_round_trip_through_unwind() {
     let db = db();
     // Convert stringified chapter numbers leniently, drop the unparseable one,
-    // then expand into rows — exercises composition with UNWIND (task `00135`).
+    // then expand into rows - exercises composition with UNWIND (task `00135`).
     let rows = run(
         r#"UNWIND ['1', 'prologue', '2'] AS raw
            WITH toIntegerOrNull(raw) AS ch

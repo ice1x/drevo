@@ -1,6 +1,6 @@
 //! Okapi BM25 scoring primitives.
 //!
-//! Only the pure math lives here — no posting lists, no storage — so every
+//! Only the pure math lives here - no posting lists, no storage - so every
 //! ranker built on it ([`NativeFtsIndex`](crate::native_fts::NativeFtsIndex)
 //! and drevo's keyword extraction) computes an identical
 //! inverse-document-frequency weight.
@@ -8,7 +8,7 @@
 /// Okapi BM25 inverse document frequency for a term.
 ///
 /// `n` is the total number of documents in the corpus and `df` is the number of
-/// documents containing the term. Uses the Robertson–Spärck-Jones form with
+/// documents containing the term. Uses the Robertson-Spärck-Jones form with
 /// `+0.5` smoothing, wrapped in `ln(1 + x)` (the Lucene/Elasticsearch default) so
 /// the result is always non-negative even when a term appears in more than half
 /// the corpus:

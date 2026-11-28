@@ -1,4 +1,4 @@
-//! Integration tests for the Bolt session layer — Phase 11 task `00071`.
+//! Integration tests for the Bolt session layer - Phase 11 task `00071`.
 //!
 //! The session sits on top of the codec (`00070`) and drives the
 //! HELLO → READY → STREAMING → READY state machine that official Neo4j
@@ -161,7 +161,7 @@ fn decode_discard_extracts_extra() {
 #[test]
 fn decode_rejects_non_structure_value() {
     let err = decode_client(&Value::Null).unwrap_err();
-    // Must reject — non-structure values are never valid Bolt messages.
+    // Must reject - non-structure values are never valid Bolt messages.
     let _ = err;
 }
 
@@ -399,7 +399,7 @@ fn pull_with_finite_n_leaves_has_more_true_when_more_remain() {
     }
     assert_eq!(s.state(), State::Streaming);
 
-    // Pull the remaining two — the session should drop back to Ready.
+    // Pull the remaining two - the session should drop back to Ready.
     let replies = s.handle(ClientMessage::Pull {
         extra: dict([("n", Value::Integer(-1))]),
     });
@@ -426,7 +426,7 @@ fn discard_all_after_run_skips_records_and_returns_to_ready() {
     let replies = s.handle(ClientMessage::Discard {
         extra: dict([("n", Value::Integer(-1))]),
     });
-    // DISCARD never emits RECORD — just a terminal SUCCESS.
+    // DISCARD never emits RECORD - just a terminal SUCCESS.
     assert_eq!(replies.len(), 1);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     assert_eq!(s.state(), State::Ready);
@@ -674,7 +674,7 @@ fn pull_inside_tx_drains_back_to_tx_ready_not_ready() {
     s.handle(ClientMessage::Pull {
         extra: dict([("n", Value::Integer(-1))]),
     });
-    // Crucial: do NOT slip back to Ready — that would release the tx.
+    // Crucial: do NOT slip back to Ready - that would release the tx.
     assert_eq!(s.state(), State::TxReady);
 }
 
@@ -891,8 +891,8 @@ fn failure_inside_tx_routes_to_failed_then_reset_rolls_back() {
     s.handle(ClientMessage::Pull {
         extra: dict([("n", Value::Integer(-1))]),
     });
-    // A statement that fails — deleting a node that still has a
-    // relationship — drives the session to Failed.
+    // A statement that fails - deleting a node that still has a
+    // relationship - drives the session to Failed.
     s.handle(ClientMessage::Run {
         query: "CREATE (a:Tmp {title: 'a'})-[:R]->(:Tmp {title: 'b'}) WITH a DELETE a".to_string(),
         parameters: dict([]),
@@ -956,7 +956,7 @@ fn run_in_failed_state_inside_tx_still_ignored() {
 // transaction *this* session opened. A pooled driver routinely sends `RESET` on
 // a *different* connection while a managed transaction is in flight on another;
 // a stray `RESET` must not roll back the unrelated transaction, so the owning
-// session's later `COMMIT` still succeeds — the intermittent failure reported in
+// session's later `COMMIT` still succeeds - the intermittent failure reported in
 // issue #236 (originally a single global KV slot; the durable engine keeps the
 // transactions independent by construction).
 
@@ -980,7 +980,7 @@ fn reset_on_another_session_does_not_roll_back_our_tx() {
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
     // The other session must NOT have disturbed the owner's transaction.
 
-    // The owner can still commit — no spurious `no active transaction`.
+    // The owner can still commit - no spurious `no active transaction`.
     let replies = owner.handle(ClientMessage::Commit);
     assert!(
         matches!(replies[0], ServerMessage::Success { .. }),
@@ -1001,7 +1001,7 @@ fn goodbye_on_another_session_does_not_roll_back_our_tx() {
         // A second connection opens, does nothing transactional, and leaves.
         let mut other = ready(&drevo);
         other.handle(ClientMessage::Goodbye);
-    } // `other` is also dropped here — neither GOODBYE nor drop may touch our tx.
+    } // `other` is also dropped here - neither GOODBYE nor drop may touch our tx.
 
     let replies = owner.handle(ClientMessage::Commit);
     assert!(matches!(replies[0], ServerMessage::Success { .. }));
@@ -1010,7 +1010,7 @@ fn goodbye_on_another_session_does_not_roll_back_our_tx() {
 #[test]
 fn own_reset_still_rolls_back_our_open_tx() {
     // The ownership gate must not stop a session from cleaning up its *own*
-    // transaction on RESET — the Neo4j driver contract.
+    // transaction on RESET - the Neo4j driver contract.
     let drevo = open();
     let mut s = ready(&drevo);
     s.handle(ClientMessage::Begin { extra: dict([]) });
@@ -1041,7 +1041,7 @@ fn own_reset_after_midtx_failure_rolls_back_our_tx() {
 #[test]
 fn dropping_a_session_with_an_open_tx_rolls_it_back() {
     // A hard disconnect (connection dropped without GOODBYE) must not leak the
-    // global transaction slot — otherwise, with the ownership gate in place, no
+    // global transaction slot - otherwise, with the ownership gate in place, no
     // other session would clear it and every future BEGIN would be rejected.
     let drevo = open();
     {
@@ -1062,7 +1062,7 @@ fn run_create_then_run_match_round_trips_via_session() {
     let mut s = Session::new_durable(Arc::clone(&drevo));
     s.handle(ClientMessage::Hello { extra: dict([]) });
 
-    // CREATE one node — no RETURN, so PULL yields just a terminal SUCCESS.
+    // CREATE one node - no RETURN, so PULL yields just a terminal SUCCESS.
     s.handle(ClientMessage::Run {
         query: "CREATE (:Person {name: 'alice'})".to_string(),
         parameters: dict([]),
@@ -1182,7 +1182,7 @@ fn run_session_sync_drives_full_hello_run_pull_goodbye_flow() {
 
     let drevo = open();
 
-    // Build the client request stream: HELLO, RUN, PULL, GOODBYE — each
+    // Build the client request stream: HELLO, RUN, PULL, GOODBYE - each
     // PackStream-encoded then chunked.
     let mut client_bytes: Vec<u8> = Vec::new();
     for msg in [
@@ -1315,7 +1315,7 @@ fn session_with_auth_denies_bad_credentials_and_goes_defunct() {
         }
         other => panic!("expected FAILURE, got {other:?}"),
     }
-    // Failed auth closes the connection — the next message is IGNORED.
+    // Failed auth closes the connection - the next message is IGNORED.
     assert_eq!(session.state(), State::Defunct);
 }
 
@@ -1331,7 +1331,7 @@ fn run_session_sync_with_auth_rejects_bad_password_then_closes() {
     };
 
     // A driver that fails auth then (optimistically) sends RUN. The RUN
-    // must never execute — the connection is gone after the FAILURE.
+    // must never execute - the connection is gone after the FAILURE.
     let mut client_bytes: Vec<u8> = Vec::new();
     for msg in [
         ClientMessage::Hello {

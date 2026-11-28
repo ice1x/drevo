@@ -17,7 +17,7 @@ pub use crate::properties::Properties;
 pub struct Node {
     /// Auto-incremented unique identifier.
     pub id: u64,
-    /// UUID v7 — sortable, globally unique.
+    /// UUID v7 - sortable, globally unique.
     pub uuid: [u8; 16],
     /// Classification (e.g. "note", "tag", "person", "concept").
     pub kind: String,
@@ -78,7 +78,7 @@ pub struct NodePatch {
 pub struct Edge {
     /// Auto-incremented unique identifier.
     pub id: u64,
-    /// UUID v7 — sortable, globally unique.
+    /// UUID v7 - sortable, globally unique.
     pub uuid: [u8; 16],
     /// Source node id.
     pub from_id: u64,
@@ -237,7 +237,7 @@ pub fn new_uuid_v7() -> [u8; 16] {
 
 /// Return the current time as Unix milliseconds.
 ///
-/// Total function — never panics. If the host clock is set before the Unix
+/// Total function - never panics. If the host clock is set before the Unix
 /// epoch (`SystemTime::now() < UNIX_EPOCH`), the timestamp is returned as a
 /// negative value reflecting the offset before the epoch, satisfying
 /// `drevo-rust` §"Error Handling" + `drevo-architecture` anti-pattern #5
@@ -675,8 +675,8 @@ mod tests {
     #[test]
     fn properties_bincode_is_deterministic_across_insertion_order() {
         // Two HashMaps with identical content but different insertion order
-        // must serialize to identical bincode bytes — the storage layer relies
-        // on `bincode v2 — compact, fast, deterministic` (drevo-rust §"Serialization").
+        // must serialize to identical bincode bytes - the storage layer relies
+        // on `bincode v2 - compact, fast, deterministic` (drevo-rust §"Serialization").
         let a = build_properties(&[
             ("alpha", json!(1)),
             ("beta", json!("two")),
@@ -730,7 +730,7 @@ mod tests {
         assert_eq!(bytes_a, bytes_b);
     }
 
-    // --- now_ms total — must not panic (drevo-rust §"Error Handling" + drevo-architecture anti-pattern #5) ---
+    // --- now_ms total - must not panic (drevo-rust §"Error Handling" + drevo-architecture anti-pattern #5) ---
 
     #[test]
     fn now_ms_is_total_and_does_not_panic() {
@@ -788,7 +788,7 @@ mod tests {
         let node = NewNode {
             kind: "заметка".to_string(),
             title: "Привет, мир!".to_string(),
-            body: "Граф-база данных — производительная и надёжная.".to_string(),
+            body: "Граф-база данных - производительная и надёжная.".to_string(),
             body_html: String::new(),
             properties: Properties::default(),
         }

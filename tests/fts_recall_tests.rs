@@ -1,4 +1,4 @@
-//! Task 00019 — FTS recall and edge-case tests.
+//! Task 00019 - FTS recall and edge-case tests.
 //!
 //! Tests cover: edge-case queries, IDF corner cases, score stability,
 //! special Unicode, recall measurement, and sequential-update consistency.
@@ -103,12 +103,12 @@ fn search_fts_query_with_special_chars_mixed() {
     let db = db();
     db.create_node(node("note", "Authentication module", "handles JWT tokens"))
         .unwrap();
-    // Query with punctuation mixed in — should still match after normalization
+    // Query with punctuation mixed in - should still match after normalization
     let results = db.search_fts("auth!!!enti...cation", 10);
-    // After normalization: "auth enti cation" — separate tokens, trigrams may differ
+    // After normalization: "auth enti cation" - separate tokens, trigrams may differ
     // The word "authentication" produces trigrams like "aut", "uth", "the", "hen", "ent", etc.
     // "auth enti cation" produces "aut", "uth", "th ", "ent", "nti", etc.
-    // Intersection requires ALL trigrams to match — so partial overlap may yield no result
+    // Intersection requires ALL trigrams to match - so partial overlap may yield no result
     // This test verifies the system handles the case gracefully (no panic)
     assert!(results.len() <= 1);
 }
@@ -165,12 +165,12 @@ fn search_fts_rare_vs_common_trigram_ranking() {
         ))
         .unwrap();
 
-    // Search for "rare" — only 1 match
+    // Search for "rare" - only 1 match
     let results = db.search_fts("rare", 5);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].node.id, special.id);
 
-    // Search for "common" — all 21 match
+    // Search for "common" - all 21 match
     let results = db.search_fts("common", 30);
     assert_eq!(results.len(), 21);
 }
@@ -240,10 +240,10 @@ fn search_fts_combining_diacritics() {
     // é as e + combining acute accent (U+0301)
     let title_combining = "re\u{0301}sume\u{0301}";
     db.create_node(node("note", title_combining, "")).unwrap();
-    // Search with precomposed é (U+00E9) — may not match combining form
+    // Search with precomposed é (U+00E9) - may not match combining form
     // This tests that the system doesn't panic and handles it gracefully
     let results = db.search_fts("résumé", 10);
-    // May or may not match depending on normalization — just verify no crash
+    // May or may not match depending on normalization - just verify no crash
     let _ = results;
 }
 
@@ -255,7 +255,7 @@ fn search_fts_zero_width_chars() {
     db.create_node(node("note", title_zwj, "")).unwrap();
     let results = db.search_fts("testword", 10);
     // Zero-width chars are non-alphanumeric, so they become spaces in normalization
-    // "test word here" — search for "testword" will normalize to "testword" -> different trigrams
+    // "test word here" - search for "testword" will normalize to "testword" -> different trigrams
     // This just verifies no crash
     let _ = results;
 }
@@ -554,7 +554,7 @@ fn recall_bug_tracker_scenario() {
     assert!(!results.is_empty());
     assert!(results[0].node.title.contains("injection"));
 
-    // Search for NullPointer — should find the right bug
+    // Search for NullPointer - should find the right bug
     let results = db.search_fts("NullPointerException", 10);
     assert!(!results.is_empty());
     assert!(results[0].node.title.contains("NullPointer"));
@@ -583,15 +583,15 @@ fn recall_story_editor_scenario() {
         db.create_node(node("character", title, body)).unwrap();
     }
 
-    // Search for dragon — should find chapters 3, 4 and the character
+    // Search for dragon - should find chapters 3, 4 and the character
     let results = db.search_fts("dragon", 10);
     assert!(results.len() >= 2, "dragon appears in multiple nodes");
 
-    // Search for Elena — should find most nodes
+    // Search for Elena - should find most nodes
     let results = db.search_fts("elena", 10);
     assert!(results.len() >= 2, "elena appears in multiple nodes");
 
-    // Search for artifact — chapters 2 and 4 + dragon character
+    // Search for artifact - chapters 2 and 4 + dragon character
     let results = db.search_fts("artifact", 10);
     assert!(results.len() >= 2, "artifact appears in multiple nodes");
 }
@@ -656,7 +656,7 @@ fn recall_erp_scenario() {
 #[test]
 fn search_fts_node_with_minimal_content() {
     let db = db();
-    // 3-char title, no body — minimal content for trigrams
+    // 3-char title, no body - minimal content for trigrams
     db.create_node(node("note", "abc", "")).unwrap();
     let results = db.search_fts("abc", 10);
     assert_eq!(results.len(), 1);

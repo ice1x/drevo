@@ -2,7 +2,7 @@
 //! node carrying one of the given labels.
 //!
 //! The rule every test here comes down to: the index answers as if the
-//! skipped nodes were not in the graph — the same hits, in the same order,
+//! skipped nodes were not in the graph - the same hits, in the same order,
 //! with the same scores.
 
 use drevo_core::engine::GraphEngine;

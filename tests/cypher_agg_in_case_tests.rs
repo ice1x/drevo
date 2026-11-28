@@ -1,4 +1,4 @@
-//! End-to-end Cypher tests for **aggregations nested inside a `CASE` arm** —
+//! End-to-end Cypher tests for **aggregations nested inside a `CASE` arm** -
 //! Phase 10 follow-up task `00142`.
 //!
 //! A `CASE` whose scrutinee, `WHEN`, `THEN`, or `ELSE` sub-expression
@@ -336,7 +336,7 @@ fn non_boolean_when_with_aggregation_is_type_error() {
 }
 
 /// An aggregation nested *inside another* aggregation, reached through a
-/// `CASE` arm, stays rejected — Cypher forbids nested aggregates.
+/// `CASE` arm, stays rejected - Cypher forbids nested aggregates.
 #[test]
 fn nested_aggregation_through_case_is_rejected() {
     let db = db();

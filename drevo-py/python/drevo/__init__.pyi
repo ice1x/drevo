@@ -2,7 +2,7 @@
 
 These stubs mirror the runtime surface exported by the `_drevo` PyO3
 extension and the pure-Python shim in `drevo/__init__.py`. Hand-authored
-(PyO3 stubgen output trimmed and audited) per RFC §3.3 — the stubs
+(PyO3 stubgen output trimmed and audited) per RFC §3.3 - the stubs
 are the *contract* mypy sees, separate from whatever the cdylib
 introspects at import time.
 
@@ -226,7 +226,7 @@ class EdgePatch:
     def __repr__(self) -> str: ...
 
 class ScoredNode:
-    """FTS hit — pair of `Node` + TF-IDF score."""
+    """FTS hit - pair of `Node` + TF-IDF score."""
 
     node: Node
     score: float
@@ -262,7 +262,7 @@ class WeightedPath:
     def __repr__(self) -> str: ...
 
 class CompactReport:
-    """Result of `Drevo.compact` — operator-facing storage metrics."""
+    """Result of `Drevo.compact` - operator-facing storage metrics."""
 
     bytes_before: Optional[int]
     bytes_after: Optional[int]
@@ -274,7 +274,7 @@ class CompactReport:
     def __repr__(self) -> str: ...
 
 class BloatReport:
-    """Result of `Drevo.bloat_report` — physical vs. logical storage size."""
+    """Result of `Drevo.bloat_report` - physical vs. logical storage size."""
 
     file_bytes: Optional[int]
     stored_bytes: int
@@ -288,7 +288,7 @@ class BloatReport:
     def __repr__(self) -> str: ...
 
 class ImportReport:
-    """Result of `Drevo.import_graphml` — rows inserted vs. skipped."""
+    """Result of `Drevo.import_graphml` - rows inserted vs. skipped."""
 
     nodes_imported: int
     edges_imported: int
@@ -316,7 +316,7 @@ class ConflictError(DrevoError):
     """A write conflicted with a uniqueness invariant."""
 
 class DuplicateTitleError(ConflictError):
-    """A title clash. Node writes no longer raise it — titles are not unique —
+    """A title clash. Node writes no longer raise it - titles are not unique -
     but the class stays for existing `except` clauses. `.args == (title,)`."""
 
 class StorageError(DrevoError):
@@ -389,7 +389,7 @@ class AccessModeError(CypherError):
 class InvalidWeightError(ValueError):
     """An edge weight was non-finite (`NaN` / ±`inf`).
 
-    Subclass of `ValueError` per RFC §5.3 — the canonical Python idiom
+    Subclass of `ValueError` per RFC §5.3 - the canonical Python idiom
     for "you passed me a bad number". Backed by the pure-Python class
     in `drevo.errors`.
     """
@@ -406,7 +406,7 @@ class Drevo:
     the GIL around storage I/O so background Python threads stay
     responsive (RFC §4.2).
 
-    The handle is reusable as a context manager — `with Drevo.open(p) as
+    The handle is reusable as a context manager - `with Drevo.open(p) as
     db:` closes the file lock on `__exit__` even if the body raises.
     """
 

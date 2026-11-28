@@ -34,12 +34,12 @@ fn names(v: &[&str]) -> Value {
     Value::List(v.iter().map(|n| s(n)).collect())
 }
 
-/// Six crossings on two streets, ~111 m apart north–south and ~82 m east–west:
+/// Six crossings on two streets, ~111 m apart north-south and ~82 m east-west:
 ///
 /// ```text
 ///   A ──▶ B ──▶ C        A→B→C is one-way for cars (60 s a block)
-///   │     │     │        B–E is slow (90 s), A–D residential (120 s)
-///   D ─── E ─── F        a footpath runs A–E (walk only, 100 s)
+///   │     │     │        B-E is slow (90 s), A-D residential (120 s)
+///   D ─── E ─── F        a footpath runs A-E (walk only, 100 s)
 /// ```
 ///
 /// Two-way streets are a relationship each way. Every street takes 300 s on
@@ -313,7 +313,7 @@ fn the_native_api_returns_nodes_relationships_and_cost() {
         }),
         ..walk.clone()
     };
-    // E–F is two equal one-way relationships, so either may be chosen.
+    // E-F is two equal one-way relationships, so either may be chosen.
     let guided = svc.weighted_path(a, f, &a_star).unwrap().unwrap();
     assert_eq!((guided.nodes, guided.cost), (path.nodes, path.cost));
 

@@ -13,7 +13,7 @@
 //! `./base/`. All file-existence and content checks below now target
 //! `k8s/base/` for the resource manifests; the wrapper is checked separately.
 //!
-//! The tests parse each manifest as text — no `kubectl`, no `kube-rs`
+//! The tests parse each manifest as text - no `kubectl`, no `kube-rs`
 //! crate, no running cluster required. This mirrors the pattern used by
 //! `tests/dockerfile_tests.rs` and `tests/docker_compose_tests.rs`.
 
@@ -149,7 +149,7 @@ fn deployment_uses_ghcr_image() {
     // canonical name so the K8s deploy and the planned image-publish
     // pipeline cannot drift apart. A tag is required (no `:latest` only
     // because tests below assert a non-latest tag is present, but a
-    // `:latest` or `:vX.Y.Z` is accepted here — the next test enforces
+    // `:latest` or `:vX.Y.Z` is accepted here - the next test enforces
     // the latest/version policy).
     let content = read_manifest("deployment.yaml");
     assert!(
@@ -248,7 +248,7 @@ fn deployment_mounts_persistentvolumeclaim() {
 #[test]
 fn deployment_has_liveness_probe_on_health() {
     // /health is the cheap liveness endpoint (task 00042). It must NOT
-    // probe the DB — the deployment manifest wires it as livenessProbe.
+    // probe the DB - the deployment manifest wires it as livenessProbe.
     let content = read_manifest("deployment.yaml");
     assert!(
         content.contains("livenessProbe:"),
@@ -263,7 +263,7 @@ fn deployment_has_liveness_probe_on_health() {
 
 #[test]
 fn deployment_has_readiness_probe_on_ready() {
-    // /ready actively probes redb (task 00048) — it is the readiness
+    // /ready actively probes redb (task 00048) - it is the readiness
     // probe. Flipping to 503 during shutdown lets Endpoints withdraw
     // traffic before SIGKILL.
     let content = read_manifest("deployment.yaml");
@@ -422,7 +422,7 @@ fn pvc_requests_readwriteonce_storage() {
 fn kustomization_bundles_all_three_manifests() {
     // A kustomization.yaml lets operators `kubectl apply -k k8s/` in
     // one command, matching the docker-compose ergonomics. The file
-    // is short — five lines plus three resources — so the cost of
+    // is short - five lines plus three resources - so the cost of
     // including it is trivial vs the operational gain.
     let content = read_manifest("kustomization.yaml");
     for resource in ["deployment.yaml", "service.yaml", "pvc.yaml"] {

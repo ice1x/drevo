@@ -48,7 +48,7 @@ def test_threads_execute_concurrently(disk_db: drevo.Drevo) -> None:
         try:
             for j in range(10):
                 disk_db.execute("CREATE (:T {i: $i, j: $j})", {"i": i, "j": j})
-        except BaseException as exc:  # noqa: BLE001 — surfaced below
+        except BaseException as exc:  # noqa: BLE001 - surfaced below
             errors.append(exc)
 
     threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]

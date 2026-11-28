@@ -139,7 +139,7 @@ def test_subgraph_from_thought_captures_reframing_neighborhood(
 ) -> None:
     """A 2-hop subgraph from the central thought must include the
     distortion, the rational response, both emotions, and the
-    calm-after-reframe node — that's the journal-entry projection.
+    calm-after-reframe node - that's the journal-entry projection.
     """
     nodes = _build_entry(disk_db)
     sg = disk_db.subgraph(nodes["thought"].id, depth=2)

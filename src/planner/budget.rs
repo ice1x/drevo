@@ -1,25 +1,25 @@
-//! Memory budget & backpressure — Phase 14 task `00089`.
+//! Memory budget & backpressure - Phase 14 task `00089`.
 //!
-//! The cost-based planner (`00085`–`00088`) tells us *how many rows* an
+//! The cost-based planner (`00085`-`00088`) tells us *how many rows* an
 //! operator is expected to produce; this module turns that into a guard
 //! against running out of memory while executing a query on a large graph.
 //! Three cooperating pieces, mirroring the standalone-engine discipline the
 //! rest of the planner and the MVCC module keep:
 //!
-//! * [`MemoryBudget`] — a lock-free, clonable byte accountant. A query (or any
+//! * [`MemoryBudget`] - a lock-free, clonable byte accountant. A query (or any
 //!   producer) calls [`try_reserve`](MemoryBudget::try_reserve) before
 //!   buffering rows; the budget either hands back an RAII
 //!   [`MemoryReservation`] (which releases the bytes on drop) or refuses with
 //!   [`BudgetError::MemoryBudgetExceeded`]. This is the **OOM guard**: a query
 //!   that would blow the cap fails with a recoverable error instead of
 //!   actually exhausting process memory and aborting.
-//! * [`estimate_peak_memory`] / [`MemoryBudget::admits`] — **memory-limited
+//! * [`estimate_peak_memory`] / [`MemoryBudget::admits`] - **memory-limited
 //!   query execution** at plan time. Given a planned [`PlanNode`] tree and a
 //!   per-row width, the model sums the working set of every *blocking*
-//!   operator (the ones that must materialise rows — `DISTINCT` projection and
+//!   operator (the ones that must materialise rows - `DISTINCT` projection and
 //!   the build side of a cartesian product) and refuses to admit a plan whose
 //!   estimated peak exceeds the budget, before a single row is read.
-//! * [`Backpressure`] — a high/low-watermark throttle with hysteresis. A
+//! * [`Backpressure`] - a high/low-watermark throttle with hysteresis. A
 //!   streaming producer consults [`observe`](Backpressure::observe) and pauses
 //!   when memory crosses the high mark, resuming only once it falls back below
 //!   the low mark, so it never oscillates on the boundary.
@@ -28,7 +28,7 @@
 //! only, no spawned threads), always compiled, and WASM-safe. It keeps its own
 //! [`BudgetError`] channel rather than touching the crate-wide
 //! [`crate::error::DrevoError`]; the budget is a standalone mechanism the
-//! executor-wiring task will consume, exactly as `00085`–`00088` left the
+//! executor-wiring task will consume, exactly as `00085`-`00088` left the
 //! planner.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -39,7 +39,7 @@ use super::plan::{Operator, PlanNode};
 /// A coarse default for the in-memory width of one result row, in bytes, used
 /// when a caller has no better figure. One of the planner's documented
 /// `DEFAULT_*` magic numbers (see [`crate::planner::cardinality`]): a handful
-/// of bound values — node ids, short property scalars — at a conservative
+/// of bound values - node ids, short property scalars - at a conservative
 /// ~64 bytes each. Callers that know their projection width should pass it
 /// directly to [`estimate_peak_memory`] / [`MemoryBudget::admits`].
 pub const DEFAULT_ROW_WIDTH_BYTES: usize = 64;
@@ -49,7 +49,7 @@ pub const DEFAULT_ROW_WIDTH_BYTES: usize = 64;
 pub enum BudgetError {
     /// A reservation (or a plan admission) was refused because granting it
     /// would push live usage past the configured limit. The query should fail
-    /// with this recoverable error rather than be allowed to exhaust memory —
+    /// with this recoverable error rather than be allowed to exhaust memory -
     /// the **OOM guard**. Carries the offending request alongside the live
     /// `used` total and the `limit` so the caller can report a precise
     /// out-of-budget message.
@@ -82,7 +82,7 @@ struct BudgetInner {
     peak: AtomicUsize,
 }
 
-/// A lock-free, clonable memory accountant — the **OOM guard** for query
+/// A lock-free, clonable memory accountant - the **OOM guard** for query
 /// execution.
 ///
 /// Construct one with a byte [`new`](MemoryBudget::new) ceiling (or
@@ -91,7 +91,7 @@ struct BudgetInner {
 /// [`MemoryReservation`] RAII guard that releases the bytes on drop, or refuses
 /// with [`BudgetError::MemoryBudgetExceeded`]. All clones share one underlying
 /// counter, so a budget can be handed to several worker threads at once
-/// (`Arc`-backed atomics — `Send + Sync`, no lock to poison).
+/// (`Arc`-backed atomics - `Send + Sync`, no lock to poison).
 #[derive(Debug, Clone)]
 pub struct MemoryBudget {
     inner: Arc<BudgetInner>,
@@ -109,7 +109,7 @@ impl MemoryBudget {
         }
     }
 
-    /// A budget with no ceiling — every reservation succeeds. Modelled as a
+    /// A budget with no ceiling - every reservation succeeds. Modelled as a
     /// [`usize::MAX`] limit; [`is_unlimited`](MemoryBudget::is_unlimited)
     /// reports it.
     pub fn unlimited() -> Self {
@@ -138,7 +138,7 @@ impl MemoryBudget {
     }
 
     /// The high-water mark of [`used`](MemoryBudget::used) over this budget's
-    /// lifetime — the largest simultaneous reservation total seen so far.
+    /// lifetime - the largest simultaneous reservation total seen so far.
     pub fn peak(&self) -> usize {
         self.inner.peak.load(Ordering::Acquire)
     }
@@ -183,7 +183,7 @@ impl MemoryBudget {
     /// Pre-flight **memory-limited query execution**: estimate the peak memory
     /// `plan` would materialise at `row_width` bytes per row (see
     /// [`estimate_peak_memory`]) and refuse the whole plan up front if that
-    /// exceeds the budget's ceiling — before any row is read. A plan that fits
+    /// exceeds the budget's ceiling - before any row is read. A plan that fits
     /// returns `Ok(())`; it does *not* reserve anything (runtime reservation is
     /// [`try_reserve`](MemoryBudget::try_reserve)'s job).
     pub fn admits(&self, plan: &PlanNode, row_width: usize) -> Result<()> {
@@ -247,7 +247,7 @@ impl Drop for MemoryReservation {
 /// [`observe`](Backpressure::observe).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackpressureSignal {
-    /// Keep producing — usage is within the comfortable band.
+    /// Keep producing - usage is within the comfortable band.
     Continue,
     /// Memory just crossed the high-water mark: the producer should stop
     /// buffering new work until a later [`Resume`](BackpressureSignal::Resume).
@@ -257,13 +257,13 @@ pub enum BackpressureSignal {
     Resume,
 }
 
-/// A high/low-watermark throttle with hysteresis — the **backpressure** signal
+/// A high/low-watermark throttle with hysteresis - the **backpressure** signal
 /// a streaming producer (ingestion, a paged result feed) consults so it never
 /// buffers without bound.
 ///
 /// [`observe`](Backpressure::observe) flips to [`Pause`](BackpressureSignal::Pause)
-/// the first time usage reaches the high mark and stays paused — returning
-/// [`Continue`](BackpressureSignal::Continue) — until usage falls to or below
+/// the first time usage reaches the high mark and stays paused - returning
+/// [`Continue`](BackpressureSignal::Continue) - until usage falls to or below
 /// the low mark, when it emits [`Resume`](BackpressureSignal::Resume) once. The
 /// gap between the two marks is the hysteresis band that stops the signal from
 /// oscillating every row when usage hovers near a single threshold.
@@ -279,7 +279,7 @@ impl Backpressure {
     /// `low_watermark` bytes.
     ///
     /// # Panics
-    /// Panics if `low_watermark > high_watermark` — an inverted band has no
+    /// Panics if `low_watermark > high_watermark` - an inverted band has no
     /// coherent hysteresis. (Equal marks are allowed: a zero-width band.)
     pub fn new(low_watermark: usize, high_watermark: usize) -> Self {
         assert!(
@@ -341,7 +341,7 @@ impl Backpressure {
 }
 
 /// Estimate the peak bytes a planned query materialises at `row_width` bytes
-/// per row — the figure [`MemoryBudget::admits`] checks against the ceiling.
+/// per row - the figure [`MemoryBudget::admits`] checks against the ceiling.
 ///
 /// drevo's executor is pipelined: most operators (scans, expands, filters,
 /// `LIMIT`/`SKIP`, plain projection) stream one row at a time and hold only
@@ -354,7 +354,7 @@ impl Backpressure {
 ///   *build* input (the lesser of the two children's `estimated_rows`) to probe
 ///   against the streamed side.
 ///
-/// The estimate sums every blocking operator's buffered rows across the tree —
+/// The estimate sums every blocking operator's buffered rows across the tree -
 /// a deliberately conservative upper bound (a plan *could* hold several
 /// materialisations live at once), which is the right bias for an OOM guard.
 /// Streaming-only plans estimate to zero peak working set. Saturates at

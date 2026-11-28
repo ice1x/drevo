@@ -1,4 +1,4 @@
-# drevo-fuzz — coverage-guided fuzzing
+# drevo-fuzz - coverage-guided fuzzing
 
 [`cargo fuzz`](https://github.com/rust-fuzz/cargo-fuzz) targets driven by
 [`libFuzzer`](https://llvm.org/docs/LibFuzzer.html) against drevo's
@@ -34,13 +34,13 @@ Three targets against the lexer/parser of
 The first two throw arbitrary bytes at the front end (mostly the error
 paths). The third interprets the libFuzzer input as a *choice stream* and
 [`cypher_grammar.rs`](cypher_grammar.rs) turns it into a syntactically
-well-formed query drawn from the parser's supported subset — driving the
+well-formed query drawn from the parser's supported subset - driving the
 mutator deep into the *accepting* branches a random byte stream rarely
 reaches. That generator is `include!`d by **both** the fuzz target and the
 stable harness so the two cannot drift.
 
-All Cypher invariants — and a deterministic ~3800-input sweep of the
-generator — are replayed under stable `cargo test` in
+All Cypher invariants - and a deterministic ~3800-input sweep of the
+generator - are replayed under stable `cargo test` in
 [`tests/cypher_fuzz_harness_tests.rs`](../tests/cypher_fuzz_harness_tests.rs).
 
 ## Prerequisites
@@ -55,7 +55,7 @@ cargo install cargo-fuzz
 The fuzz crate is a **separate workspace** from the parent `drevo` crate
 (`fuzz/Cargo.toml` declares `[workspace] members = ["."]`). It is therefore
 invisible to `cargo build` / `cargo test` / `cargo clippy` from the
-repository root — those commands do not need the nightly toolchain.
+repository root - those commands do not need the nightly toolchain.
 
 ## Run a target
 

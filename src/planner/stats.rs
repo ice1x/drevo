@@ -1,11 +1,11 @@
-//! Graph statistics — the inputs a cost-based planner needs to estimate
+//! Graph statistics - the inputs a cost-based planner needs to estimate
 //! how many rows a query will touch.
 //!
 //! [`GraphStatistics`] is an immutable snapshot of the catalogue figures the
 //! [`crate::planner::CardinalityEstimator`] reads: total node / relationship
 //! counts, per-label and per-type breakdowns, and per-`(label, property)`
 //! distinct-value counts (the basis for equality selectivity). It is built
-//! either directly through the chainable setters or — the common path — by
+//! either directly through the chainable setters or - the common path - by
 //! feeding a [`StatisticsCollector`] one observation per entity while scanning
 //! a graph, then calling [`StatisticsCollector::finish`].
 //!
@@ -27,15 +27,15 @@ use std::collections::{HashMap, HashSet};
 /// considered a supernode.
 pub const DEFAULT_SUPERNODE_THRESHOLD_FACTOR: f64 = 100.0;
 
-/// Floor for the derived supernode threshold, so that on small or sparse graphs
-/// — where the average degree is tiny — an ordinary, well-connected node is not
+/// Floor for the derived supernode threshold, so that on small or sparse graphs -
+/// where the average degree is tiny - an ordinary, well-connected node is not
 /// mistaken for a supernode (task `00087`).
 pub const MIN_SUPERNODE_THRESHOLD: u64 = 100;
 
 /// Immutable snapshot of the graph catalogue figures used to estimate query
 /// cardinality.
 ///
-/// All counts are best-effort estimates, not transactionally exact — a planner
+/// All counts are best-effort estimates, not transactionally exact - a planner
 /// only needs them to choose between plans, so a slightly stale snapshot is
 /// acceptable. Construct one with [`GraphStatistics::new`] plus the chainable
 /// `with_*` / `set_*` setters, or via [`StatisticsCollector::finish`].
@@ -148,7 +148,7 @@ impl GraphStatistics {
         self
     }
 
-    /// Record the maximum degree among nodes carrying `label` — how fanned-out
+    /// Record the maximum degree among nodes carrying `label` - how fanned-out
     /// the busiest node of that label is.
     pub fn set_max_degree_for_label(&mut self, label: impl Into<String>, degree: u64) {
         self.max_degree_by_label.insert(label.into(), degree);
@@ -209,7 +209,7 @@ impl GraphStatistics {
         degree >= self.effective_supernode_threshold()
     }
 
-    /// Whether nodes carrying `label` include a supernode — the maximum degree
+    /// Whether nodes carrying `label` include a supernode - the maximum degree
     /// recorded for the label meets the threshold. `false` when no per-label
     /// maximum degree is known for `label`.
     pub fn label_has_supernode(&self, label: &str) -> bool {
@@ -298,7 +298,7 @@ impl StatisticsCollector {
     /// and counts the node as a supernode when its degree meets the configured
     /// threshold (or the [`MIN_SUPERNODE_THRESHOLD`] floor when none is set).
     /// Call this *instead of* [`record_node`](Self::record_node) when a node's
-    /// degree is known — calling both for the same node would double-count it.
+    /// degree is known - calling both for the same node would double-count it.
     pub fn record_node_degree<S: AsRef<str>>(&mut self, labels: &[S], degree: u64) {
         self.record_node(labels);
         if degree > self.max_degree {

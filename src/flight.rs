@@ -16,14 +16,14 @@
 //! | booleans | `Boolean` |
 //! | strings | `Utf8` |
 //! | lists of numbers (embeddings) | `List<Float64>` |
-//! | anything else — nodes, maps, mixed types | `Utf8` holding JSON |
+//! | anything else - nodes, maps, mixed types | `Utf8` holding JSON |
 //!
 //! `null` fits any column. Only `DoGet` (and an empty `Handshake`) are
 //! served; every other Flight call answers `UNIMPLEMENTED`. Errors use the
 //! same statuses as the gRPC API.
 //!
 //! When the server requires a login, `DoGet` needs an `authorization`
-//! header — `Basic <base64 of user:password>` or `Bearer <session token>` —
+//! header - `Basic <base64 of user:password>` or `Bearer <session token>` -
 //! as the gRPC API does. `Handshake` with such a header answers with a
 //! session token, both as the response payload and as an
 //! `authorization: Bearer <token>` header, so clients that log in once with

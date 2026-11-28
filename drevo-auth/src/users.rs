@@ -418,7 +418,7 @@ pub struct Principal {
 /// Why a login was refused. Messages never contain a password or token.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LoginError {
-    /// An unknown user or a wrong password — deliberately the same failure.
+    /// An unknown user or a wrong password - deliberately the same failure.
     #[error("invalid principal or credentials")]
     InvalidCredentials,
     /// A session token that was never issued, was revoked or has expired.

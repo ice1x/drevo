@@ -1,4 +1,4 @@
-//! The change-event model — what a broker message decodes into.
+//! The change-event model - what a broker message decodes into.
 //!
 //! A streaming producer (a Kafka topic, a NATS subject, a CDC pipeline) emits
 //! a flat sequence of *change events*: "this entity now looks like this",
@@ -7,7 +7,7 @@
 //!
 //! # Keys, not ids
 //!
-//! Events reference entities by a **producer-owned key** ([`EntityKey`] — an
+//! Events reference entities by a **producer-owned key** ([`EntityKey`] - an
 //! arbitrary opaque string such as a Kafka message key, a source-system primary
 //! key, or a UUID), never by drevo's internal auto-increment node/edge id. The
 //! producer cannot know what id drevo will assign, and the same logical entity
@@ -40,7 +40,7 @@ use std::collections::HashMap;
 
 /// A producer-owned, opaque entity identifier carried in every event.
 ///
-/// drevo never interprets the bytes — it is the *sink's* job to map a key to a
+/// drevo never interprets the bytes - it is the *sink's* job to map a key to a
 /// concrete node or edge and to keep that mapping stable across re-deliveries.
 pub type EntityKey = String;
 
@@ -51,11 +51,11 @@ pub type EntityKey = String;
 /// events are always human-readable JSON.
 pub type EventProperties = HashMap<String, serde_json::Value>;
 
-/// A single change event — the decoded form of one broker message.
+/// A single change event - the decoded form of one broker message.
 ///
 /// The four variants mirror the create/delete half of the graph data model:
 /// nodes and edges, each upserted (last-writer-wins, idempotent) or deleted
-/// (idempotent — deleting an absent entity is a no-op).
+/// (idempotent - deleting an absent entity is a no-op).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum IngestEvent {

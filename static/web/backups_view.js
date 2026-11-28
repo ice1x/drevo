@@ -1,4 +1,4 @@
-// drevo browser — pure helpers for the physical backups in the Storage
+// drevo browser - pure helpers for the physical backups in the Storage
 // panel: the request that takes a full or an incremental backup, and each
 // backup listed by GET /admin/backups as one line. DOM-free so they can be
 // unit-tested under `node --test` (see backups_view.test.js).

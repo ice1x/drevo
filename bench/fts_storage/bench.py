@@ -2,7 +2,7 @@
 """FTS-storage benchmark harness (#275 follow-up).
 
 Measures a single installed `drevo` build across the dimensions that the
-posting-list FTS rewrite trades off — on-disk size vs. write throughput — plus
+posting-list FTS rewrite trades off - on-disk size vs. write throughput - plus
 search latency. Version-independent: it uses only the stable drevo-py API
 (`create_node(s)`, `import_graphml_from_path`, `search_fts`), so the SAME script
 runs against every drevo build; the caller labels which build produced each run.
@@ -37,7 +37,7 @@ def _body(i: int) -> str:
 
 
 def bench_incremental_write(n: int) -> float:
-    """Nodes/sec creating N nodes ONE AT A TIME (in-memory, no fsync — isolates
+    """Nodes/sec creating N nodes ONE AT A TIME (in-memory, no fsync - isolates
     the indexing algorithm cost). This is where posting-list RMW regresses vs.
     the per-pair format's independent puts."""
     db = drevo.Drevo.open_in_memory()
@@ -49,7 +49,7 @@ def bench_incremental_write(n: int) -> float:
 
 
 def bench_batch_write(n: int) -> float:
-    """Nodes/sec via a single create_nodes() call (grouped indexing — the fast
+    """Nodes/sec via a single create_nodes() call (grouped indexing - the fast
     path). In-memory."""
     db = drevo.Drevo.open_in_memory()
     nodes = [drevo.NewNode(kind="n", title=f"t{i}", body=_body(i)) for i in range(n)]
@@ -61,7 +61,7 @@ def bench_batch_write(n: int) -> float:
 
 def bench_import_and_size(graphml: str, db_path: str) -> tuple[float, int, int, int]:
     """Import a real GraphML backup into a fresh on-disk DB. Returns
-    (import_seconds, file_bytes, nodes, edges) — import time is the bulk-write
+    (import_seconds, file_bytes, nodes, edges) - import time is the bulk-write
     throughput signal; file size is the storage signal."""
     if os.path.exists(db_path):
         os.remove(db_path)

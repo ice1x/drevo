@@ -1,5 +1,5 @@
 //! `GET`/`POST /config/embeddings` on both the KV and the durable-native
-//! routers — the runtime, Web-UI-settable embeddings config (API key / upstream
+//! routers - the runtime, Web-UI-settable embeddings config (API key / upstream
 //! / model). The key is write-only: the status view and every response must
 //! never echo it back. Gated on `http`; the config endpoints themselves do not
 //! need the `embeddings-proxy` feature (they only read/write the shared store).
@@ -47,7 +47,7 @@ async fn send(
 }
 
 /// The end-to-end contract, run against whichever router (KV or native) is
-/// passed in — both wire the same shared handlers.
+/// passed in - both wire the same shared handlers.
 async fn exercise(app: axum::Router) {
     // Unconfigured to start.
     let (st, body, _) = send(&app, "GET", "/config/embeddings", None).await;
@@ -80,7 +80,7 @@ async fn exercise(app: axum::Router) {
         "POST response leaked the api key: {raw}"
     );
 
-    // A GET reflects it — and still never exposes the key.
+    // A GET reflects it - and still never exposes the key.
     let (st, body, raw) = send(&app, "GET", "/config/embeddings", None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["configured"], json!(true));

@@ -1,9 +1,9 @@
 //! Configurable transaction isolation levels (Phase 13 task `00084`).
 //!
-//! Tasks `00081`–`00083` built the MVCC primitives: tuple versions stamped
+//! Tasks `00081`-`00083` built the MVCC primitives: tuple versions stamped
 //! with `(xmin, xmax)`, point-in-time [`Snapshot`]s, garbage collection, and
 //! write-write conflict detection. By themselves those give exactly one
-//! behaviour — *snapshot isolation* — because [`VersionedStore::get`] always
+//! behaviour - *snapshot isolation* - because [`VersionedStore::get`] always
 //! resolves a key against whatever snapshot it is handed, and the
 //! conflict-checked writes refuse a concurrent overwrite. This module turns
 //! that single behaviour into the **three configurable isolation levels** an
@@ -15,7 +15,7 @@
 //!    re-captures a fresh one before every statement (Read Committed).
 //! 2. **What is validated at commit.** Serializable additionally records the
 //!    transaction's *read set* and, at commit, refuses to commit if any key it
-//!    read was modified by a concurrent committed transaction — closing the
+//!    read was modified by a concurrent committed transaction - closing the
 //!    write-skew gap that Snapshot Isolation leaves open.
 //!
 //! ```text
@@ -28,24 +28,24 @@
 //! ```
 //!
 //! Write-write conflict detection (task `00083`) is *always* on for the
-//! [`Transaction`] write paths, regardless of level — every level rejects a
+//! [`Transaction`] write paths, regardless of level - every level rejects a
 //! lost update; the levels differ only in read visibility and the additional
 //! read-write antidependency guard.
 //!
 //! # The levels
 //!
-//! * [`IsolationLevel::ReadCommitted`] — each statement sees the latest
+//! * [`IsolationLevel::ReadCommitted`] - each statement sees the latest
 //!   committed data. Non-repeatable reads are allowed: two reads of the same
 //!   key in one transaction may differ if another transaction committed in
 //!   between. Implemented by re-snapshotting before every statement.
-//! * [`IsolationLevel::SnapshotIsolation`] — also known as *Repeatable Read*.
+//! * [`IsolationLevel::SnapshotIsolation`] - also known as *Repeatable Read*.
 //!   Every statement reads from one snapshot taken at [`begin`](Transaction);
 //!   the transaction sees a stable view of the world for its whole life.
 //!   Permits the write-skew anomaly.
-//! * [`IsolationLevel::Serializable`] — Snapshot Isolation plus commit-time
+//! * [`IsolationLevel::Serializable`] - Snapshot Isolation plus commit-time
 //!   read-set validation, so the resulting schedule is serializable (no
 //!   write-skew). Predicate/phantom anomalies over range scans are out of
-//!   scope — the read set tracks individually-read keys, not predicates.
+//!   scope - the read set tracks individually-read keys, not predicates.
 //!
 //! # Usage
 //!
@@ -74,7 +74,7 @@ pub enum IsolationLevel {
     /// Every statement reads the latest committed data (a fresh snapshot per
     /// statement). Non-repeatable reads are permitted; dirty reads are not.
     ReadCommitted,
-    /// One snapshot for the whole transaction — a stable, repeatable view.
+    /// One snapshot for the whole transaction - a stable, repeatable view.
     /// Also known as *Repeatable Read*. Permits write-skew.
     #[default]
     SnapshotIsolation,
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn serializable_allows_disjoint_read_sets() {
         // Two serializable transactions touching unrelated keys must both
-        // commit — no false serialization failure.
+        // commit - no false serialization failure.
         let s = store();
         seed(&s, "a", 1);
         seed(&s, "b", 1);

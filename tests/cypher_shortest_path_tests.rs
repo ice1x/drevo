@@ -1,4 +1,4 @@
-//! End-to-end Cypher `shortestPath` / `allShortestPaths` tests — Phase 10
+//! End-to-end Cypher `shortestPath` / `allShortestPaths` tests - Phase 10
 //! follow-up task `00155`.
 //!
 //! `shortestPath((a)-[*]-(b))` finds **one** shortest path between two nodes;
@@ -199,7 +199,7 @@ fn direction_is_honoured() {
 fn relationship_type_filter_is_honoured() {
     let drevo = db();
     // a → b via FRIEND, a → x → b via FOLLOWS. A FRIEND-only shortest search
-    // must take the 2-hop FOLLOWS path? No — it must IGNORE FOLLOWS entirely.
+    // must take the 2-hop FOLLOWS path? No - it must IGNORE FOLLOWS entirely.
     run(
         "CREATE (a:N {name:'a'})
          CREATE (b:N {name:'b'})

@@ -2,7 +2,7 @@ name: Cross-Compilation
 
 # Docs-only changes bypass this workflow via `paths-ignore` on the
 # `push:main` trigger. The set MUST stay byte-identical to ci.yml's
-# and docker-publish.yml's paths-ignore set — locked by
+# and docker-publish.yml's paths-ignore set - locked by
 # `tests/ci_self_hosted_runner_tests.rs::heavy_workflows_share_docs_only_paths_ignore`.
 #
 # Why no `pull_request:` trigger
@@ -11,7 +11,7 @@ name: Cross-Compilation
 # smoke / macos-smoke set on every PR. The Android job in particular
 # downloads ~1 GiB of NDK from dl.google.com on every cold run, and
 # any upstream network flake on `curl` to `dl.google.com` would block
-# the PR with no legitimate code reason — PR #81 (a README-only
+# the PR with no legitimate code reason - PR #81 (a README-only
 # roadmap PR) hit exactly that mode before the docs-only paths-ignore
 # guard landed. Beyond Android, the value the per-PR matrix added was
 # small: cross-target regressions are rare and ci.yml's `msrv` job
@@ -32,7 +32,7 @@ on:
       - 'LICENSE'
       - '.gitignore'
   schedule:
-    # 06:00 UTC every other day — one hour after slow-tests.yml at
+    # 06:00 UTC every other day - one hour after slow-tests.yml at
     # 05:00 UTC, two hours after bench.yml at 04:00 UTC. The three
     # scheduled workflows therefore queue in series on the single
     # self-hosted runner without colliding.
@@ -42,7 +42,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   # CARGO_TARGET_DIR is set by a setup step inside each job (see ci.yml's
-  # comment for the full rationale — `runner.*` context is only valid at
+  # comment for the full rationale - `runner.*` context is only valid at
   # step level, not in workflow- or job-level `env:` blocks).
 
 jobs:
@@ -54,12 +54,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -70,7 +70,7 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      # No `Swatinem/rust-cache@v2` here — the per-job setup step at the
+      # No `Swatinem/rust-cache@v2` here - the per-job setup step at the
       # top of this job exported `CARGO_TARGET_DIR=$RUNNER_TOOL_CACHE/
       # drevo-cargo-target` into `$GITHUB_ENV`, which keeps the compiled
       # `target/` directory at a persistent location between runs on the
@@ -114,18 +114,18 @@ jobs:
   # -------------------------------------------------------------------------
   ios:
     name: "iOS (aarch64-apple-ios)"
-    # iOS MUST build on macOS — `aarch64-apple-ios` needs the Apple SDK, which
+    # iOS MUST build on macOS - `aarch64-apple-ios` needs the Apple SDK, which
     # only GitHub's macos-latest runners provide. Every other cross-target here
     # is Linux-buildable, so they stay on ubuntu-24.04.
     runs-on: macos-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -136,7 +136,7 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
-      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job - per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       # Check: compile for iOS with default features (cbindgen + http)
       - name: cargo check (iOS)
@@ -181,12 +181,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -197,18 +197,18 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job - per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
-      # Install Android NDK linker — host-OS aware.
+      # Install Android NDK linker - host-OS aware.
       #
       # On GitHub-hosted runners the workflow always ran on
       # `ubuntu-latest` so the hard-coded `-linux.zip` archive worked
       # unconditionally. On a self-hosted runner the host can be macOS
-      # (the project's developer baseline — see README "Performance
+      # (the project's developer baseline - see README "Performance
       # Targets"), in which case we need the `darwin` NDK archive and
       # the `darwin-x86_64` toolchain subdir instead. The Apple Silicon
       # NDK ships as the same `darwin` archive (the prebuilt subdir is
-      # named `darwin-x86_64` even on arm64 hosts — that's Rosetta-2
+      # named `darwin-x86_64` even on arm64 hosts - that's Rosetta-2
       # transparency, not a typo).
       #
       # Idempotency: `unzip -o` overwrites without prompting so a
@@ -219,7 +219,7 @@ jobs:
       # Caching: the NDK is ~1 GiB unzipped. On the self-hosted runner
       # the workspace is wiped between jobs (actions/checkout cleans it),
       # but `$RUNNER_TOOL_CACHE` is a stable per-runner directory that
-      # survives across jobs / runs — exactly what the GitHub-Hosted
+      # survives across jobs / runs - exactly what the GitHub-Hosted
       # runners use for `$RUNNER_TOOL_CACHE/Python/3.12.X/x64`,
       # `$RUNNER_TOOL_CACHE/node/20.X/x64`, etc. Caching the NDK there
       # keyed by version means the curl-to-dl.google.com only runs once
@@ -252,9 +252,9 @@ jobs:
           NDK_DIR="$NDK_PARENT/android-ndk-${ANDROID_NDK_VERSION}"
           NDK_LINKER="$NDK_DIR/toolchains/llvm/prebuilt/${NDK_PREBUILT_DIR}/bin/aarch64-linux-android35-clang"
           if [ -x "$NDK_LINKER" ]; then
-            echo "NDK ${ANDROID_NDK_VERSION} already cached at $NDK_DIR — skipping download"
+            echo "NDK ${ANDROID_NDK_VERSION} already cached at $NDK_DIR - skipping download"
           else
-            echo "::group::NDK ${ANDROID_NDK_VERSION} not cached — downloading to $NDK_PARENT"
+            echo "::group::NDK ${ANDROID_NDK_VERSION} not cached - downloading to $NDK_PARENT"
             NDK_URL="https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-${NDK_HOST_TAG}.zip"
             # Use curl on macOS (no wget by default); curl is also on
             # every Linux distro we'd run this on.
@@ -303,7 +303,7 @@ jobs:
           EOF
           echo "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$NDK_PREBUILT_DIR/bin" >> $GITHUB_PATH
 
-      # Check: compile for Android (bare lib — no cbindgen/http in cross-compile)
+      # Check: compile for Android (bare lib - no cbindgen/http in cross-compile)
       - name: cargo check (Android)
         run: >
           cargo check
@@ -335,7 +335,7 @@ jobs:
           fi
 
   # -------------------------------------------------------------------------
-  # Native host tests — run the native engine suite on the host to catch a
+  # Native host tests - run the native engine suite on the host to catch a
   # host-native regression on the very next merge into main (this workflow
   # runs on push:main + schedule, complementing the wasm/iOS/Android
   # cross-target check+build jobs above). Formerly ran the KV-engine
@@ -347,12 +347,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -361,13 +361,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job - per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run native engine tests (host)
         run: cargo test --test native_engine_tests -- --nocapture
 
   # -------------------------------------------------------------------------
-  # Platform smoke tests (host) — exercise the native durable engine's full
+  # Platform smoke tests (host) - exercise the native durable engine's full
   # open → create → get → update → edge → search → traversal round-trip on a
   # Linux host. Formerly ran the KV-engine `smoke_tests` suite (deleted with
   # the KV engine in epic #444); `native_service_tests` is its native heir.
@@ -377,12 +377,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -391,16 +391,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job - per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests
         run: cargo test --test native_service_tests -- --nocapture
 
   # -------------------------------------------------------------------------
-  # macOS smoke tests (validates on Apple Silicon host) — the same native
+  # macOS smoke tests (validates on Apple Silicon host) - the same native
   # durable round-trip on a real macOS host, coverage ci.yml's Linux-only
   # `Test` job does not provide (and the sole justification for this
-  # workflow's macos-latest runner — see ci_self_hosted_runner_tests.rs).
+  # workflow's macos-latest runner - see ci_self_hosted_runner_tests.rs).
   # -------------------------------------------------------------------------
   smoke-tests-macos:
     name: "Platform smoke tests (macOS)"
@@ -408,12 +408,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Set CARGO_TARGET_DIR (persistent target dir on self-hosted runner)
-        # `runner.tool_cache` expression is ONLY available at step level —
+        # `runner.tool_cache` expression is ONLY available at step level -
         # putting it at workflow or job-level `env:` makes GHA reject the
         # YAML with a generic "workflow file issue" error (no jobs run,
         # no logs). The earlier fix-attempt in commit 0872954 moved this
         # from workflow-level env to job-level env, but GHA's context
-        # availability rules forbid `runner.*` in *either* — only steps
+        # availability rules forbid `runner.*` in *either* - only steps
         # can resolve it. Reading the shell env var $RUNNER_TOOL_CACHE
         # inside a `run:` (which IS step-level) is the working pattern.
         # Locked by ci_self_hosted_runner_tests.rs.
@@ -422,7 +422,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # See WASM job — per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
+      # See WASM job - per-job setup step exporting `CARGO_TARGET_DIR` replaces Swatinem.
 
       - name: Run platform smoke tests (macOS)
         run: cargo test --test native_service_tests -- --nocapture

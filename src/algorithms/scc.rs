@@ -1,11 +1,11 @@
-//! Strongly connected components (SCC) — RFC #307 Phase 8.
+//! Strongly connected components (SCC) - RFC #307 Phase 8.
 //!
 //! Two nodes are in the same *strongly* connected component when each is
-//! reachable from the other **following edge direction** — i.e. they lie on a
+//! reachable from the other **following edge direction** - i.e. they lie on a
 //! common directed cycle. This is the directed complement of
 //! [`wcc`](crate::algorithms::wcc): `1 -> 2` with no `2 -> 1` is one *weakly*
 //! connected component but two *strongly* connected ones. SCC answers "which
-//! sets of nodes are mutually reachable / form a cycle" — feedback loops in a
+//! sets of nodes are mutually reachable / form a cycle" - feedback loops in a
 //! dependency graph, cyclic references in a knowledge graph.
 //!
 //! Implemented with **iterative** Tarjan (an explicit work stack, never native
@@ -14,7 +14,7 @@
 //!
 //! Component IDs are assigned by the **minimum node ID** in each component, in
 //! ascending order, so the labelling is independent of the order the engine
-//! enumerated nodes in — the native snapshot and the KV backend produce
+//! enumerated nodes in - the native snapshot and the KV backend produce
 //! byte-identical results.
 //!
 //! Dependency-free, infallible, always compiled, WASM-safe.

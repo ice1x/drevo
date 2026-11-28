@@ -493,7 +493,7 @@ fn build_sprint_board(db: &NativeService) -> SprintBoard {
 }
 
 // =========================================================================
-// Tests — run against both backends via macro
+// Tests - run against both backends via macro
 // =========================================================================
 
 macro_rules! task_manager_tests {
@@ -502,7 +502,7 @@ macro_rules! task_manager_tests {
             use super::*;
 
             // -----------------------------------------------------------------
-            // 1. Basic graph construction — all nodes and edges are created
+            // 1. Basic graph construction - all nodes and edges are created
             // -----------------------------------------------------------------
 
             #[test]
@@ -610,7 +610,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 3. Dependency chains — blocking BFS
+            // 3. Dependency chains - blocking BFS
             // -----------------------------------------------------------------
 
             #[test]
@@ -709,7 +709,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 4. Shortest path — critical dependency path
+            // 4. Shortest path - critical dependency path
             // -----------------------------------------------------------------
 
             #[test]
@@ -746,7 +746,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 5. Sprint board view — kind_index
+            // 5. Sprint board view - kind_index
             // -----------------------------------------------------------------
 
             #[test]
@@ -810,7 +810,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 6. Sprint board — tasks in a sprint
+            // 6. Sprint board - tasks in a sprint
             // -----------------------------------------------------------------
 
             #[test]
@@ -846,7 +846,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 7. Developer workload — tasks assigned to a developer
+            // 7. Developer workload - tasks assigned to a developer
             // -----------------------------------------------------------------
 
             #[test]
@@ -936,7 +936,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 9. FTS — searching for tasks by description
+            // 9. FTS - searching for tasks by description
             // -----------------------------------------------------------------
 
             #[test]
@@ -993,7 +993,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 10. Subgraph — full context of a task
+            // 10. Subgraph - full context of a task
             // -----------------------------------------------------------------
 
             #[test]
@@ -1043,7 +1043,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 11. Edge operations — edge kind index
+            // 11. Edge operations - edge kind index
             // -----------------------------------------------------------------
 
             #[test]
@@ -1084,7 +1084,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 12. Task lifecycle — CRUD operations in context
+            // 12. Task lifecycle - CRUD operations in context
             // -----------------------------------------------------------------
 
             #[test]
@@ -1222,7 +1222,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 13. Advanced queries — cross-cutting concerns
+            // 13. Advanced queries - cross-cutting concerns
             // -----------------------------------------------------------------
 
             #[test]
@@ -1329,7 +1329,7 @@ macro_rules! task_manager_tests {
             }
 
             // -----------------------------------------------------------------
-            // 15. Edge updates — changing priority weights
+            // 15. Edge updates - changing priority weights
             // -----------------------------------------------------------------
 
             #[test]

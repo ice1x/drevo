@@ -30,7 +30,7 @@ pub(crate) fn normalise(name: &str) -> String {
     out
 }
 
-/// A combining diacritical mark (U+0300–U+036F), as left by a decomposed
+/// A combining diacritical mark (U+0300-U+036F), as left by a decomposed
 /// accent.
 fn is_combining_mark(c: char) -> bool {
     ('\u{0300}'..='\u{036f}').contains(&c)

@@ -154,7 +154,7 @@ def test_context_to_text_is_deterministic_across_runs(
     deterministic_embedder: Callable[[list[str]], list[list[float]]],
 ) -> None:
     """The same context serialises byte-equal twice in a row. This is
-    RFC §8.4's contract — break it and downstream caches (LLM prompt
+    RFC §8.4's contract - break it and downstream caches (LLM prompt
     cache, embedding cache) silently mis-key.
     """
     nodes = _ingest(disk_db, deterministic_embedder)
@@ -220,7 +220,7 @@ def test_retriever_stats_report_actual_hop_depth(
     deterministic_embedder: Callable[[list[str]], list[list[float]]],
 ) -> None:
     """``ContextStats.hops_used`` reports the deepest level where a new
-    node was discovered — not the configured ``hops`` ceiling.
+    node was discovered - not the configured ``hops`` ceiling.
     """
     nodes = _ingest(disk_db, deterministic_embedder)
     _wire_doc_edges(disk_db, nodes)

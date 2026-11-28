@@ -1,19 +1,19 @@
-//! The LLM summariser: a community's extractive view — its best-ranked
-//! members, keywords and heaviest relationship types — handed to the chat
+//! The LLM summariser: a community's extractive view - its best-ranked
+//! members, keywords and heaviest relationship types - handed to the chat
 //! model `drevo.extract.*` uses, which answers with a prose summary within
 //! the token budget.
 //!
 //! The model is never asked while a write is under way. A statement that
 //! opens with `drevo.community.summarize` runs in three phases:
 //!
-//! 1. **Plan** — the statement runs read-only under the statement timeout
+//! 1. **Plan** - the statement runs read-only under the statement timeout
 //!    ([`planning`]): the graph is partitioned and ranked, and each
 //!    community's request is recorded instead of sent ([`Ask`]).
-//! 2. **Ask** — outside any transaction, lock or statement timeout, one
+//! 2. **Ask** - outside any transaction, lock or statement timeout, one
 //!    model call per planned community ([`ask_planned`]), each bounded by
 //!    the endpoint's own timeout (`DREVO_EXTRACT_TIMEOUT_MS`). The answers
 //!    are remembered by the community's member set and request.
-//! 3. **Write** — the statement runs as its transaction with the answers
+//! 3. **Write** - the statement runs as its transaction with the answers
 //!    ([`with_prepared`]): a retry after a commit conflict reads them again
 //!    instead of asking. A community the plan did not see (the graph changed
 //!    in between) is reported ([`with_prepared`] returns `true`) so the

@@ -1,4 +1,4 @@
-//! End-to-end Cypher `isNaN()` numeric-predicate tests — Phase 10 follow-up
+//! End-to-end Cypher `isNaN()` numeric-predicate tests - Phase 10 follow-up
 //! task `00162`.
 //!
 //! Neo4j 5 exposes `isNaN(input)`, the boolean predicate that tells a NaN
@@ -7,7 +7,7 @@
 //! domain edges (`sqrt(-1)`, `log(-1)`, `asin(2)`, …) follow IEEE-754 and
 //! produce exactly the `NaN` this predicate detects, and to float division
 //! (`0.0/0.0` → `NaN`). Without it there is no way to test for NaN in Cypher,
-//! because — per IEEE-754 — `NaN = NaN` is *false*, so an equality comparison
+//! because - per IEEE-754 - `NaN = NaN` is *false*, so an equality comparison
 //! can never catch it.
 //!
 //! Semantics mirror Neo4j:
@@ -93,7 +93,7 @@ fn isnan_false_for_ordinary_floats() {
 #[test]
 fn isnan_false_for_infinities() {
     let db = db();
-    // ±Infinity are numbers, not NaN — Neo4j returns false for both.
+    // ±Infinity are numbers, not NaN - Neo4j returns false for both.
     assert_eq!(one("RETURN isNaN(1.0 / 0.0) AS v", &db), Value::Bool(false));
     assert_eq!(
         one("RETURN isNaN(-1.0 / 0.0) AS v", &db),
@@ -242,7 +242,7 @@ fn scenario_erp_margin_per_unit_is_real_number() {
 fn scenario_bug_tracker_reopen_rate_guard() {
     // Bug tracker: reopen-rate = reopened / resolved. A component with nothing
     // resolved yet has an undefined rate; isNaN guards the division so the
-    // report can show "—" instead of a misleading number.
+    // report can show "-" instead of a misleading number.
     let db = db();
     run(
         "CREATE (:Component {name: 'auth', reopened: 0.0, resolved: 0.0}) \

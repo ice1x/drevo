@@ -1,8 +1,8 @@
-//! End-to-end Cypher variable-length path tests — Phase 10 task `00069`.
+//! End-to-end Cypher variable-length path tests - Phase 10 task `00069`.
 //!
 //! Exercises `[*N..M]` BFS traversals (the last task of Phase 10)
 //! across the five drevo target scenario domains plus cross-scenario
-//! regressions. Cypher trail uniqueness is enforced — no relationship
+//! regressions. Cypher trail uniqueness is enforced - no relationship
 //! is traversed twice within a single path; nodes may repeat. The
 //! variable-length expansion is the building block for ancestry /
 //! reachability / shortest-path-by-length queries every drevo target
@@ -42,7 +42,7 @@ fn int(rows: &[Vec<Value>], r: usize, c: usize) -> i64 {
     }
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_reach_all_consequent_thoughts_via_chain() {
@@ -75,7 +75,7 @@ fn cbt_reach_all_consequent_thoughts_via_chain() {
     );
 }
 
-// ===== Scenario 2 — Story editor ============================================
+// ===== Scenario 2 - Story editor ============================================
 
 #[test]
 fn story_descendant_scenes_via_next_chain() {
@@ -107,7 +107,7 @@ fn story_descendant_scenes_via_next_chain() {
     assert_eq!(rows.len(), 0);
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_manager_subtree_via_has_subtask_chain() {
@@ -179,7 +179,7 @@ fn task_manager_direct_or_indirect_assignment_via_team() {
     }
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_bill_of_materials_indirect_components() {
@@ -205,7 +205,7 @@ fn erp_bill_of_materials_indirect_components() {
     assert_eq!(names_sorted(&rows), vec!["B", "C", "D"]);
 }
 
-// ===== Scenario 5 — Bug tracker =============================================
+// ===== Scenario 5 - Bug tracker =============================================
 
 #[test]
 fn bug_tracker_blocking_chain_root_causes() {

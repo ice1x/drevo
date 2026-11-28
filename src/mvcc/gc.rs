@@ -1,18 +1,18 @@
-//! Background garbage collection — the vacuum thread (Phase 13 task `00082`).
+//! Background garbage collection - the vacuum thread (Phase 13 task `00082`).
 //!
 //! [`VersionedStore::vacuum`] is the
 //! *mechanism* that reclaims dead tuple versions; [`GcWorker`] is the
 //! *policy* that runs it on a cadence so dead versions do not accumulate
 //! unbounded between writes. It owns a dedicated thread that, every
 //! configured interval, vacuums the store down to the manager's current
-//! [`gc_horizon`](crate::mvcc::TransactionManager::gc_horizon) — the oldest
+//! [`gc_horizon`](crate::mvcc::TransactionManager::gc_horizon) - the oldest
 //! `xmin` of any registered live reader, so no in-flight snapshot ever loses
 //! a version it can still see.
 //!
 //! The worker is best-effort: it shares the store's single
 //! [`RwLock`](std::sync::RwLock), so a vacuum cycle briefly excludes writers
 //! and other readers, and a poisoned lock simply skips that cycle rather than
-//! propagating a panic. Shutdown is prompt and deterministic — [`stop`] (and
+//! propagating a panic. Shutdown is prompt and deterministic - [`stop`] (and
 //! the `Drop` impl) signal the thread through a [`Condvar`](std::sync::Condvar)
 //! so it wakes immediately instead of waiting out the interval, then join it.
 //!
@@ -102,7 +102,7 @@ impl GcWorker {
     /// Signal the collector to stop and block until its thread has exited.
     ///
     /// Idempotent and also run by [`Drop`], so callers rarely need to invoke
-    /// it explicitly — it exists for code that wants to join deterministically
+    /// it explicitly - it exists for code that wants to join deterministically
     /// (e.g. to assert on the final [`reclaimed_total`](Self::reclaimed_total)).
     pub fn stop(mut self) {
         self.shutdown();

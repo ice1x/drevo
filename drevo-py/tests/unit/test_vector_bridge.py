@@ -1,8 +1,8 @@
 """Unit tests for the `Drevo` vector-embedding bridge (Phase 12 task `00079`).
 
 These cover the PyO3 methods that expose the `00078` durable vector store
-to Python — `set_embedding` / `set_embeddings_batch` / `get_embedding` /
-`delete_embedding` / `embedding_count` / `vector_search` — against the
+to Python - `set_embedding` / `set_embeddings_batch` / `get_embedding` /
+`delete_embedding` / `embedding_count` / `vector_search` - against the
 in-memory backend (the canonical unit stand-in). Disk durability lives in
 the integration tier.
 """

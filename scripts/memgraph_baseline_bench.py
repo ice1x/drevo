@@ -2,8 +2,8 @@
 """Cross-database baseline: drevo vs Memgraph, same GraphML, same Cypher, same
 Bolt client (`docs/native-core-baseline.md`, RFC #307 Phase 0).
 
-Both databases are measured through the SAME code path — this script, the
-`neo4j` Python driver, localhost Bolt — so client/transport overhead cancels
+Both databases are measured through the SAME code path - this script, the
+`neo4j` Python driver, localhost Bolt - so client/transport overhead cancels
 out. The drevo side is a locally built `drevo-server` (today's production KV
 path over Bolt); the Memgraph side is the official `memgraph/memgraph` Docker
 image with a label index and a label+property index created for its densest
@@ -158,7 +158,7 @@ def load_memgraph(driver, nodes, edges):
 
 
 def derive_params(nodes, edges):
-    """Densest kind, mid-selectivity (key, value) pair, highest-out-degree hub —
+    """Densest kind, mid-selectivity (key, value) pair, highest-out-degree hub -
     the same derivation as `benches/real_data_baseline_bench.rs`."""
     kind_freq: dict[str, int] = defaultdict(int)
     prop_freq: dict[tuple, int] = defaultdict(int)

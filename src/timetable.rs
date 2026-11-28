@@ -160,8 +160,8 @@ pub struct TimetableOptions {
     pub max_transfers: usize,
     /// Journeys arriving later than `depart_at + max_duration` are not returned.
     pub max_duration: Option<i64>,
-    /// The most seconds of footpaths in a row — between two rides, or after
-    /// the start — `None` for no bound.
+    /// The most seconds of footpaths in a row - between two rides, or after
+    /// the start - `None` for no bound.
     pub max_walk: Option<i64>,
 }
 
@@ -234,7 +234,7 @@ pub struct Journey {
 ///
 /// Each journey arrives strictly earlier than every journey with fewer
 /// transfers, so at most `max_transfers + 1` come back. A journey without
-/// rides — when a start is also an end, or a footpath joins them — counts as
+/// rides - when a start is also an end, or a footpath joins them - counts as
 /// no transfers. `edges_of(stop, Direction::Outgoing, visit)` must visit the
 /// relationships leaving `stop`.
 ///

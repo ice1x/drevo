@@ -1,6 +1,6 @@
 //! Logging in over gRPC and Arrow Flight against the server's users: when the
-//! server requires a login, every call carries `authorization` metadata —
-//! `Basic` (user:password) or `Bearer <session token>` — exactly as an HTTP
+//! server requires a login, every call carries `authorization` metadata -
+//! `Basic` (user:password) or `Bearer <session token>` - exactly as an HTTP
 //! request does. Flight's `Handshake` trades a password for a session token.
 //! Drives real tonic servers on loopback ports.
 #![cfg(all(feature = "auth", any(feature = "grpc", feature = "arrow-flight")))]

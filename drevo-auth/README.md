@@ -6,12 +6,12 @@ Authentication and role-based access control for Rust servers:
   session tokens. A client presents a username and password or a token; the
   store answers with the username it proves, or why not.
 - **User management** (`users`, `catalog`): create, change and drop users in
-  a stored catalog — JSON in one file, written atomically and readable by its
-  owner only — with a password policy and a first-user bootstrap in the style
+  a stored catalog - JSON in one file, written atomically and readable by its
+  owner only - with a password policy and a first-user bootstrap in the style
   of Neo4j's `NEO4J_AUTH`.
-- **Privileges** (`privileges`): Neo4j's privilege model — `TRAVERSE`, `READ`,
+- **Privileges** (`privileges`): Neo4j's privilege model - `TRAVERSE`, `READ`,
   `MATCH`, `WRITE`, … on graphs, `ACCESS`, `INDEX MANAGEMENT`, … on
-  databases, `USER MANAGEMENT`, `EXECUTE PROCEDURE`, … on the server — read
+  databases, `USER MANAGEMENT`, `EXECUTE PROCEDURE`, … on the server - read
   from and written back as `GRANT` / `DENY` / `REVOKE` commands. Roles in the
   catalog hold them, users get roles, and a request is decided with a
   matching deny winning over any grant. The built-in roles `PUBLIC`,
@@ -24,8 +24,8 @@ Authentication and role-based access control for Rust servers:
   against the provider's key set, cached by key id; then `iss`, `aud`, `exp`
   and `nbf` with a clock-skew allowance. The user's groups map to roles. The
   crate makes no network calls: the caller supplies the key set.
-- **Audit** (`audit`): security events of a fixed shape — logins, logouts,
-  password, user, role and privilege changes, refusals — with no field for
+- **Audit** (`audit`): security events of a fixed shape - logins, logouts,
+  password, user, role and privilege changes, refusals - with no field for
   a password or token, written as JSON lines to a size-rotated file, to
   stdout or to memory.
 

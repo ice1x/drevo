@@ -1,4 +1,4 @@
-//! End-to-end Cypher `UNWIND` tests — Phase 10 follow-up task `00135`.
+//! End-to-end Cypher `UNWIND` tests - Phase 10 follow-up task `00135`.
 //!
 //! `UNWIND list AS x` expands a list expression into one row per
 //! element, carrying every existing binding forward. It is the
@@ -105,7 +105,7 @@ fn unwind_then_collect_round_trips_the_list() {
     );
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_unwind_tags_creates_one_entry_per_tag() {
@@ -119,7 +119,7 @@ fn cbt_unwind_tags_creates_one_entry_per_tag() {
     assert_eq!(entries.len(), 3);
 }
 
-// ===== Scenario 2 — story / book editor =====================================
+// ===== Scenario 2 - story / book editor =====================================
 
 #[test]
 fn story_unwind_chapters_links_each_to_the_book() {
@@ -141,7 +141,7 @@ fn story_unwind_chapters_links_each_to_the_book() {
     assert_eq!(int(&rows, 0, 0), 3);
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn task_unwind_assignees_multiplies_matched_tasks() {
@@ -161,7 +161,7 @@ fn task_unwind_assignees_multiplies_matched_tasks() {
     assert_eq!(string(&rows, 3, 1), "bob");
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_unwind_line_items_from_parameter_then_aggregate() {
@@ -186,7 +186,7 @@ fn erp_unwind_line_items_from_parameter_then_aggregate() {
     assert_eq!(int(&rows, 0, 1), 3);
 }
 
-// ===== Scenario 5 — bug tracker =============================================
+// ===== Scenario 5 - bug tracker =============================================
 
 #[test]
 fn bug_unwind_labels_grouped_with_counts() {
@@ -231,11 +231,11 @@ fn double_unwind_produces_cartesian_product() {
     assert_eq!(string(&rows, 3, 1), "y");
 }
 
-// ===== Empty UNWIND + write clause — issue #300 ==============================
+// ===== Empty UNWIND + write clause - issue #300 ==============================
 //
 // A write clause (CREATE / MERGE, with or without a trailing SET) that follows
 // an `UNWIND $xs AS v` where `$xs` is empty must run ZERO times and yield zero
-// rows — the standard "empty driving table" semantics — NOT resurrect one empty
+// rows - the standard "empty driving table" semantics - NOT resurrect one empty
 // row and dereference the now-unbound loop variable `v`. Regression guard: this
 // exact shape (graphiti's `get_entity_edge_save_bulk_query` on an empty batch)
 // previously failed with `unbound variable v`.

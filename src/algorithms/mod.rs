@@ -1,18 +1,18 @@
-//! Built-in global graph algorithms — Phase 15 task `00098`.
+//! Built-in global graph algorithms - Phase 15 task `00098`.
 //!
 //! drevo already ships the *local* traversal algorithms (BFS / DFS / weighted
 //! Dijkstra shortest path / subgraph extraction) in [`crate::traversal`]. This
 //! module adds the two *global* analytics algorithms a graph database is
 //! expected to provide:
 //!
-//! * [`pagerank`](crate::algorithms::pagerank) — Google PageRank centrality via
+//! * [`pagerank`](crate::algorithms::pagerank) - Google PageRank centrality via
 //!   weighted power iteration with dangling-node redistribution and a
 //!   configurable damping factor and convergence tolerance.
-//! * [`louvain`](crate::algorithms::louvain) — Louvain community detection:
+//! * [`louvain`](crate::algorithms::louvain) - Louvain community detection:
 //!   greedy multi-level modularity optimisation that partitions the graph into
 //!   communities.
 //!
-//! Both operate over an [`AdjacencyList`](crate::algorithms::AdjacencyList) — an
+//! Both operate over an [`AdjacencyList`](crate::algorithms::AdjacencyList) - an
 //! in-memory snapshot of the whole graph. Unlike the per-node closures the local
 //! traversals use, a global algorithm needs the entire node set and adjacency at
 //! once, so the caller materialises the snapshot first (see
@@ -82,10 +82,10 @@ fn native_adjacency(engine: &crate::native::NativeGraph) -> AdjacencyList {
 /// Uses the serial [`pagerank`]. The CSR layout landed (#382:
 /// [`AdjacencyList`] is now Compressed-Sparse-Row internally), and
 /// `benches/pagerank_bench.rs` was re-measured over it: the naive rayon
-/// [`pagerank_parallel`] is still **~4–17× SLOWER** than serial (~17× at 10k
+/// [`pagerank_parallel`] is still **~4-17× SLOWER** than serial (~17× at 10k
 /// nodes, ~8× at 100k, ~4.4× even at 500k / 3M edges). PageRank is
 /// memory-bandwidth-bound, so the per-iteration fork/join and the pull-based
-/// reverse index cost more than the cores save — the CSR layout did not change
+/// reverse index cost more than the cores save - the CSR layout did not change
 /// that verdict. Serial-over-CSR is therefore the default; a real parallel win
 /// would need a fundamentally different scheme (NUMA-aware block partitioning),
 /// not just more threads. See `docs/native-load.md`.
@@ -97,7 +97,7 @@ pub fn pagerank_native(
 }
 
 /// Louvain community detection over the **native engine**, over a consistent
-/// MVCC snapshot (RFC #307 Phase 8). Serial — Louvain's local-moving phase is
+/// MVCC snapshot (RFC #307 Phase 8). Serial - Louvain's local-moving phase is
 /// inherently sequential.
 pub fn louvain_native(
     engine: &crate::native::NativeGraph,
@@ -107,7 +107,7 @@ pub fn louvain_native(
 }
 
 /// Weakly connected components over the **native engine**, over a consistent
-/// MVCC snapshot (RFC #307 Phase 8). A single near-linear union-find pass —
+/// MVCC snapshot (RFC #307 Phase 8). A single near-linear union-find pass -
 /// no config, always serial (the work is dominated by the snapshot build, not
 /// the union-find).
 pub fn wcc_native(engine: &crate::native::NativeGraph) -> WccResult {
@@ -115,7 +115,7 @@ pub fn wcc_native(engine: &crate::native::NativeGraph) -> WccResult {
 }
 
 /// Strongly connected components over the **native engine**, over a consistent
-/// MVCC snapshot (RFC #307 Phase 8). Iterative Tarjan — linear time, serial,
+/// MVCC snapshot (RFC #307 Phase 8). Iterative Tarjan - linear time, serial,
 /// no native recursion.
 pub fn scc_native(engine: &crate::native::NativeGraph) -> SccResult {
     scc(&native_adjacency(engine))
@@ -139,7 +139,7 @@ pub fn closeness_native(engine: &crate::native::NativeGraph) -> ClosenessResult 
     closeness(&native_adjacency(engine))
 }
 
-/// Ollivier–Ricci edge curvature over the **native engine**, over a consistent
+/// Ollivier-Ricci edge curvature over the **native engine**, over a consistent
 /// MVCC snapshot (RFC #307 Phase 8). One optimal-transport (Wasserstein-1)
 /// solve per undirected edge, serial. See [`ricci_curvature`].
 pub fn ricci_curvature_native(
@@ -153,7 +153,7 @@ pub fn ricci_curvature_native(
 ///
 /// Algorithm *execution* is infallible; only invalid configuration (a damping
 /// factor outside `(0, 1)`, a non-positive iteration cap, a negative tolerance
-/// or resolution) is rejected — at construction time, before any work starts.
+/// or resolution) is rejected - at construction time, before any work starts.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum AlgorithmError {
     /// The PageRank damping factor was outside the open interval `(0.0, 1.0)`.
@@ -172,7 +172,7 @@ pub enum AlgorithmError {
     #[error("resolution must be a finite, non-negative number, got {0}")]
     InvalidResolution(f64),
 
-    /// The Ollivier–Ricci idleness parameter `alpha` was outside `[0, 1]` or
+    /// The Ollivier-Ricci idleness parameter `alpha` was outside `[0, 1]` or
     /// not finite.
     #[error("alpha must be a finite number in the closed interval [0, 1], got {0}")]
     InvalidAlpha(f64),
@@ -236,7 +236,7 @@ where
 /// the same data.
 ///
 /// Edges referencing a node ID that is not in the node set are silently
-/// dropped (a defensive guard — the storage layer never produces dangling
+/// dropped (a defensive guard - the storage layer never produces dangling
 /// adjacency, but the snapshot must not panic if it ever does). Negative edge
 /// weights are clamped to `0.0`.
 #[derive(Debug, Clone)]
@@ -329,7 +329,7 @@ impl AdjacencyList {
         self.nodes[idx]
     }
 
-    /// Directed out-edges of node at dense index `i` as `(dst_index, weight)` —
+    /// Directed out-edges of node at dense index `i` as `(dst_index, weight)` -
     /// a slice into the flat CSR edge array.
     pub(crate) fn out_edges(&self, i: usize) -> &[(usize, f64)] {
         &self.edges[self.offsets[i]..self.offsets[i + 1]]
@@ -375,7 +375,7 @@ impl AdjacencyList {
 mod tests {
     use super::*;
 
-    /// Dense index of a node ID — test helper (the algorithms work purely on
+    /// Dense index of a node ID - test helper (the algorithms work purely on
     /// dense indices, so the production type exposes no public lookup).
     fn pos(g: &AdjacencyList, id: u64) -> usize {
         g.nodes().iter().position(|&n| n == id).unwrap()

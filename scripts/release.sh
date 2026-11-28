@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# release.sh — cut a new drevo container-image version.
+# release.sh - cut a new drevo container-image version.
 #
 # The image itself is built and published by .github/workflows/docker-publish.yml
 # ("Docker Publish"): pushing a `vX.Y.Z` git tag makes it publish
 # `ghcr.io/ice1x/drevo:X.Y.Z`, `:X.Y`, and `:sha-<short>`. This script computes
 # the next version (bumping the MINOR component by default), creates the
-# annotated tag, and pushes it — so "new image version" is one command.
+# annotated tag, and pushes it - so "new image version" is one command.
 #
 # Usage:
 #   scripts/release.sh                 # bump minor, tag, push  (asks to confirm)
@@ -72,10 +72,10 @@ fi
 
 # ── One-shot image release: `image [part] [--yes] [--no-tag]` ──
 # Increment the version, BUILD the container image, and PUSH it to the registry
-# the deployment actually pulls from — Docker Hub `ice1x/drevo` by default
+# the deployment actually pulls from - Docker Hub `ice1x/drevo` by default
 # (override with DREVO_IMAGE, e.g. ghcr.io/ice1x/drevo). This is the missing
 # "one command to ship a new deployed image": the tag-only flow below merely
-# cuts a `vX.Y.Z` tag, which Docker Publish CI mirrors to ghcr.io — a registry
+# cuts a `vX.Y.Z` tag, which Docker Publish CI mirrors to ghcr.io - a registry
 # the compose/run-drevo deploy does not use. Unless `--no-tag`, this also cuts
 # and pushes the git tag so ghcr + history stay in sync.
 #
@@ -105,28 +105,28 @@ if [ "${1:-}" = "image" ]; then
   command -v docker >/dev/null 2>&1 || {
     echo "release.sh: docker not found on PATH." >&2; exit 1; }
   docker info >/dev/null 2>&1 || {
-    echo "release.sh: docker daemon unreachable — is Docker running?" >&2; exit 1; }
+    echo "release.sh: docker daemon unreachable - is Docker running?" >&2; exit 1; }
 
   branch=$(git symbolic-ref --quiet --short HEAD || echo DETACHED)
   if [ "$branch" != "main" ]; then
-    echo "release.sh: refusing to release from '$branch' — switch to main first." >&2
+    echo "release.sh: refusing to release from '$branch' - switch to main first." >&2
     exit 1
   fi
   if [ -n "$(git status --porcelain)" ]; then
-    echo "release.sh: working tree is dirty — commit or stash before releasing." >&2
+    echo "release.sh: working tree is dirty - commit or stash before releasing." >&2
     # The usual culprit is a regenerated but un-committed cbindgen header:
     # `build.rs` rewrites drevo.h on every build, and Cargo.lock tracks the
     # crate version. CI's Check job now fails such drift on the PR branch,
     # but guard here too so a local release explains itself.
     if git status --porcelain | grep -qE ' (drevo\.h|Cargo\.lock)$'; then
-      echo "release.sh: drevo.h / Cargo.lock drifted — regenerate and commit them:" >&2
+      echo "release.sh: drevo.h / Cargo.lock drifted - regenerate and commit them:" >&2
       echo "    cargo check && git add drevo.h Cargo.lock && git commit" >&2
     fi
     exit 1
   fi
 
   # Refuse a no-op rebuild: if HEAD is already the commit the latest release
-  # tag points at, the source is byte-for-byte what already shipped — a new
+  # tag points at, the source is byte-for-byte what already shipped - a new
   # image would differ only in its embedded version string and build date.
   # Building + pushing that just burns a version number without a code change
   # (the "built 0.0.27 for nothing" case). `--force` overrides.
@@ -134,7 +134,7 @@ if [ "${1:-}" = "image" ]; then
     last_tag=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)
     if [ -n "$last_tag" ] \
        && [ "$(git rev-list -n1 "$last_tag")" = "$(git rev-parse HEAD)" ]; then
-      echo "release.sh: HEAD is already released as $last_tag — no source change since." >&2
+      echo "release.sh: HEAD is already released as $last_tag - no source change since." >&2
       echo "  A new image would be identical bar its version/build-date. Refusing." >&2
       echo "  Merge new commits first, or pass --force to build anyway." >&2
       exit 1
@@ -170,8 +170,8 @@ if [ "${1:-}" = "image" ]; then
   # Thread the version into the build: `.git` is excluded from the Docker build
   # context, so `build.rs` can't `git describe` there. Without this arg the image
   # would report `CARGO_PKG_VERSION` (0.0.0) at `/`, `/status`, the Bolt `server`
-  # agent, and metrics — the git tag is the source of truth, not Cargo.toml.
-  # Thread build metadata for `CALL drevo.info()` (issue #303) — `.git` is
+  # agent, and metrics - the git tag is the source of truth, not Cargo.toml.
+  # Thread build metadata for `CALL drevo.info()` (issue #303) - `.git` is
   # excluded from the build context, so these must come from the host here.
   git_sha=$(git rev-parse --short HEAD 2>/dev/null || echo "")
   build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -190,7 +190,7 @@ if [ "${1:-}" = "image" ]; then
   fi
 
   echo
-  echo "Done. Redeploy however this host runs drevo — recreate the container from"
+  echo "Done. Redeploy however this host runs drevo - recreate the container from"
   echo "the new image, keeping its bind-mounted data dir and its configured engine:"
   echo "  # bare 'docker run' deploy (native-durable, custom Bolt port, ~/.drevo.env):"
   echo "  ~/drevo-restart.sh"
@@ -200,7 +200,7 @@ if [ "${1:-}" = "image" ]; then
   echo
   echo "Data lives in the host-mounted data dir and survives the image swap. NOTE:"
   echo "on DREVO_ENGINE=native-durable the store of record is <data>/native.wal, and"
-  echo "any redb file there is frozen at the pre-flip snapshot — do NOT restart into"
+  echo "any redb file there is frozen at the pre-flip snapshot - do NOT restart into"
   echo "kv/native (mirror), which would serve that stale redb. Match the engine the"
   echo "host already runs (see ~/.drevo.env / your compose env)."
   exit 0
@@ -223,11 +223,11 @@ cd "$(repo_root)"
 # Safety rails: release from a clean main only.
 branch=$(git symbolic-ref --quiet --short HEAD || echo DETACHED)
 if [ "$branch" != "main" ]; then
-  echo "release.sh: refusing to release from '$branch' — switch to main first." >&2
+  echo "release.sh: refusing to release from '$branch' - switch to main first." >&2
   exit 1
 fi
 if [ -n "$(git status --porcelain)" ]; then
-  echo "release.sh: working tree is dirty — commit or stash before releasing." >&2
+  echo "release.sh: working tree is dirty - commit or stash before releasing." >&2
   exit 1
 fi
 

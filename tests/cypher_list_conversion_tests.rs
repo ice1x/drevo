@@ -1,4 +1,4 @@
-//! End-to-end Cypher list value-conversion function tests — Phase 10 follow-up
+//! End-to-end Cypher list value-conversion function tests - Phase 10 follow-up
 //! task `00157`.
 //!
 //! Task `00138` shipped the scalar conversion family (`toInteger` / `toFloat` /
@@ -279,7 +279,7 @@ fn task_manager_ids_to_strings() {
 fn story_editor_chapter_numbers_round_trip_through_unwind() {
     let db = db();
     // Convert a list of stringified chapter numbers to integers, then expand
-    // them into rows — exercises composition with UNWIND (task `00135`).
+    // them into rows - exercises composition with UNWIND (task `00135`).
     let rows = run(
         r#"UNWIND toIntegerList(["1", "2", "3"]) AS ch RETURN ch ORDER BY ch"#,
         &db,

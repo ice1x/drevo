@@ -3,7 +3,7 @@
 //!
 //! # Why hand-rolled?
 //!
-//! drevo deliberately keeps its production dependency tree minimal — every
+//! drevo deliberately keeps its production dependency tree minimal - every
 //! algorithmic building block so far (the FTS trigram tokenizer, the Porter
 //! stemmer, BM25 ranking, the HNSW vector index, the cost-based planner) is
 //! written from scratch rather than pulled from crates.io. The `Cargo.toml`
@@ -22,7 +22,7 @@
 //! # Supported syntax
 //!
 //! * Literal characters (Unicode).
-//! * `.` — any character except a newline.
+//! * `.` - any character except a newline.
 //! * Quantifiers `*`, `+`, `?`, `{n}`, `{n,}`, `{n,m}`, greedy by default,
 //!   lazy when suffixed with `?` (e.g. `a+?`). A possessive `+` suffix is
 //!   accepted but treated as greedy.
@@ -32,7 +32,7 @@
 //! * Escapes: `\n \t \r \f \0` and `\<metachar>` for a literal metacharacter.
 //! * Anchors `^` and `$` (zero-width; redundant under full-match anchoring).
 //! * Alternation `a|b`.
-//! * Grouping `(...)` and non-capturing `(?:...)` — capture groups are parsed
+//! * Grouping `(...)` and non-capturing `(?:...)` - capture groups are parsed
 //!   but not captured, which is all `=~` (a boolean predicate) needs.
 //! * The inline case-insensitive flag `(?i)`. Because scoped flag groups add
 //!   significant complexity for little Cypher value, a `(?i)` anywhere in the
@@ -60,7 +60,7 @@ pub enum RegexError {
     /// The pattern is not valid regular-expression syntax.
     #[error("invalid regular expression: {0}")]
     Syntax(String),
-    /// Matching exceeded the backtracking budget — the pattern is too complex
+    /// Matching exceeded the backtracking budget - the pattern is too complex
     /// to evaluate against this input.
     #[error("regular expression too complex to evaluate")]
     Complexity,
@@ -100,15 +100,15 @@ impl ClassItem {
 /// The parsed regular-expression tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Node {
-    /// The empty pattern — matches zero-width.
+    /// The empty pattern - matches zero-width.
     Empty,
     /// A single literal character.
     Literal(char),
-    /// `.` — any character except `\n`.
+    /// `.` - any character except `\n`.
     AnyChar,
-    /// `^` — start-of-input assertion.
+    /// `^` - start-of-input assertion.
     Start,
-    /// `$` — end-of-input assertion.
+    /// `$` - end-of-input assertion.
     End,
     /// A `[...]` character class (or a standalone `\d` style shortcut).
     Class {
@@ -117,7 +117,7 @@ enum Node {
     },
     /// A sequence of sub-patterns matched in order.
     Concat(Vec<Node>),
-    /// Alternation — the first branch that matches wins.
+    /// Alternation - the first branch that matches wins.
     Alternate(Vec<Node>),
     /// A quantified sub-pattern: `node` repeated between `min` and `max`
     /// times (`max == None` means unbounded), greedy or lazy.
@@ -284,7 +284,7 @@ impl MatchCtx<'_> {
             can_more
                 && self.m(inner, pos, &|p| {
                     if p == pos {
-                        // Zero-width match — repeating again cannot advance, so
+                        // Zero-width match - repeating again cannot advance, so
                         // stop here to avoid an infinite loop. Accept only if
                         // this iteration satisfies the lower bound.
                         count + 1 >= min && k(p)
@@ -314,7 +314,7 @@ struct Parser {
     ci: bool,
 }
 
-/// One element of a character class as read from the source — either a
+/// One element of a character class as read from the source - either a
 /// predefined shortcut or a plain character (which may begin a range).
 enum ClassAtom {
     Shortcut(ClassItem),
@@ -383,7 +383,7 @@ impl Parser {
                 if let Some((min, max)) = self.try_parse_brace() {
                     Ok(self.finish_quant(atom, min, max))
                 } else {
-                    // Not a well-formed quantifier — leave `{` for the next
+                    // Not a well-formed quantifier - leave `{` for the next
                     // iteration to consume as a literal atom.
                     Ok(atom)
                 }
@@ -400,7 +400,7 @@ impl Parser {
                 self.pos += 1;
                 false
             }
-            // possessive — accepted, evaluated as greedy
+            // possessive - accepted, evaluated as greedy
             Some('+') => {
                 self.pos += 1;
                 true
@@ -510,12 +510,12 @@ impl Parser {
                     self.pos += 1;
                     self.ci = true;
                     match self.peek() {
-                        // `(?i)` — a flag toggle; matches zero-width.
+                        // `(?i)` - a flag toggle; matches zero-width.
                         Some(')') => {
                             self.pos += 1;
                             return Ok(Node::Empty);
                         }
-                        // `(?i:...)` — scoped form; the flag is applied
+                        // `(?i:...)` - scoped form; the flag is applied
                         // globally (documented simplification), the group is
                         // otherwise non-capturing.
                         Some(':') => {

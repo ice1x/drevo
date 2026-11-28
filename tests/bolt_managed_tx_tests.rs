@@ -1,12 +1,12 @@
-//! Managed / explicit Bolt transactions across pooled connections — issue #298.
+//! Managed / explicit Bolt transactions across pooled connections - issue #298.
 //!
 //! A Neo4j driver's `session.execute_write` runs `BEGIN … RUN … COMMIT` as a
 //! *managed* transaction over a **connection pool**, retrying the whole unit on
-//! a transient failure — and the retry routinely lands on a **different**
+//! a transient failure - and the retry routinely lands on a **different**
 //! connection. Before this fix drevo held a single **global** explicit-tx slot
 //! per `Drevo` handle, so:
 //!
-//!  * two concurrent managed transactions collided — the second `BEGIN` got
+//!  * two concurrent managed transactions collided - the second `BEGIN` got
 //!    `Neo.TransientError.Transaction.Outdated: transaction already active`;
 //!  * a statement failure left that global slot occupied, so the driver's
 //!    retry on another connection hit the very same error; and
@@ -14,7 +14,7 @@
 //!    writes too, because every mutation journaled into the one global slot.
 //!
 //! These tests pin the fixed contract: explicit transactions are **per
-//! connection** — independent, non-colliding, and each rolls back only its own
+//! connection** - independent, non-colliding, and each rolls back only its own
 //! mutations. The `rollback_undoes_*` battery covers every one of the 11
 //! mutation sites the Cypher executor can reach inside a transaction, so the
 //! journaling refactor cannot silently drop a site.
@@ -168,7 +168,7 @@ fn failed_tx_on_one_connection_does_not_block_begin_on_another() {
 
 #[test]
 fn rollback_is_isolated_to_its_own_sessions_writes() {
-    // A session's ROLLBACK must undo only *its own* mutations — never a
+    // A session's ROLLBACK must undo only *its own* mutations - never a
     // concurrent connection's autocommit write. The global journal got this
     // wrong: B's autocommit CREATE was recorded into A's journal and A's
     // rollback deleted it.
@@ -208,7 +208,7 @@ fn transient_error_is_still_returned_for_nested_begin_on_one_session() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-site rollback battery — every mutation the executor can reach in a tx.
+// Per-site rollback battery - every mutation the executor can reach in a tx.
 // Each test performs the mutation inside an explicit tx, rolls back, and
 // asserts the pre-transaction state is restored. Regression guard for the
 // journaling refactor: all 11 sites must keep journaling.

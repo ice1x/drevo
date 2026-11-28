@@ -1,11 +1,11 @@
-//! ACID conformance — **A (Atomicity)** for the default `native-durable`
+//! ACID conformance - **A (Atomicity)** for the default `native-durable`
 //! engine, exercised as **Rust** tests directly against the `drevo-core`
 //! [`NativeGraph`] seam (no HTTP layer).
 //!
 //! A transaction is all-or-nothing: on commit every buffered write lands; on
 //! rollback (or drop) none does; a commit rejected by a constraint applies
-//! nothing (not even the writes that were individually valid); and — on the
-//! durable engine — a crash that tears a committed batch on disk replays the
+//! nothing (not even the writes that were individually valid); and - on the
+//! durable engine - a crash that tears a committed batch on disk replays the
 //! whole batch or none of it, never a fraction.
 //!
 //! Part of the ACID conformance set (issue #424).
@@ -98,7 +98,7 @@ fn dropping_a_transaction_discards_its_writes() {
     {
         let mut tx = g.begin();
         tx.create_node(node("a")).unwrap();
-        // no commit — dropped here
+        // no commit - dropped here
     }
     assert_eq!(
         g.node_count(),
@@ -107,7 +107,7 @@ fn dropping_a_transaction_discards_its_writes() {
     );
 }
 
-/// A commit rejected by a constraint applies nothing — not even the first,
+/// A commit rejected by a constraint applies nothing - not even the first,
 /// individually-valid write (atomic abort).
 #[test]
 fn a_constraint_rejected_commit_applies_nothing() {
@@ -133,7 +133,7 @@ fn a_constraint_rejected_commit_applies_nothing() {
 }
 
 /// Durable: a committed multi-op batch (nodes + an edge) survives a reopen as
-/// a whole — one atomic on-disk batch.
+/// a whole - one atomic on-disk batch.
 #[test]
 fn a_committed_batch_is_durable_as_a_whole() {
     let tmp = TmpDir::new();
@@ -152,7 +152,7 @@ fn a_committed_batch_is_durable_as_a_whole() {
 }
 
 /// Durable: a crash that tears a committed batch on disk replays **none** of
-/// that transaction — never one of its two writes — while the earlier,
+/// that transaction - never one of its two writes - while the earlier,
 /// separately-acknowledged write survives. Mirrors the top crate's WAL guard
 /// but stated as the atomicity conformance proof.
 #[test]

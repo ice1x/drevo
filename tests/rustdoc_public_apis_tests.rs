@@ -1,8 +1,8 @@
-//! Phase 9 task `00060` — Rustdoc for all public APIs.
+//! Phase 9 task `00060` - Rustdoc for all public APIs.
 //!
 //! Locks in the doc-coverage gate end-to-end:
 //!
-//! - **Zero rustdoc warnings under `-D warnings`** — running `cargo doc
+//! - **Zero rustdoc warnings under `-D warnings`** - running `cargo doc
 //!   --no-deps --all-features` with `RUSTDOCFLAGS="-D warnings"` must
 //!   succeed. This catches both `missing_docs` violations (already
 //!   activated in `src/lib.rs`) **and** the lints rustdoc emits for
@@ -11,17 +11,17 @@
 //!   and redundant explicit link targets
 //!   (`rustdoc::redundant_explicit_links`). Without this gate the CI is
 //!   silent about a public surface that points at items rustdoc cannot
-//!   resolve — the public docs render with the literal `[\`Drevo\`]`
+//!   resolve - the public docs render with the literal `[\`Drevo\`]`
 //!   text instead of a link, which is exactly the failure mode task
-//!   `00060` is supposed to prevent (`drevo-rust` §"Code Style" —
+//!   `00060` is supposed to prevent (`drevo-rust` §"Code Style" -
 //!   _"Doc-comments on every `pub` item"_).
 //!
-//! - **The `RUSTDOCFLAGS` gate is wired into the Makefile** — the
+//! - **The `RUSTDOCFLAGS` gate is wired into the Makefile** - the
 //!   `audit` matrix needs `make doc` to fail on any rustdoc warning so
 //!   the rule can be enforced in one local command (`drevo-tdd`
 //!   §"CI Gates").
 //!
-//! - **The CI workflow runs the same gate** — otherwise a contributor
+//! - **The CI workflow runs the same gate** - otherwise a contributor
 //!   who runs `cargo doc` without the env var sees a green local build
 //!   but ships a regression. The CI doc step must export
 //!   `RUSTDOCFLAGS=-D warnings` before calling `cargo doc`.
@@ -77,8 +77,8 @@ fn cargo_doc_emits_no_warnings() {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         panic!(
-            "`cargo doc --no-deps --all-features` failed under `RUSTDOCFLAGS=-D warnings` \
-             — this is the load-bearing gate for Phase 9 task `00060` (rustdoc for all \
+            "`cargo doc --no-deps --all-features` failed under `RUSTDOCFLAGS=-D warnings` - \
+             this is the load-bearing gate for Phase 9 task `00060` (rustdoc for all \
              public APIs). Either a `pub` item is missing a rustdoc, or an intra-doc \
              link does not resolve. Stderr:\n{stderr}"
         );
@@ -134,7 +134,7 @@ fn ci_workflow_runs_cargo_doc_with_deny_warnings() {
 /// `cargo_doc_emits_no_warnings` job.
 ///
 /// Constants that are referenced from `pub` doc-comments must themselves
-/// be declared `pub` — otherwise rustdoc emits
+/// be declared `pub` - otherwise rustdoc emits
 /// `private_intra_doc_links` warnings that fail under `-D warnings`. We
 /// assert this at source level so the regression surfaces in `cargo
 /// test`, not in `cargo doc`.
@@ -210,8 +210,8 @@ fn module_level_docs_qualify_top_level_symbols() {
         ("src/server.rs", "[`shutdown_signal`]"),
         ("src/server.rs", "[`crate::bin::server`]"),
         ("src/server.rs", "[`tests/`]"),
-        // `[`audit/AUDIT-fts.md`](https://...)` — proper markdown URL link,
-        // not an intra-doc link — is accepted; the regression we guard
+        // `[`audit/AUDIT-fts.md`](https://...)` - proper markdown URL link,
+        // not an intra-doc link - is accepted; the regression we guard
         // against is the bare `[`audit/AUDIT-fts.md`]` intra-doc form.
         // Detected by looking for the backtick-closing `]` *without* a
         // following `(`. Matched as `]` not followed by `(` below.
@@ -233,7 +233,7 @@ fn module_level_docs_qualify_top_level_symbols() {
             if !trimmed.starts_with("//!") {
                 continue;
             }
-            // Only flag intra-doc links — i.e. `[`X`]` *not* followed by
+            // Only flag intra-doc links - i.e. `[`X`]` *not* followed by
             // `(`. A regular markdown URL like `[`X`](https://…)` is fine.
             let Some(pos) = line.find(needle) else {
                 continue;
@@ -249,14 +249,14 @@ fn module_level_docs_qualify_top_level_symbols() {
     assert!(
         hits.is_empty(),
         "Module-level rustdoc (`//!`) must qualify top-level symbols with \
-         `crate::` (e.g. `[\\`crate::Drevo\\`]`) — bare `[\\`Drevo\\`]` does \
+         `crate::` (e.g. `[\\`crate::Drevo\\`]`) - bare `[\\`Drevo\\`]` does \
          not resolve from a sub-module's header and rustdoc rejects it \
          under `-D warnings`. Offending lines:\n{}",
         hits.join("\n")
     );
 }
 
-/// `dump.rs` carried a redundant explicit link target — `[\`Properties\`](crate::model::Properties)`
+/// `dump.rs` carried a redundant explicit link target - `[\`Properties\`](crate::model::Properties)`
 /// where the link text equals the target's last segment. rustdoc emits
 /// `rustdoc::redundant_explicit_links` for those and they fail under
 /// `-D warnings`. Keep them out of the source so the regression cannot
@@ -273,7 +273,7 @@ fn dump_rs_has_no_redundant_explicit_link_targets() {
     assert!(
         bad.is_empty(),
         "`[\\`Properties\\`](crate::model::Properties)` is a redundant explicit \
-         link target — rustdoc emits `redundant_explicit_links` and `-D warnings` \
+         link target - rustdoc emits `redundant_explicit_links` and `-D warnings` \
          turns it into a build break. Replace with `[\\`crate::model::Properties\\`]`. \
          Offending lines:\n{}",
         bad.join("\n")

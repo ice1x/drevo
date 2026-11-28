@@ -1,5 +1,5 @@
-//! End-to-end tests for `CALL drevo.semantic.embed(text) YIELD vector` (#272)
-//! — the standalone server-side embedding procedure.
+//! End-to-end tests for `CALL drevo.semantic.embed(text) YIELD vector` (#272) -
+//! the standalone server-side embedding procedure.
 //!
 //! Unlike `drevo.semantic.query` (which fuses embed + an *unfiltered*
 //! brute-force scan), `embed` hands the query vector back so the client runs
@@ -9,7 +9,7 @@
 //!
 //! Gated on `embeddings-proxy` (like [`semantic_query_tests`]): they exercise
 //! the real [`drevo::embeddings::SyncEmbedder`] against a local in-process axum
-//! stub — no external network, deterministic. Run with:
+//! stub - no external network, deterministic. Run with:
 //!
 //! ```text
 //! cargo test --features embeddings-proxy --test semantic_embed_tests
@@ -120,7 +120,7 @@ fn semantic_embed_returns_query_vector() {
 
 /// The acceptance criterion from #272: `embed` composes with a client's own
 /// **filtered** Cypher via `cosine_similarity`, ranking only the rows that pass
-/// the predicate — the thing `semantic.query` cannot do because it drops filters.
+/// the predicate - the thing `semantic.query` cannot do because it drops filters.
 #[test]
 fn semantic_embed_feeds_filtered_cosine_similarity() {
     let rt = Runtime::new().expect("runtime");

@@ -7,13 +7,13 @@
 //! in a small transaction of its own, takes one of the server-wide slots
 //! ([`IngestSettings::workers`](crate::ingest::IngestSettings::workers)) and
 //! hands the item to a thread of its own, which asks the model outside any
-//! transaction and then writes the result — or the failure, with the time
-//! of the next attempt — in one transaction.
+//! transaction and then writes the result - or the failure, with the time
+//! of the next attempt - in one transaction.
 //!
 //! A job of the `community` pipeline has one item, which is the whole
 //! `drevo.community.summarize` call: its plan and model calls run with no
-//! gate held, then its write — which marks the item done in the same
-//! transaction — runs under the gate.
+//! gate held, then its write - which marks the item done in the same
+//! transaction - runs under the gate.
 //!
 //! The scheduler sleeps until [`wake`](crate::ingest::wake) (a job
 //! submitted, resumed or retried, an item finished, an extraction endpoint
@@ -22,7 +22,7 @@
 //! run: the scheduler sleeps until one is, however many jobs are queued.
 //!
 //! An item deleted while the model answered it is gone: nothing is written
-//! for it, and its job finishes — `cancelled` when it lost items — once
+//! for it, and its job finishes - `cancelled` when it lost items - once
 //! nothing else is left to run. An item whose chunk is not found after its
 //! extraction was written (its job's `source_id` differs from the source of
 //! its config) is `dead` with the reason.

@@ -1,7 +1,7 @@
 """Integration tests for the vector embedding surface (Phase 12 task `00079`).
 
 The unit tier exercises the bridge + helpers against the in-memory
-backend; this tier defends the boundary that matters — embeddings written
+backend; this tier defends the boundary that matters - embeddings written
 through the real *disk* redb backend survive a close/reopen, and
 `vector_search` works after the index is rebuilt from the durable store on
 the reopened handle.
@@ -33,7 +33,7 @@ def test_embeddings_persist_across_reopen(tmp_db_path: str) -> None:
         assert db.embedding_count() == 3
         target_id = nodes[1].id
 
-    # Reopen the same file — embeddings must still be there.
+    # Reopen the same file - embeddings must still be there.
     with drevo.Drevo.open(tmp_db_path) as db:
         assert db.embedding_count() == 3
         assert db.get_embedding(target_id) == [1.0, 1.0]

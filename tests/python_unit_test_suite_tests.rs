@@ -1,4 +1,4 @@
-//! Phase 16 task `00118` — text-level scaffolding tests for the
+//! Phase 16 task `00118` - text-level scaffolding tests for the
 //! `drevo-py` unit-test suite.
 //!
 //! These tests grep the on-disk layout of `drevo-py/tests/unit/` so the
@@ -9,7 +9,7 @@
 //!
 //! What this file locks (per RFC §2 layout + the 00118 task description):
 //!
-//! 1. `drevo-py/tests/unit/__init__.py` exists — the package marker.
+//! 1. `drevo-py/tests/unit/__init__.py` exists - the package marker.
 //! 2. `drevo-py/tests/unit/conftest.py` ships the shared fixtures
 //!    (`drevo_db`, `mock_drevo`, `det_embedder`, `orthogonal_embedder`,
 //!    `connected_chain`, `mixed_kind_neighbourhood`, `make_scored`).
@@ -19,9 +19,9 @@
 //! 4. Every error variant in `drevo.errors` + the typed hierarchy from
 //!    RFC §5.1 is mentioned in `test_errors.py` (at least textually).
 //! 5. MMR test file covers both `lambda_=1.0` (pure relevance) and
-//!    `lambda_=0.0` (pure diversity) — RFC §10 Q-4 semantics.
+//!    `lambda_=0.0` (pure diversity) - RFC §10 Q-4 semantics.
 //! 6. Context test file covers all three formats (`markdown`, `json`,
-//!    `turtle`) — RFC §8.4.
+//!    `turtle`) - RFC §8.4.
 //! 7. `drevo-py/CHANGELOG.md` records the 00118 entry.
 //!
 //! These checks deliberately stay shallow: a passing test here does not
@@ -58,7 +58,7 @@ fn unit_dir_exists() {
     let dir = unit_dir();
     assert!(
         dir.is_dir(),
-        "drevo-py/tests/unit/ must exist — RFC §2 package layout places \
+        "drevo-py/tests/unit/ must exist - RFC §2 package layout places \
          the 00118 unit suite under tests/unit/, alongside tests/integration/ \
          (00119) and tests/e2e/ (00120)"
     );
@@ -80,7 +80,7 @@ fn unit_package_marker_exists() {
 #[test]
 fn unit_conftest_declares_shared_fixtures() {
     let conftest = read(&unit_dir().join("conftest.py"));
-    // Each fixture name should appear as `def <name>` (definition) — a
+    // Each fixture name should appear as `def <name>` (definition) - a
     // `@pytest.fixture` decorator alone is not enough.
     assert_contains_all(
         &conftest,
@@ -94,13 +94,13 @@ fn unit_conftest_declares_shared_fixtures() {
             "def make_scored",
         ],
         "drevo-py/tests/unit/conftest.py must declare every fixture \
-         the test modules consume — a missing fixture surfaces as a \
+         the test modules consume - a missing fixture surfaces as a \
          `fixture not found` error at collect-time which the Python CI \
          job blocks on",
     );
     assert!(
         conftest.contains("@pytest.fixture"),
-        "conftest.py must use the @pytest.fixture decorator — bare \
+        "conftest.py must use the @pytest.fixture decorator - bare \
          functions are not picked up as fixtures"
     );
 }
@@ -112,7 +112,7 @@ fn unit_handle_test_module_exists() {
     let p = unit_dir().join("test_handle.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_handle.py must exist — covers \
+        "drevo-py/tests/unit/test_handle.py must exist - covers \
          Drevo.open / open_in_memory / close / __enter__ / __exit__ / \
          compact / health_check (RFC §3.3, §4.2)"
     );
@@ -123,7 +123,7 @@ fn unit_nodes_test_module_exists() {
     let p = unit_dir().join("test_nodes.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_nodes.py must exist — covers every \
+        "drevo-py/tests/unit/test_nodes.py must exist - covers every \
          node CRUD method on Drevo (RFC §3.3 \"Node CRUD\")"
     );
 }
@@ -133,7 +133,7 @@ fn unit_edges_test_module_exists() {
     let p = unit_dir().join("test_edges.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_edges.py must exist — covers every \
+        "drevo-py/tests/unit/test_edges.py must exist - covers every \
          edge CRUD method on Drevo (RFC §3.3 \"Edge CRUD\")"
     );
 }
@@ -143,7 +143,7 @@ fn unit_traversal_test_module_exists() {
     let p = unit_dir().join("test_traversal.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_traversal.py must exist — covers \
+        "drevo-py/tests/unit/test_traversal.py must exist - covers \
          bfs / dfs / shortest_path / subgraph / neighbors"
     );
 }
@@ -153,7 +153,7 @@ fn unit_fts_test_module_exists() {
     let p = unit_dir().join("test_fts.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_fts.py must exist — covers \
+        "drevo-py/tests/unit/test_fts.py must exist - covers \
          search_fts (RFC §3.3)"
     );
 }
@@ -163,7 +163,7 @@ fn unit_errors_test_module_exists() {
     let p = unit_dir().join("test_errors.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_errors.py must exist — every typed \
+        "drevo-py/tests/unit/test_errors.py must exist - every typed \
          exception in RFC §5.1 needs at least one focused test (the \
          00118 task observation explicitly requires this)"
     );
@@ -174,7 +174,7 @@ fn unit_rag_ingest_test_module_exists() {
     let p = unit_dir().join("test_rag_ingest.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_rag_ingest.py must exist — covers \
+        "drevo-py/tests/unit/test_rag_ingest.py must exist - covers \
          ingest_documents + IngestSchema (RFC §8.2)"
     );
 }
@@ -184,7 +184,7 @@ fn unit_rag_neighborhood_test_module_exists() {
     let p = unit_dir().join("test_rag_neighborhood.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_rag_neighborhood.py must exist — \
+        "drevo-py/tests/unit/test_rag_neighborhood.py must exist - \
          covers expand_neighborhood (RFC §8 + task 00117 description)"
     );
 }
@@ -194,7 +194,7 @@ fn unit_rag_retriever_test_module_exists() {
     let p = unit_dir().join("test_rag_retriever.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_rag_retriever.py must exist — covers \
+        "drevo-py/tests/unit/test_rag_retriever.py must exist - covers \
          Retriever.retrieve dispatch + behaviour (RFC §8.3)"
     );
 }
@@ -204,7 +204,7 @@ fn unit_rag_context_test_module_exists() {
     let p = unit_dir().join("test_rag_context.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_rag_context.py must exist — covers \
+        "drevo-py/tests/unit/test_rag_context.py must exist - covers \
          Context.to_text formatting for markdown / json / turtle (RFC §8.4)"
     );
 }
@@ -214,7 +214,7 @@ fn unit_rag_mmr_test_module_exists() {
     let p = unit_dir().join("test_rag_mmr.py");
     assert!(
         p.exists(),
-        "drevo-py/tests/unit/test_rag_mmr.py must exist — covers \
+        "drevo-py/tests/unit/test_rag_mmr.py must exist - covers \
          MMRReranker math under both lambda_ semantics (RFC §10 Q-4)"
     );
 }
@@ -224,7 +224,7 @@ fn unit_rag_mmr_test_module_exists() {
 #[test]
 fn unit_errors_module_mentions_every_drevo_error_variant() {
     let body = read(&unit_dir().join("test_errors.py"));
-    // The Phase 16 RFC §5.1 hierarchy — each name must appear at least
+    // The Phase 16 RFC §5.1 hierarchy - each name must appear at least
     // once so a future PR cannot drop coverage by accident.
     assert_contains_all(
         &body,
@@ -267,13 +267,13 @@ fn unit_mmr_module_covers_both_lambda_semantics() {
     assert!(
         body.contains("lambda_=1.0"),
         "test_rag_mmr.py must include at least one test pinning \
-         lambda_=1.0 (pure relevance) — RFC §10 Q-4 fixes this end \
+         lambda_=1.0 (pure relevance) - RFC §10 Q-4 fixes this end \
          of the spectrum"
     );
     assert!(
         body.contains("lambda_=0.0"),
         "test_rag_mmr.py must include at least one test pinning \
-         lambda_=0.0 (pure diversity) — RFC §10 Q-4 fixes this end \
+         lambda_=0.0 (pure diversity) - RFC §10 Q-4 fixes this end \
          of the spectrum"
     );
 }
@@ -287,7 +287,7 @@ fn unit_context_module_covers_all_three_formats() {
         &body,
         &["\"markdown\"", "\"json\"", "\"turtle\""],
         "test_rag_context.py must include at least one assertion per \
-         supported Context.to_text format — RFC §8.4 fixes the trio \
+         supported Context.to_text format - RFC §8.4 fixes the trio \
          (markdown / json / turtle) and the 00118 task description \
          calls it out explicitly",
     );
@@ -311,7 +311,7 @@ fn changelog_records_00118_entry() {
 #[test]
 fn unit_handle_module_covers_every_lifecycle_method() {
     let body = read(&unit_dir().join("test_handle.py"));
-    // RFC §3.3 enumerates the lifecycle surface — each name must
+    // RFC §3.3 enumerates the lifecycle surface - each name must
     // appear so the unit tests do not silently regress one method.
     assert_contains_all(
         &body,

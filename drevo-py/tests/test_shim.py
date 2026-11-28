@@ -3,7 +3,7 @@
 The text-level scaffolding tests in `tests/python_package_wheels_tests.rs`
 verify the shim's *structure* (UUID wrap mentioned, `InvalidWeightError`
 subclass declared, `__all__` lists the right symbols). These tests
-verify the shim's *behaviour* at runtime — that `node.uuid` is really
+verify the shim's *behaviour* at runtime - that `node.uuid` is really
 a `uuid.UUID`, that every symbol in `__all__` is really importable, that
 `InvalidWeightError` is really a `ValueError`.
 
@@ -32,7 +32,7 @@ def test_version_is_nonempty_string():
     """`drevo.__version__` must surface the cdylib's CARGO_PKG_VERSION."""
     assert isinstance(drevo.__version__, str)
     assert drevo.__version__  # non-empty
-    # Cargo's default semver scheme — at least two dots OR a major-only.
+    # Cargo's default semver scheme - at least two dots OR a major-only.
     # `0.1.0` parses today; this assertion catches a future shim that
     # accidentally re-exports `None` or an empty string.
     assert any(ch.isdigit() for ch in drevo.__version__)
@@ -43,7 +43,7 @@ def test_all_lists_every_public_symbol():
     for name in drevo.__all__:
         assert hasattr(drevo, name), (
             f"`drevo.__all__` lists `{name}` but `drevo.{name}` does "
-            f"not resolve — shim re-export missing"
+            f"not resolve - shim re-export missing"
         )
 
 
@@ -82,7 +82,7 @@ def test_all_lists_every_public_symbol():
 def test_public_symbol_is_importable(name):
     """Every documented public symbol must actually exist on `drevo`.
 
-    Matches RFC §3.3 + the `__init__.pyi` stub block — catches a shim
+    Matches RFC §3.3 + the `__init__.pyi` stub block - catches a shim
     re-export typo that the text-level scaffolding tests would miss
     (those check for the literal string but not that the symbol
     actually resolves).
@@ -97,7 +97,7 @@ def test_invalid_weight_error_subclasses_value_error():
     """`drevo.InvalidWeightError` MUST inherit `ValueError` (RFC §5.3).
 
     Without this guarantee, callers cannot rely on
-    `except ValueError:` catching a bad-weight failure — which is the
+    `except ValueError:` catching a bad-weight failure - which is the
     canonical Python idiom this RFC amendment preserves.
     """
     assert issubclass(drevo.InvalidWeightError, ValueError)
@@ -115,7 +115,7 @@ def test_exception_hierarchy_roots_at_drevo_error():
     """Every typed exception (except `InvalidWeightError`) must root at
     `DrevoError` so `except drevo.DrevoError:` catches them all.
 
-    `InvalidWeightError` is the deliberate exception per RFC §5.3 — it
+    `InvalidWeightError` is the deliberate exception per RFC §5.3 - it
     extends `ValueError`, not `DrevoError`, because "bad numeric input"
     is the canonical Python idiom for `ValueError`.
     """
@@ -163,7 +163,7 @@ def test_node_uuid_is_uuid_uuid(drevo_db):
     """
     node = drevo_db.create_node(drevo.NewNode(kind="note", title="hello"))
     assert isinstance(node.uuid, uuid.UUID), (
-        f"node.uuid is {type(node.uuid).__name__}, expected uuid.UUID — "
+        f"node.uuid is {type(node.uuid).__name__}, expected uuid.UUID - "
         f"the shim in drevo/__init__.py must wrap the cdylib's bytes "
         f"return as uuid.UUID(bytes=...). See RFC §12.2."
     )
@@ -191,7 +191,7 @@ def test_node_uuid_is_idempotent(drevo_db):
 
 
 def test_get_node_by_uuid_accepts_bytes_on_input(drevo_db):
-    """The cdylib still takes `bytes` on the INPUT side — only the
+    """The cdylib still takes `bytes` on the INPUT side - only the
     return side is wrapped. This contract lets `get_node_by_uuid` keep
     its zero-copy path for callers that already hold `bytes`.
 
@@ -235,7 +235,7 @@ def test_context_manager_closes_handle():
         assert opened is db
         node = db.create_node(drevo.NewNode(kind="note", title="t"))
         assert node.id >= 1
-    # After exit, the handle is closed — every method must raise.
+    # After exit, the handle is closed - every method must raise.
     with pytest.raises(RuntimeError):
         db.create_node(drevo.NewNode(kind="note", title="post-close"))
 
@@ -256,7 +256,7 @@ def test_drevo_class_has_every_rfc_method():
     """Every method enumerated in RFC §3.3 is actually present on the
     runtime `Drevo` class.
 
-    The `.pyi` stub claims these exist — if the cdylib ever drops one
+    The `.pyi` stub claims these exist - if the cdylib ever drops one
     without updating the stub, mypy on the user's code would lie. This
     test catches the drift at runtime.
     """
@@ -291,7 +291,7 @@ def test_drevo_class_has_every_rfc_method():
     ]
     for name in required:
         assert callable(getattr(drevo.Drevo, name, None)), (
-            f"drevo.Drevo.{name} is missing or not callable — RFC §3.3 "
+            f"drevo.Drevo.{name} is missing or not callable - RFC §3.3 "
             f"lists this method as part of the handle's contract"
         )
 
@@ -318,7 +318,7 @@ def test_node_class_exposes_documented_attributes(drevo_db):
         # / None / "".
         sentinel = object()
         assert getattr(node, attr, sentinel) is not sentinel, (
-            f"Node.{attr} is missing at runtime — drift between the " f".pyi stub and the cdylib"
+            f"Node.{attr} is missing at runtime - drift between the " f".pyi stub and the cdylib"
         )
 
 
@@ -341,7 +341,7 @@ def test_edge_class_exposes_documented_attributes(drevo_db):
     ]:
         sentinel = object()
         assert getattr(edge, attr, sentinel) is not sentinel, (
-            f"Edge.{attr} is missing at runtime — drift between the " f".pyi stub and the cdylib"
+            f"Edge.{attr} is missing at runtime - drift between the " f".pyi stub and the cdylib"
         )
     assert edge.weight == pytest.approx(2.5)
 
@@ -351,7 +351,7 @@ def test_errors_module_is_importable():
     path; assert it resolves and is the same class as
     `drevo.InvalidWeightError`.
     """
-    from drevo import errors  # noqa: F401 — import side-effect is the test
+    from drevo import errors  # noqa: F401 - import side-effect is the test
 
     assert inspect.isclass(errors.InvalidWeightError)
     assert errors.InvalidWeightError is drevo.InvalidWeightError

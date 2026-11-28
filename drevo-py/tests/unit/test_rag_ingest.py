@@ -55,7 +55,7 @@ def test_ingest_documents_kind_override_argument(drevo_db: drevo.Drevo) -> None:
 def test_ingest_schema_default_field_factories_are_independent() -> None:
     """Two `IngestSchema()` instances must not share the same property_map.
 
-    Locks the `dataclass(field(default_factory=dict))` contract — a
+    Locks the `dataclass(field(default_factory=dict))` contract - a
     regression to a class-level mutable default would silently link
     every IngestSchema's map.
     """
@@ -150,7 +150,7 @@ def test_ingest_embedder_size_mismatch_raises(drevo_db: drevo.Drevo) -> None:
 def test_ingest_embedder_called_once_with_all_contents(
     drevo_db: drevo.Drevo,
 ) -> None:
-    """The embedder is called *once* with the full list — RFC §8.2
+    """The embedder is called *once* with the full list - RFC §8.2
     promises one batch call to make GPU embedders affordable.
     """
     calls: list[list[str]] = []
@@ -171,7 +171,7 @@ def test_ingest_embedder_called_once_with_all_contents(
 
 
 def test_ingest_accepts_arbitrary_document_shape(drevo_db: drevo.Drevo) -> None:
-    """Any class with `page_content` + `metadata` ingests cleanly — that
+    """Any class with `page_content` + `metadata` ingests cleanly - that
     is the entire point of the duck-typed Protocol (RFC §8.1).
     """
 

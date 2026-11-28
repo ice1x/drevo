@@ -1,8 +1,8 @@
 //! Opt-in indexes on nested property paths (issue #578).
 //!
-//! A [`NativePathIndex`] indexes values *inside* map properties — one declared
+//! A [`NativePathIndex`] indexes values *inside* map properties - one declared
 //! path (`meta.author`), every path under a map (`meta.*`), or the whole
-//! property map (`*`) — optionally only for nodes with a given label. Lookups
+//! property map (`*`) - optionally only for nodes with a given label. Lookups
 //! return a superset of the matching node ids, or `None` when no declared index
 //! covers the path (the caller then scans).
 
@@ -132,7 +132,7 @@ fn labelled_index_serves_only_patterns_requiring_that_label() {
     let (g, crash, _, _) = bug_tracker();
     let mut idx = NativePathIndex::new(vec![spec(Some("Bug"), &["meta", "severity"], false)]);
     idx.sync(&g);
-    // `MATCH (n:Bug) WHERE n.meta.severity = 'high'` — served, Bugs only.
+    // `MATCH (n:Bug) WHERE n.meta.severity = 'high'` - served, Bugs only.
     assert_eq!(
         idx.node_ids(
             &labels(&["Bug"]),

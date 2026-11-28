@@ -1,8 +1,8 @@
-# drevo — developer-facing audit / CI matrix.
+# drevo - developer-facing audit / CI matrix.
 #
 # Phase 8.5 audit task `00113` cross-cutting refactor target. Lives in the
 # repo root so a fresh checkout can run the full quality matrix with a single
-# command — and so `tests/crosscut_audit_tests.rs::makefile_*` can lock it in.
+# command - and so `tests/crosscut_audit_tests.rs::makefile_*` can lock it in.
 #
 #   make audit       # full audit matrix (fmt + clippy native + clippy wasm
 #                    # + test + doc + dead deps + coverage summary)
@@ -17,11 +17,11 @@
 #                    # the toolchain declared in Cargo.toml `rust-version`)
 #
 # Tools used:
-#   * cargo machete  — install with `cargo install cargo-machete --locked`
-#   * cargo llvm-cov — install with `cargo install cargo-llvm-cov --locked`
+#   * cargo machete  - install with `cargo install cargo-machete --locked`
+#   * cargo llvm-cov - install with `cargo install cargo-llvm-cov --locked`
 #                     and `rustup component add llvm-tools-preview`
 # A missing tool is downgraded to a warning so the rest of `make audit`
-# keeps running — CI installs all three.
+# keeps running - CI installs all three.
 
 CARGO ?= cargo
 WASM_TARGET := wasm32-unknown-unknown
@@ -33,7 +33,7 @@ IMAGE ?= ghcr.io/ice1x/drevo
         image release release-patch release-major release-image next-version
 
 help:
-	@echo "drevo audit matrix — see Makefile header for full list."
+	@echo "drevo audit matrix - see Makefile header for full list."
 	@echo "  make audit       full matrix (default goal of CI mirror)"
 	@echo "  make fmt         cargo fmt --check"
 	@echo "  make clippy      cargo clippy --all-targets --all-features -D warnings"

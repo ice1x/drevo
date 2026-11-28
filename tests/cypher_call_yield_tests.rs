@@ -1,14 +1,14 @@
-//! End-to-end Cypher tests — Phase 10 follow-up task `00145`.
+//! End-to-end Cypher tests - Phase 10 follow-up task `00145`.
 //!
 //! `CALL proc.name(args) [YIELD col [AS alias] … [WHERE pred]]` invokes a
 //! built-in procedure. drevo ships the read-only schema-introspection
 //! procedures Neo4j drivers and tools expect:
 //!
-//! * `db.labels()` — YIELD `label`: every distinct node label (the primary
+//! * `db.labels()` - YIELD `label`: every distinct node label (the primary
 //!   kind plus any secondary `:Extra` labels), sorted.
-//! * `db.relationshipTypes()` — YIELD `relationshipType`: every distinct
+//! * `db.relationshipTypes()` - YIELD `relationshipType`: every distinct
 //!   edge kind, sorted.
-//! * `db.propertyKeys()` — YIELD `propertyKey`: every distinct property key
+//! * `db.propertyKeys()` - YIELD `propertyKey`: every distinct property key
 //!   across nodes and edges (the reserved `_labels` key is never exposed),
 //!   sorted.
 //!
@@ -161,7 +161,7 @@ fn erp_secondary_labels_appear_in_label_listing() {
 fn erp_relationship_types_are_distinct_and_sorted() {
     let db = db();
     // `CONTAINS` is a reserved Cypher keyword (string predicate); used as a
-    // relationship type it must round-trip with its written casing — see the
+    // relationship type it must round-trip with its written casing - see the
     // `consume_name` keyword-casing fix and `keyword_rel_type_*` regressions.
     exec(
         "CREATE (o:Order)-[:CONTAINS]->(:LineItem), \
@@ -251,7 +251,7 @@ fn error_is_deterministic_on_empty_graph() {
 }
 
 // ---- Vector search (issue #202 Part 2) -------------------------------------
-// `CALL drevo.vector.query(label, property, query, k) YIELD node, score` —
+// `CALL drevo.vector.query(label, property, query, k) YIELD node, score` -
 // top-k nodes ranked by cosine similarity to a query vector. Brute-force,
 // works with externally-computed embeddings stored as a list node property.
 
@@ -377,7 +377,7 @@ fn vector_query_wrong_arity_is_an_error() {
 }
 
 // ---- Full-text search (issue #208) -----------------------------------------
-// `CALL fts.search(query, k) YIELD node, score` — BM25-ranked matching nodes
+// `CALL fts.search(query, k) YIELD node, score` - BM25-ranked matching nodes
 // from the full-text index (task 00131), the FTS analogue of
 // `drevo.vector.query`.
 

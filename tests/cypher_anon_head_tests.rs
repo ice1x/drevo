@@ -1,8 +1,8 @@
-//! End-to-end Cypher tests — Phase 10 follow-up task `00143`.
+//! End-to-end Cypher tests - Phase 10 follow-up task `00143`.
 //!
 //! A `MATCH` pattern whose **head** (or any non-final intermediate) node is
-//! *anonymous* — `MATCH (:Person)-[:KNOWS]->(b)` or `MATCH ()-->(b)` or
-//! `MATCH (a)-->()-->(c)` — is ordinary, extremely common Cypher. The parser
+//! *anonymous* - `MATCH (:Person)-[:KNOWS]->(b)` or `MATCH ()-->(b)` or
+//! `MATCH (a)-->()-->(c)` - is ordinary, extremely common Cypher. The parser
 //! has always produced these (`00062`) but the executor used to re-derive the
 //! predecessor node of each segment by looking it up in the bindings; for an
 //! anonymous node there is no variable to look up and (in an unnamed path) no
@@ -74,7 +74,7 @@ fn cbt_anonymous_thought_head_finds_distortions() {
         "CREATE (:Thought {title: 'They hate me'})-[:HAS_DISTORTION]->(:Distortion {kind: 'mind_reading'})",
         &d,
     );
-    // We do not care which thought — just enumerate the distortions reached
+    // We do not care which thought - just enumerate the distortions reached
     // from any thought via an anonymous head.
     let rows = run(
         "MATCH (:Thought)-[:HAS_DISTORTION]->(distortion) RETURN distortion.kind AS kind",
@@ -192,7 +192,7 @@ fn bug_anonymous_head_with_parameter_target_filter() {
 fn anonymous_head_no_match_is_empty_not_error() {
     let d = db();
     exec("CREATE (:Person {name: 'Solo'})", &d);
-    // No outgoing :KNOWS — must yield zero rows, never the old InvalidCreate.
+    // No outgoing :KNOWS - must yield zero rows, never the old InvalidCreate.
     let rows = run("MATCH (:Person)-[:KNOWS]->(b) RETURN b.name AS name", &d);
     assert!(rows.is_empty());
 }
@@ -235,7 +235,7 @@ fn named_path_over_anonymous_head_binds_full_path() {
         &d,
     );
     // Named path whose head AND intermediate are anonymous still records every
-    // hop — `nodes(p)` returns all three endpoints.
+    // hop - `nodes(p)` returns all three endpoints.
     let rows = run(
         "MATCH p = (:Person {name: 'Alice'})-[:KNOWS]->()-[:KNOWS]->(c) \
          RETURN length(p) AS hops, c.name AS last",

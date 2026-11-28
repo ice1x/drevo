@@ -5,7 +5,7 @@
 //! [`NativeGraph`] converged with a *source* (the
 //! primary) by **tailing the source's change-feed**
 //! ([`changes_since`](crate::native::NativeGraph::changes_since)) and applying
-//! each committed op verbatim — ids, uuids and timestamps preserved — so the
+//! each committed op verbatim - ids, uuids and timestamps preserved - so the
 //! replica is a faithful, byte-identical mirror. This is single-master
 //! log-shipping replication, distinct from the id-remapping peer-to-peer merge
 //! in [`apply_delta`](crate::native::NativeGraph::apply_delta): a follower does
@@ -23,8 +23,8 @@
 //!
 //! [`NativeReplica`] tails an in-process source
 //! `NativeGraph` handle. [`WalTailer`] tails a
-//! primary's **on-disk WAL file** across a process or machine boundary — the
-//! real cross-process feed transport — yielding the same
+//! primary's **on-disk WAL file** across a process or machine boundary - the
+//! real cross-process feed transport - yielding the same
 //! [`WalOp`](crate::native::WalOp)s to apply. Both feed the same verbatim
 //! apply path.
 //!
@@ -32,7 +32,7 @@
 //!
 //! [`into_primary`](crate::replica::NativeReplica::into_primary) /
 //! [`promote_durable`](crate::replica::NativeReplica::promote_durable) turn a
-//! replica into a writable primary once the old primary is gone — **coordinated
+//! replica into a writable primary once the old primary is gone - **coordinated
 //! (manual) failover**, since a warm mirror already holds the full state.
 //! *Automatic*, consensus-based failover (leader election, split-brain
 //! arbitration via Raft/`openraft`) is a separate, heavier track tracked in its
@@ -78,7 +78,7 @@ impl NativeReplica {
         }
     }
 
-    /// The replicated graph — serve reads from here.
+    /// The replicated graph - serve reads from here.
     #[must_use]
     pub fn graph(&self) -> &NativeGraph {
         &self.graph
@@ -91,7 +91,7 @@ impl NativeReplica {
         self.cursor
     }
 
-    /// How far behind `source` this replica currently is — the number of
+    /// How far behind `source` this replica currently is - the number of
     /// committed changes it has not yet applied. `0` means caught up.
     #[must_use]
     pub fn lag(&self, source: &NativeGraph) -> u64 {
@@ -109,7 +109,7 @@ impl NativeReplica {
     pub fn sync_from(&mut self, source: &NativeGraph) -> Result<SyncReport> {
         let batch = source.changes_since(self.cursor);
         if batch.lagged {
-            // History we hadn't seen was trimmed — rebuild from the source's
+            // History we hadn't seen was trimmed - rebuild from the source's
             // current state instead of applying a gapped tail.
             let ops = source.dump_wal();
             let applied = ops.len();
@@ -133,7 +133,7 @@ impl NativeReplica {
 
     /// Promote this replica to a **writable primary**, handing back its mirrored
     /// graph. The replica role ends (`self` is consumed) and the returned
-    /// [`NativeGraph`] now accepts writes — the failover path when the old
+    /// [`NativeGraph`] now accepts writes - the failover path when the old
     /// primary is gone.
     ///
     /// This is **coordinated / manual** failover: the caller is responsible for
@@ -152,7 +152,7 @@ impl NativeReplica {
     /// new WAL) and return it, so writes accepted after failover are crash-safe.
     /// `self` is consumed. `path` should be a fresh WAL location for the new
     /// primary; seeding an existing non-empty WAL re-logs the overlapping ops
-    /// (harmless — upserts are idempotent by id — but it grows the log).
+    /// (harmless - upserts are idempotent by id - but it grows the log).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn promote_durable(self, path: impl AsRef<std::path::Path>) -> Result<NativeGraph> {
         let primary = NativeGraph::open_durable(path)?;
@@ -161,15 +161,15 @@ impl NativeReplica {
     }
 }
 
-/// Tails a primary's on-disk WAL file — the append-only op log the durable
+/// Tails a primary's on-disk WAL file - the append-only op log the durable
 /// engine writes (`native.wal`), in any
-/// [`WalFormat`](crate::wal_format::WalFormat) — across a process or machine
+/// [`WalFormat`](crate::wal_format::WalFormat) - across a process or machine
 /// boundary. This is the cross-process feed transport: a replica process
 /// opens the leader's WAL path and polls for newly-appended records.
 ///
 /// [`poll`](Self::poll) returns the [`WalOp`](crate::native::WalOp)s appended
 /// since the last call and advances a byte cursor past every **complete**
-/// record; a trailing partial record — a write still in flight — is left for
+/// record; a trailing partial record - a write still in flight - is left for
 /// the next poll, so a reader never applies half a record.
 /// Feed the returned ops to
 /// [`NativeGraph::apply_wal_ops`](crate::native::NativeGraph::apply_wal_ops) (or
@@ -206,7 +206,7 @@ impl WalTailer {
         }
     }
 
-    /// The byte cursor — how far into the WAL this tailer has consumed. Persist
+    /// The byte cursor - how far into the WAL this tailer has consumed. Persist
     /// it to resume after a restart via [`resume_at`](Self::resume_at).
     #[must_use]
     pub fn offset(&self) -> u64 {
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn promoted_replica_keeps_its_data_and_accepts_writes() {
         // A replica mirrors a source, then the source "dies" and the replica is
-        // promoted to a writable primary — it keeps the mirrored data and now
+        // promoted to a writable primary - it keeps the mirrored data and now
         // takes new writes.
         let src = NativeGraph::new();
         let a = src.create_node(nn("n", "a")).unwrap();
@@ -420,7 +420,7 @@ mod tests {
         src.create_node(nn("n", "b")).unwrap();
 
         // The source trims its whole retained feed before the replica (cursor 0)
-        // ever tails it — so the next sync must re-snapshot, not apply a gap.
+        // ever tails it - so the next sync must re-snapshot, not apply a gap.
         src.trim_before(src.change_head());
 
         let mut replica = NativeReplica::new();

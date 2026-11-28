@@ -1,6 +1,6 @@
 # Build the mdBook documentation site from docs/ and deploy it to GitHub Pages.
 #
-# Pages Source is "GitHub Actions" — there is no gh-pages branch; the built
+# Pages Source is "GitHub Actions" - there is no gh-pages branch; the built
 # book/ directory is uploaded as a Pages artifact and deployed directly. Runs
 # only when the docs (or this pipeline) change on main, plus manual dispatch.
 # Invariants are locked by tests/docs_site_tests.rs.

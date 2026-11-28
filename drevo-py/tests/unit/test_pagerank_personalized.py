@@ -1,5 +1,5 @@
-"""Unit tests for `CALL drevo.pagerank.personalized` from Python —
-PageRank whose random walk jumps back to seed nodes — and the config map
+"""Unit tests for `CALL drevo.pagerank.personalized` from Python -
+PageRank whose random walk jumps back to seed nodes - and the config map
 `drevo.pagerank` accepts.
 
 The graph is a chain of people `p0 -> p1 -> p2` plus an unrelated pair

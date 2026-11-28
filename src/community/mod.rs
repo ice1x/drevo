@@ -11,9 +11,9 @@
 //! (:Community)-[:RELATED_COMMUNITY {weight}]->(:Community) // relationships between the two
 //! ```
 //!
-//! This module holds the pure parts — the config maps, the partition, the
+//! This module holds the pure parts - the config maps, the partition, the
 //! in-community ranking, the weights between communities, the member-set
-//! hash and the summarisers — tested without an engine; the procedures in
+//! hash and the summarisers - tested without an engine; the procedures in
 //! the executor read the graph, hand it over and write the result.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -41,7 +41,7 @@ pub(crate) const DEFAULT_LAYER: &str = "default";
 pub(crate) const DEFAULT_EMBEDDING_PROPERTY: &str = "embedding";
 
 /// The labels left out of the partition unless `labels` names others:
-/// conversation and bookkeeping, not knowledge — communities included.
+/// conversation and bookkeeping, not knowledge - communities included.
 pub(crate) const DEFAULT_EXCLUDED_LABELS: [&str; 9] = [
     "Message",
     "ReasoningTrace",
@@ -519,7 +519,7 @@ where
 }
 
 /// The document statistics keywords are ranked by: one document per
-/// partitioned node (its text properties), indexed by trigram — so a
+/// partitioned node (its text properties), indexed by trigram - so a
 /// community's keywords depend on the graph being partitioned, not on
 /// whatever else (earlier summaries, traces) the full-text index holds.
 #[derive(Debug, Clone, Default)]
@@ -1114,7 +1114,7 @@ mod tests {
 
     #[test]
     fn the_hub_ranks_first_inside_its_community() {
-        // 1 is linked to 2, 3 and 4; 2–3 too; 9 is outside and ignored.
+        // 1 is linked to 2, 3 and 4; 2-3 too; 9 is outside and ignored.
         let edges = [
             (1, 2, 1.0),
             (1, 3, 1.0),

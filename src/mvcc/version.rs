@@ -1,11 +1,11 @@
-//! Tuple versioning — the `xmin` / `xmax` header carried by every stored
+//! Tuple versioning - the `xmin` / `xmax` header carried by every stored
 //! value.
 //!
 //! An MVCC store never overwrites or deletes in place. Instead each logical
 //! key owns a *chain* of [`Version`]s, and every version is stamped with:
 //!
-//! * `xmin` — the id of the transaction that **created** it, and
-//! * `xmax` — the id of the transaction that **superseded or deleted** it,
+//! * `xmin` - the id of the transaction that **created** it, and
+//! * `xmax` - the id of the transaction that **superseded or deleted** it,
 //!   or [`INVALID_XID`] while the version is still live.
 //!
 //! A reader then resolves a key by walking the chain newest-first and
@@ -66,15 +66,15 @@ impl<V> Version<V> {
     /// Decide whether this version is visible under `snapshot`.
     ///
     /// A version is visible iff its creator's effect is visible **and** its
-    /// deleter's effect is *not* — i.e. the row had been inserted, and not
+    /// deleter's effect is *not* - i.e. the row had been inserted, and not
     /// yet deleted, as far as this snapshot can tell:
     ///
     /// ```text
     /// visible = snapshot.sees_effect(xmin) && !snapshot.sees_effect(xmax)
     /// ```
     ///
-    /// (`sees_effect(INVALID_XID)` is `false`, so a live version — `xmax ==
-    /// INVALID_XID` — is visible whenever its creator is.)
+    /// (`sees_effect(INVALID_XID)` is `false`, so a live version - `xmax ==
+    /// INVALID_XID` - is visible whenever its creator is.)
     ///
     /// # Errors
     ///
@@ -91,17 +91,17 @@ impl<V> Version<V> {
     /// collector (Phase 13 task `00082`) given a GC `horizon`.
     ///
     /// The `horizon` is the oldest `xmin` of any reader the collector must
-    /// respect — see [`TransactionManager::gc_horizon`]. A version is
+    /// respect - see [`TransactionManager::gc_horizon`]. A version is
     /// reclaimable iff it can never again become visible to a snapshot whose
     /// `xmin >= horizon`, which is true in exactly two cases:
     ///
-    /// 1. **Superseded or deleted** — its `xmax` is a *committed* transaction
+    /// 1. **Superseded or deleted** - its `xmax` is a *committed* transaction
     ///    fully below the horizon (`xmax < horizon`). Because `xmax <
     ///    horizon <= snapshot.xmin` for every respected snapshot, the
     ///    deleter is neither in that snapshot's future nor its active set, so
     ///    every such snapshot sees the deletion and this version is invisible
     ///    to all of them.
-    /// 2. **Dead on arrival** — its `xmin` is an *aborted* transaction below
+    /// 2. **Dead on arrival** - its `xmin` is an *aborted* transaction below
     ///    the horizon (`xmin < horizon`). An aborted creator's effect is
     ///    invisible to everyone, so the version was never and will never be
     ///    visible.

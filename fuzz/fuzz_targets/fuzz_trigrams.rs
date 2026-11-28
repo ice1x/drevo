@@ -20,7 +20,7 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|input: &str| {
     let result = trigrams(input);
 
-    // 1. Strictly ascending order — combines "sorted" and "deduplicated".
+    // 1. Strictly ascending order - combines "sorted" and "deduplicated".
     for pair in result.windows(2) {
         assert!(
             pair[0] < pair[1],
@@ -42,7 +42,7 @@ fuzz_target!(|input: &str| {
     }
 
     // 3. Empty-on-short rule. If the normalized text has < 2 chars the
-    //    output must be empty — there are no 2-char or 3-char windows to
+    //    output must be empty - there are no 2-char or 3-char windows to
     //    extract.
     let norm = normalize(input);
     if norm.chars().count() < 2 {

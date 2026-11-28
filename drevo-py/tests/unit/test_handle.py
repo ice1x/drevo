@@ -1,13 +1,13 @@
 """Unit tests for `drevo.Drevo` handle lifecycle (00118).
 
 Boundary: every public method on the handle that does NOT touch graph
-state — `open` / `open_in_memory` / `close` / `__enter__` / `__exit__`
+state - `open` / `open_in_memory` / `close` / `__enter__` / `__exit__`
 / `compact` / `health_check`. CRUD lives in `test_nodes.py` /
 `test_edges.py`.
 
 Per RFC §4.2 the handle releases the GIL around every storage I/O
 call; this file asserts the visible *contract* (return types, idempotence,
-post-close behaviour) — the GIL discipline itself is asserted by the
+post-close behaviour) - the GIL discipline itself is asserted by the
 text-level scaffolding tests in `tests/python_api_scaffolding_tests.rs`.
 """
 
@@ -34,7 +34,7 @@ def test_open_with_tempfile_round_trips() -> None:
     """`Drevo.open(path)` produces a handle whose state survives close+reopen.
 
     A unit test owns the temp path it creates so the assertion lives
-    fully inside the test body — the integration suite is where larger
+    fully inside the test body - the integration suite is where larger
     multi-test fixtures over the disk backend belong.
     """
     with tempfile.TemporaryDirectory() as td:
@@ -65,7 +65,7 @@ def test_context_manager_exit_closes_handle() -> None:
 
 
 def test_close_is_idempotent() -> None:
-    """Calling `close()` twice does not raise — defensive for test
+    """Calling `close()` twice does not raise - defensive for test
     fixtures that may double-close on cleanup paths.
     """
     db = drevo.Drevo.open_in_memory()
@@ -104,7 +104,7 @@ def test_compact_report_as_dict_has_expected_keys(drevo_db: drevo.Drevo) -> None
 
 
 def test_compact_bytes_reclaimed_is_non_negative(drevo_db: drevo.Drevo) -> None:
-    """`bytes_reclaimed` never goes negative — a no-op compact still
+    """`bytes_reclaimed` never goes negative - a no-op compact still
     returns ≥ 0, matching the i64 → u64 contract on the Rust side.
     """
     report = drevo_db.compact()

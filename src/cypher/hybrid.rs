@@ -105,7 +105,7 @@ pub struct Fused<Id> {
 /// position (a repeated id keeps its first, best rank). The result is ordered
 /// by descending score, then candidates present in both legs first, then
 /// ascending id, so equal inputs always give the same order. A candidate
-/// whose score is zero — returned only by legs weighted `0` — is left out.
+/// whose score is zero - returned only by legs weighted `0` - is left out.
 ///
 /// ```
 /// use drevo::cypher::hybrid::{rrf_fuse, Leg, LegWeights};

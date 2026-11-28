@@ -10,7 +10,7 @@ Domain model:
 The scenario walks the org chart, the inventory, and one in-flight
 order. It is intentionally small (one company, two departments, four
 employees, three products, one customer + order) so the projections
-asserted below stay obvious — the same checks a finance dashboard
+asserted below stay obvious - the same checks a finance dashboard
 would render.
 """
 
@@ -113,7 +113,7 @@ def test_purchase_order_line_items_via_supplies(disk_db: drevo.Drevo) -> None:
 
 def test_subgraph_from_company_pulls_full_org(disk_db: drevo.Drevo) -> None:
     """A 4-hop subgraph from the company reaches every employee and at
-    least one product/PO — the finance roll-up projection.
+    least one product/PO - the finance roll-up projection.
     """
     n = _build_company(disk_db)
     sg = disk_db.subgraph(n["company"].id, depth=4)
@@ -123,7 +123,7 @@ def test_subgraph_from_company_pulls_full_org(disk_db: drevo.Drevo) -> None:
 
 def test_fts_finds_purchase_order_by_status_text(disk_db: drevo.Drevo) -> None:
     """The FTS index covers titles + bodies; searching for the PO title
-    fragment recovers the order — the basis of a "find any open PO"
+    fragment recovers the order - the basis of a "find any open PO"
     search box.
     """
     _build_company(disk_db)

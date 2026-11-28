@@ -2,7 +2,7 @@
 //!
 //! With a [`Key`], every record of the write-ahead log and every sidecar is
 //! sealed with XChaCha20-Poly1305: a fresh random 24-byte nonce per seal, and
-//! a 16-byte tag that makes any change to the bytes — or a different key —
+//! a 16-byte tag that makes any change to the bytes - or a different key -
 //! fail to open instead of yielding garbage.
 //!
 //! ```
@@ -96,7 +96,7 @@ pub enum EncryptionError {
 }
 
 /// Seal `plaintext` under `key`: `nonce · ciphertext · tag`. `context` is
-/// authenticated but not stored — opening needs the same context, so a value
+/// authenticated but not stored - opening needs the same context, so a value
 /// cannot be moved to another place (a sidecar into the log, say) unnoticed.
 ///
 /// # Errors
@@ -143,7 +143,7 @@ pub fn open(key: &Key, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, Encrypt
 }
 
 /// Write `bytes` to `path` atomically, sealed with `key` under `context`
-/// (as `DRVSEAL1` and the sealed bytes), or in the clear without a key — the
+/// (as `DRVSEAL1` and the sealed bytes), or in the clear without a key - the
 /// form a store's sidecar files take.
 ///
 /// ```
@@ -170,7 +170,7 @@ pub fn write_file(
 }
 
 /// `bytes` in the form [`write_file`] stores them: sealed after `DRVSEAL1`
-/// with a key, unchanged without — for files a backup carries.
+/// with a key, unchanged without - for files a backup carries.
 ///
 /// # Errors
 /// No randomness for a nonce.
@@ -180,7 +180,7 @@ pub fn file_bytes(key: Option<&Key>, context: &[u8], bytes: &[u8]) -> std::io::R
 }
 
 /// The plaintext of `bytes` in the form [`file_bytes`] makes, with the same
-/// `key` and `context` — for files read some other way than [`read_file`].
+/// `key` and `context` - for files read some other way than [`read_file`].
 ///
 /// # Errors
 /// [`std::io::ErrorKind::InvalidData`] for encrypted bytes without a key,

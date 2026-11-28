@@ -1,4 +1,4 @@
-"""Bounded BFS over the drevo graph — `expand_neighborhood`.
+"""Bounded BFS over the drevo graph - `expand_neighborhood`.
 
 Pure Python on top of `Drevo.edges_of` + `Drevo.get_node`. The depth +
 node-count caps live here (instead of pushing them into a Rust
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .. import Direction, Drevo, Edge, Node
 else:
-    # Runtime import via the parent package — same rationale as
+    # Runtime import via the parent package - same rationale as
     # `drevo.rag.ingest`: opt-in subpackage, no circular import risk.
     from .. import Direction
 
@@ -35,7 +35,7 @@ class Neighborhood:
     `nodes` includes the root. `edges` is the set of edges connecting
     any pair of nodes in `nodes` that the BFS traversal saw.
     `hops_used` is the deepest BFS level at which a *new* node was
-    discovered — useful for telemetry ("did my hops cap actually bite,
+    discovered - useful for telemetry ("did my hops cap actually bite,
     or did the graph just run out of neighbours?").
     """
 
@@ -80,7 +80,7 @@ def expand_neighborhood(
     Walks `hops` levels deep, dropping nodes whose `kind` is not in
     `kind_filter` (if provided) and stopping early once `max_nodes`
     total nodes have been collected. The root is always included even
-    if it would be excluded by `kind_filter` — the filter constrains
+    if it would be excluded by `kind_filter` - the filter constrains
     the *frontier*, not the seed.
 
     Returns a `Neighborhood` with the visited nodes (BFS order, root

@@ -1,9 +1,9 @@
 //! Durable ingest jobs: a long text, or many texts, extracted into long-term
 //! memory one passage at a time, with retries, in the background.
 //!
-//! `CALL drevo.ingest.submit(items, config)` stores a job in the graph — an
+//! `CALL drevo.ingest.submit(items, config)` stores a job in the graph - an
 //! `:IngestJob` node with one `:IngestItem` per passage, each holding its
-//! text — and returns at once. A scheduler per database runs the items: each
+//! text - and returns at once. A scheduler per database runs the items: each
 //! one is a `drevo.extract.ingest` of its passage, written in one
 //! transaction, after which the item points at the `:Chunk` it produced. An
 //! item whose model call fails is tried again later, waiting longer each

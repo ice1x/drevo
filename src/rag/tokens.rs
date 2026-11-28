@@ -13,7 +13,7 @@
 /// How a context's size in tokens is estimated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tokenizer {
-    /// `⌈characters / 4⌉`, counting Unicode characters — an estimate close to
+    /// `⌈characters / 4⌉`, counting Unicode characters - an estimate close to
     /// common BPE tokenizers on English prose.
     Approx,
     /// `⌈whitespace-separated words × 1.3⌉`.

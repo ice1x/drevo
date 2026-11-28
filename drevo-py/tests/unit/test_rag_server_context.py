@@ -1,5 +1,5 @@
 """Unit tests for `CALL drevo.rag.retrieve` / `CALL drevo.rag.context` from
-Python — the graph-RAG pipeline (seeds → expansion → ranking → token-budgeted
+Python - the graph-RAG pipeline (seeds → expansion → ranking → token-budgeted
 text) run inside the database in one statement.
 
 The embedded handle has no text embedder, so the seeds come from BM25 and
@@ -164,6 +164,6 @@ def test_server_markdown_matches_context_to_text(
     client = Retriever(drevo_db, hops=2).retrieve(journal["word"])
     expected = client.to_text(format="markdown")
     assert server["text"] == expected, (
-        "#808: server markdown differs from Context.to_text('markdown') — "
+        "#808: server markdown differs from Context.to_text('markdown') - "
         f"server:\n{server['text']}\nclient:\n{expected}"
     )

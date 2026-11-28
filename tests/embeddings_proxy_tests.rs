@@ -4,7 +4,7 @@
 //! Gated on the `embeddings-proxy` feature: they compile to an empty binary on
 //! the default feature set (so the standard CI test run is unaffected and
 //! carries no network client), and exercise the real [`ProxyBackend`] against a
-//! **local** in-process axum stub — no external network, deterministic, and
+//! **local** in-process axum stub - no external network, deterministic, and
 //! safe to run anywhere with:
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //! What they lock:
 //! - a request is forwarded to the configured upstream with the OpenAI body
 //!   shape (`model` + normalised `input`) and the configured bearer token;
-//! - the upstream's JSON response is returned **verbatim** (passthrough) — the
+//! - the upstream's JSON response is returned **verbatim** (passthrough) - the
 //!   proxy re-types nothing, so base64 embeddings and extra fields survive;
 //! - provider-specific request fields (`dimensions`, `input_type`, …) pass
 //!   through to the upstream;
@@ -66,7 +66,7 @@ async fn stub_ok(
 }
 
 /// A stub that answers with a base64-encoded embedding + a provider-specific
-/// extra field — neither of which the proxy could survive if it re-typed the
+/// extra field - neither of which the proxy could survive if it re-typed the
 /// body into a float-vector struct.
 async fn stub_base64() -> Json<Value> {
     Json(json!({
@@ -157,7 +157,7 @@ async fn proxy_passes_base64_and_extra_response_fields_through() {
         .await
         .expect("embed");
 
-    // A base64 string embedding (not a float array) survives — proof the proxy
+    // A base64 string embedding (not a float array) survives - proof the proxy
     // does not re-type the response.
     assert_eq!(resp["data"][0]["embedding"], json!("gAAAAA=="));
     // A provider-specific field the OpenAI schema never mentions survives too.

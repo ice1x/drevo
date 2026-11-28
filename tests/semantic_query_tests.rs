@@ -1,10 +1,10 @@
 //! End-to-end tests for `CALL drevo.semantic.query(label, property, text, k)`
-//! (#251 slice 3) — the server-side text-embedding retrieval procedure.
+//! (#251 slice 3) - the server-side text-embedding retrieval procedure.
 //!
 //! Gated on `embeddings-proxy` (like [`embeddings_proxy_tests`]): they compile
 //! to an empty binary on the default feature set, and exercise the real
-//! [`drevo::embeddings::SyncEmbedder`] against a **local** in-process axum stub
-//! — no external network, deterministic, and safe to run anywhere with:
+//! [`drevo::embeddings::SyncEmbedder`] against a **local** in-process axum stub -
+//! no external network, deterministic, and safe to run anywhere with:
 //!
 //! ```text
 //! cargo test --features embeddings-proxy --test semantic_query_tests
@@ -15,7 +15,7 @@
 //!   is used to rank `label` nodes by cosine similarity (same scan as
 //!   `drevo.vector.query`), returning the top-`k` in descending score order;
 //! - the query text is actually forwarded to the configured upstream (captured
-//!   by the stub) — proving the bridge from the synchronous executor to the
+//!   by the stub) - proving the bridge from the synchronous executor to the
 //!   async embedder works without a runtime-in-runtime panic;
 //! - a handle with **no** embedder installed reports a clean engine-capability
 //!   error rather than panicking.
@@ -161,7 +161,7 @@ fn semantic_query_honours_k_limit() {
 
 #[test]
 fn semantic_query_without_embedder_reports_a_capability_error() {
-    // No embedder installed — the procedure must fail cleanly instead of
+    // No embedder installed - the procedure must fail cleanly instead of
     // panicking. On the native engine "no server-side embedder" surfaces an
     // engine-capability error (the engine cannot embed), the native
     // counterpart of the KV handle's "not configured" message.

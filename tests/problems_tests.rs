@@ -1,4 +1,4 @@
-//! Server problem feed for the Web UI — #552 slice A.
+//! Server problem feed for the Web UI - #552 slice A.
 //!
 //! Server-side problems (a statement timeout, a storage failure, any WARN /
 //! ERROR the server logs) are captured into a bounded in-memory ring buffer by

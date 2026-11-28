@@ -56,7 +56,7 @@ def test_bfs_edge_kind_filter_isolates_one_branch(disk_db: drevo.Drevo) -> None:
 
 def test_dfs_returns_same_reachable_set_as_bfs(disk_db: drevo.Drevo) -> None:
     """For the diamond, the *set* of visited nodes is identical between
-    BFS and DFS — order differs, set does not.
+    BFS and DFS - order differs, set does not.
     """
     nodes = _build_diamond(disk_db)
     bfs = {n.id for n in disk_db.bfs(nodes["a"].id, 5, drevo.Direction.OUT)}

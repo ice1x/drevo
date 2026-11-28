@@ -38,7 +38,7 @@ use axum::response::{IntoResponse, Response};
 /// An HTTP body format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WireFormat {
-    /// `application/json` — the default, always enabled.
+    /// `application/json` - the default, always enabled.
     Json,
     /// `application/cbor` (RFC 8949), behind the `format-cbor` feature.
     Cbor,

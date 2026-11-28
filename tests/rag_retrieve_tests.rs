@@ -1,7 +1,7 @@
 //! `CALL drevo.rag.retrieve(query[, config]) YIELD node, seedScore, distance,
 //! pprScore, rank, via, truncated` and `CALL drevo.rag.context(query[,
 //! config]) YIELD text, tokens, format, nodeIds, relIds, truncated, mode,
-//! traceId`: a question in, the part of the graph that answers it out — seeds
+//! traceId`: a question in, the part of the graph that answers it out - seeds
 //! from the hybrid search, a k-hop expansion, a ranking, and (for `context`)
 //! LLM-ready text within a token budget, in one statement.
 //!

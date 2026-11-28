@@ -6,7 +6,7 @@
 //! collapses near-duplicate keywords into one facet along one of two
 //! independent, *non-conflated* similarity axes the database already owns:
 //!
-//! * **Lexical** ([`FacetCollapse::Lexical`]) — *form*-based and free.
+//! * **Lexical** ([`FacetCollapse::Lexical`]) - *form*-based and free.
 //!   Two keywords merge when they share a Porter `stem`
 //!   **or** when their character-trigram
 //!   sets ([`crate::fts::tokenizer::trigrams`]) overlap above a Jaccard
@@ -14,7 +14,7 @@
 //!   (*organize*/*organizing*/*organized*); the trigram signal catches
 //!   typos and spellings stemming misses (*databse* ↔ *database*).
 //!   Dependency-free, and the default.
-//! * **Semantic** ([`FacetCollapse::Semantic`]) — *meaning*-based. Two
+//! * **Semantic** ([`FacetCollapse::Semantic`]) - *meaning*-based. Two
 //!   keywords merge when the cosine similarity of their embeddings
 //!   ([`crate::vector::cosine_similarity`]) is at least a threshold, which
 //!   catches synonyms with no shared characters (*anxiety* ↔ *worry* ↔
@@ -23,7 +23,7 @@
 //!   (embedding text lives in the Python layer, tasks `00079`).
 //!
 //! The axes are deliberately kept separate (`drevo-architecture`
-//! §"Anti-Patterns" — no premature merge of two similarity signals): a
+//! §"Anti-Patterns" - no premature merge of two similarity signals): a
 //! single call picks exactly one mode.
 //!
 //! ## Output shape
@@ -32,16 +32,16 @@
 //! pairwise, so a transitive chain (*a*~*b*, *b*~*c*) lands in one
 //! [`Facet`]. Each facet reports:
 //!
-//! * `facet` — a representative label, the member present in the most
+//! * `facet` - a representative label, the member present in the most
 //!   distinct documents (ties broken alphabetically),
-//! * `members` — every surface form that collapsed in, ordered the same
+//! * `members` - every surface form that collapsed in, ordered the same
 //!   way,
-//! * `count` — the number of **distinct documents** containing *any*
+//! * `count` - the number of **distinct documents** containing *any*
 //!   member (a union, so a document with two members of one facet counts
 //!   once).
 //!
 //! Facets are returned sorted by `count` descending, then `facet`
-//! ascending — fully deterministic regardless of hash-map iteration order,
+//! ascending - fully deterministic regardless of hash-map iteration order,
 //! which the integration/e2e suites depend on.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -55,10 +55,10 @@ use crate::vector::{cosine_similarity, Vector};
 /// Default trigram-set Jaccard threshold for [`FacetCollapse::Lexical`].
 ///
 /// `0.34` means two keywords merge on the trigram signal when about a third
-/// of their combined trigrams are shared — loose enough to fold a
+/// of their combined trigrams are shared - loose enough to fold a
 /// single-edit / transposition typo (e.g. *databse* ↔ *database*, Jaccard
 /// ≈ 0.38), tight enough that words sharing only a common prefix stay apart
-/// (*anxiety* ↔ *anxious*, Jaccard ≈ 0.2 — a synonym-ish pair that is the
+/// (*anxiety* ↔ *anxious*, Jaccard ≈ 0.2 - a synonym-ish pair that is the
 /// *semantic* axis's job, not the lexical one). Stemming (always applied in
 /// lexical mode) handles the morphological families regardless of this
 /// value.
@@ -75,7 +75,7 @@ pub const DEFAULT_COSINE_THRESHOLD: f32 = 0.85;
 /// Exactly one axis is selected per faceting call; see the module docs for
 /// the lexical-vs-semantic distinction.
 pub enum FacetCollapse<'a> {
-    /// No collapsing — each distinct keyword is its own facet (`GROUP BY
+    /// No collapsing - each distinct keyword is its own facet (`GROUP BY
     /// kw` semantics).
     None,
     /// Lexical (form-based) collapse: shared Porter stem **or** trigram
@@ -97,7 +97,7 @@ pub enum FacetCollapse<'a> {
     },
 }
 
-/// One collapsed keyword facet — a representative label, its member surface
+/// One collapsed keyword facet - a representative label, its member surface
 /// forms, and the number of distinct documents it covers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Facet {
@@ -145,7 +145,7 @@ pub fn build_facets(
 /// `to_string`). Returns `None` when the field is absent or empty so the
 /// node simply contributes no keywords. Shared by both the KV
 /// (`crate::db::Drevo::facets`) and native
-/// (`crate::native_service::NativeService::facets`) faceting paths — it lives
+/// (`crate::native_service::NativeService::facets`) faceting paths - it lives
 /// here, beside `build_facets`, so it outlives the KV engine.
 /// Not compiled for wasm, whose `NativeService` has no `facets`.
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,4 +1,4 @@
-//! Native load harness — authoritative tested pieces (#307).
+//! Native load harness - authoritative tested pieces (#307).
 //!
 //! `examples/native_load.rs` is an on-demand measurement (concurrency sweep +
 //! deep traversal + durable-write throughput, native-durable vs KV). This file
@@ -8,7 +8,7 @@
 //!
 //! * the deep-traversal BFS returns the right reachable set,
 //! * a concurrent read workload over the shared engine runs error-free,
-//! * a concurrent durable-write workload actually persists — the WAL survives a
+//! * a concurrent durable-write workload actually persists - the WAL survives a
 //!   reopen with every edge recovered (the property the write throughput number
 //!   is only meaningful if it holds).
 //!
@@ -258,7 +258,7 @@ fn transaction_commit_is_a_single_fsync() {
 #[test]
 fn group_commit_coalesces_concurrent_fsyncs() {
     // The point of group commit: N concurrent durable writes share fsyncs, so
-    // the fsync count is far below the write count — while every write still
+    // the fsync count is far below the write count - while every write still
     // persists and recovers. Without group commit this is one fsync per write
     // (delta == ops), so the `< ops` assertion is the regression guard.
     let dir = tempfile::tempdir().expect("tempdir");

@@ -1,4 +1,4 @@
-// drevo browser — pure helpers for the running-transactions list in the
+// drevo browser - pure helpers for the running-transactions list in the
 // Storage panel: the SHOW TRANSACTIONS query it runs, its rows as objects,
 // elapsed times and the TERMINATE request. DOM-free so they can be
 // unit-tested under `node --test` (see transactions_view.test.js).
@@ -63,7 +63,7 @@
   // Milliseconds in the largest sensible unit: "850 ms", "12.3 s",
   // "4 min 05 s", "2 h 03 min"; a dash when unknown.
   function formatElapsed(ms) {
-    if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "—";
+    if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "-";
     if (ms < 1000) return `${Math.round(ms)} ms`;
     const s = ms / 1000;
     if (s < 60) return `${s.toFixed(1)} s`;

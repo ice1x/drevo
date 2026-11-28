@@ -1,4 +1,4 @@
-//! `:ContextTrace` — what went into a graph-RAG context. `drevo.rag.context`
+//! `:ContextTrace` - what went into a graph-RAG context. `drevo.rag.context`
 //! with a `session` (or `trace: true`) records the trace: the nodes written
 //! into the text (`INCLUDED`), the ones retrieved but left out (`SKIPPED`),
 //! and the session's newest message (`INITIATED_BY`). `drevo.rag.traces`,

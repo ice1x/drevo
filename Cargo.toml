@@ -1,6 +1,6 @@
 # --- Workspace ---------------------------------------------------------------
 #
-# Phase 16 task `00115` introduces a second crate — `drevo-py` — that wraps
+# Phase 16 task `00115` introduces a second crate - `drevo-py` - that wraps
 # the `drevo` library through PyO3. Promoting the repo to a Cargo workspace
 # lets the Python binding live in a sibling directory without forking the
 # build graph (`Cargo.lock` stays unified; `cargo check -p drevo-py` works
@@ -11,7 +11,7 @@
 # semantics), but the project's existing CI runners (`.github/workflows/ci.yml`)
 # do not provision Python. Keeping `drevo-py` *out* of the default set
 # means `cargo check`, `cargo build`, `cargo nextest run`, `cargo clippy
-# --all-targets`, `cargo doc` — every invocation in CI today — continue
+# --all-targets`, `cargo doc` - every invocation in CI today - continue
 # to operate only on the root `drevo` crate, so this PR adds Python
 # bindings without regressing existing gates.
 #
@@ -23,8 +23,8 @@
 [workspace]
 members = [".", "drevo-core", "drevo-auth", "drevo-py"]
 # `drevo-core` IS in the default set (unlike `drevo-py`, which needs a Python
-# interpreter): it is pure Rust, so every existing CI gate — `cargo check`,
-# `cargo test`, `cargo clippy --all-targets`, `cargo doc` — should cover it too,
+# interpreter): it is pure Rust, so every existing CI gate - `cargo check`,
+# `cargo test`, `cargo clippy --all-targets`, `cargo doc` - should cover it too,
 # and its moved unit tests must keep running.
 default-members = [".", "drevo-core", "drevo-auth"]
 resolver = "2"
@@ -36,9 +36,9 @@ resolver = "2"
 # per-binary `dsymutil` pass (`split-debuginfo = "unpacked"`). With ~25
 # integration-test binaries (each `tests/*.rs` links its own binary) the
 # `Test` CI job spent most of its wall-clock *generating + linking debuginfo*,
-# not running tests — and the single self-hosted runner made that the
+# not running tests - and the single self-hosted runner made that the
 # dominant, serialised cost (multi-hour `Test` jobs). `debug = 1` keeps line
-# tables — so panics / backtraces still carry `file:line` — while dropping the
+# tables - so panics / backtraces still carry `file:line` - while dropping the
 # expensive type/variable debuginfo, cutting compile + link time materially
 # across every cargo invocation. `[profile.test]` inherits from `dev`, so the
 # unit + integration builds get it too; `[profile.bench]` (release-derived) is
@@ -48,18 +48,18 @@ resolver = "2"
 # (ci / slow-tests / bench / cross-compile / python-ci) share ONE persistent
 # `$CARGO_TARGET_DIR` on the runner. A per-workflow `RUSTFLAGS`/profile flag
 # would give each a different build fingerprint, so they would thrash the
-# shared cache — rebuilding the whole graph from scratch on every alternation.
+# shared cache - rebuilding the whole graph from scratch on every alternation.
 # A workspace profile is the single source of truth every cargo invocation
 # honours identically, on CI and locally. Locked by
 # `tests/crosscut_audit_tests.rs::cargo_toml_dev_profile_trims_debuginfo`.
 [profile.dev]
-debug = 1  # line tables only — keeps backtrace file:line, drops full debuginfo
+debug = 1  # line tables only - keeps backtrace file:line, drops full debuginfo
 
 [package]
 name = "drevo"
 version = "0.0.0"
 edition = "2021"
-# MSRV — locked in by audit task 00113. Bumped to 1.85 because:
+# MSRV - locked in by audit task 00113. Bumped to 1.85 because:
 #   * bincode 2.x requires 1.85+
 #   * axum 0.8 requires 1.85+
 #   * redb 2.x requires 1.66+ but tracks the resolver-2 features that
@@ -73,7 +73,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/ice1x/drevo"
 # NOTE: `0.0.0` is the pre-release seed for the deploy-image version line. The
 # release flow (`scripts/release.sh` / `make release-image`) derives the image
-# tag from git tags (`vX.Y.Z`), falling back to this value when none exist — so
+# tag from git tags (`vX.Y.Z`), falling back to this value when none exist - so
 # the FIRST `make release-image` (a PATCH bump) publishes `0.0.1`, then `0.0.2`,
 # … walking the full patch space rather than jumping straight to `0.1.0`.
 
@@ -116,7 +116,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tower = { version = "0.5", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
-# Phase 11 task `00073` — TLS for Bolt. `rustls` is the only modern
+# Phase 11 task `00073` - TLS for Bolt. `rustls` is the only modern
 # pure-Rust TLS stack (openssl-sys would defeat the "embeddable, no
 # external system deps" property), `tokio-rustls` wires it into the
 # same async TCP listener used by `00070`/`00071`/`00072`, and
@@ -134,11 +134,11 @@ rustls-pemfile = { version = "2", optional = true }
 # std; the Argon2id user store (`authn`) is its `password` feature, enabled by
 # drevo's `auth` feature so default builds keep their dependency graph.
 drevo-auth = { path = "drevo-auth", version = "0.1.0", default-features = false }
-# Phase 19 task `00217` — OpenAI-compatible `/v1/embeddings` proxy. `reqwest`
+# Phase 19 task `00217` - OpenAI-compatible `/v1/embeddings` proxy. `reqwest`
 # is the HTTP client used to forward embeddings requests to a configured
 # upstream (OpenAI/Ollama/vLLM/…). It is gated behind the `embeddings-proxy`
 # Cargo feature so default builds (and every CI gate that doesn't opt in) keep
-# their dependency graph unchanged — the endpoint itself, its types, and the
+# their dependency graph unchanged - the endpoint itself, its types, and the
 # `503 not-configured` path are dependency-free and always compiled with
 # `http`. TLS is pinned to `rustls` on the pure-Rust `ring` provider (via
 # `rustls-tls-manual-roots` + `webpki-roots`), matching the `bolt-tls` choice
@@ -146,13 +146,13 @@ drevo-auth = { path = "drevo-auth", version = "0.1.0", default-features = false 
 reqwest = { version = "0.12", default-features = false, features = ["json", "charset", "rustls-tls-webpki-roots"], optional = true }
 # MSRV guard for the `embeddings-proxy` transitive graph. `reqwest` pulls
 # `url` → `idna` → `idna_adapter`, and `idna_adapter` 1.2.1+ requires `icu`
-# 2.2+, which bumps the required rustc to 1.86 — above drevo's pinned MSRV
+# 2.2+, which bumps the required rustc to 1.86 - above drevo's pinned MSRV
 # (1.85, locked by the `msrv` CI job `cargo +1.85 check --all-features`).
 # Pinning `idna_adapter` to `=1.2.0` keeps that path on the `icu` 1.5 line
 # (rustc 1.67), so the msrv job stays green. Without this, a future
 # `cargo update` would silently re-resolve to `icu` 2.2 and red the msrv gate.
-# There is no `use idna_adapter` in this crate — it is a reqwest transitive we
-# only pin — so it is listed in the cargo-machete `ignored` set below, exactly
+# There is no `use idna_adapter` in this crate - it is a reqwest transitive we
+# only pin - so it is listed in the cargo-machete `ignored` set below, exactly
 # as `getrandom` is. Gated on `embeddings-proxy` so default builds never see it.
 idna_adapter = { version = "=1.2.0", optional = true }
 
@@ -170,7 +170,7 @@ encryption = ["drevo-core/encryption"]
 default = ["cbindgen", "http"]
 wasm = ["wasm-bindgen", "js-sys", "getrandom/wasm_js", "drevo-core/wasm"]
 http = ["dep:axum", "dep:tokio", "dep:tower", "dep:tracing", "dep:tracing-subscriber", "dep:futures"]
-# Phase 11 task `00073` — Bolt over TLS. Compiles `src/bolt/tls.rs`
+# Phase 11 task `00073` - Bolt over TLS. Compiles `src/bolt/tls.rs`
 # and the `_tls` variants of the listener entry points. Implies
 # `http` because TLS is meaningless without the TCP listener (which
 # is itself gated on `http`).
@@ -188,7 +188,7 @@ bolt-auth = ["auth"]
 # fetched over HTTPS through its discovery document.
 oidc = ["auth", "http", "drevo-auth/oidc", "dep:reqwest", "dep:idna_adapter"]
 
-# Phase 19 task `00217` — OpenAI-compatible `/v1/embeddings`. The endpoint,
+# Phase 19 task `00217` - OpenAI-compatible `/v1/embeddings`. The endpoint,
 # its request/response types, the SSRF-safe config, and the `503
 # not-configured` path are always compiled with `http` (no extra deps). This
 # feature adds the `reqwest`-backed proxy backend that forwards to a configured
@@ -196,7 +196,7 @@ oidc = ["auth", "http", "drevo-auth/oidc", "dep:reqwest", "dep:idna_adapter"]
 # `http` because the proxy is only reachable through the HTTP endpoint.
 embeddings-proxy = ["http", "dep:reqwest", "dep:idna_adapter"]
 
-# Issues #581 / #582 — optional binary encodings next to JSON (which stays
+# Issues #581 / #582 - optional binary encodings next to JSON (which stays
 # the default and is always available): HTTP request/response bodies and the
 # write-ahead log. Compiling a format in does not turn it on: the operator
 # lists it in `DREVO_HTTP_FORMATS` and/or sets `DREVO_WAL_FORMAT`.
@@ -205,28 +205,28 @@ format-msgpack = ["http", "dep:rmp-serde", "drevo-core/wal-msgpack"]
 # `DREVO_WAL_FORMAT=cbor-zstd`: CBOR records compressed one by one with zstd.
 wal-zstd = ["format-cbor", "drevo-core/wal-zstd"]
 
-# Issue #583 — the gRPC API (Cypher over HTTP/2 + protobuf, streamed rows),
+# Issue #583 - the gRPC API (Cypher over HTTP/2 + protobuf, streamed rows),
 # served only when `DREVO_GRPC_PORT` is set. The code generated from
 # `proto/drevo.proto` is checked in (scripts/gen-grpc.sh), so no protoc or
 # build script is needed. tonic is held at 0.13: 0.14 needs Rust >= 1.86,
 # above the MSRV.
 grpc = ["http", "dep:tonic", "dep:prost"]
 
-# Issue #584 — Arrow Flight endpoint (Cypher results as Arrow record batches),
+# Issue #584 - Arrow Flight endpoint (Cypher results as Arrow record batches),
 # served only when `DREVO_FLIGHT_PORT` is set. arrow / arrow-flight are held
 # at 56: 57+ moves to tonic 0.14, which needs Rust >= 1.86.
 arrow-flight = ["http", "dep:tonic", "dep:arrow-flight", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
 # `js-sys` is the clock source for `now_ms`/`new_uuid_v7` on wasm32, where
 # `std::time::SystemTime::now()` aborts (see `model.rs`, drevo#198). It is
-# needed on every wasm32 build regardless of the `wasm` feature — hence this
+# needed on every wasm32 build regardless of the `wasm` feature - hence this
 # unconditional target-specific declaration, in addition to the optional
 # `wasm`-feature one above (which covers `src/wasm.rs` on non-wasm targets).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 
 # Data-parallelism for whole-graph algorithms over an immutable MVCC snapshot
-# (RFC #307 Phase 8 — parallel PageRank). NOT on wasm32: that target has no
+# (RFC #307 Phase 8 - parallel PageRank). NOT on wasm32: that target has no
 # threads, so `pagerank_parallel` falls back to the serial power iteration there
 # (see src/algorithms/pagerank.rs) and rayon is not pulled in.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -238,19 +238,19 @@ tempfile = "3"
 # end-to-end through `server::run()` (issue: version-in-startup-log). Test-only;
 # never in the library/FFI/WASM build. `no-env-filter` is required because the
 # integration test is a separate crate from `drevo`, and tracing-test otherwise
-# filters to the test crate's own target — dropping `drevo::server` events.
+# filters to the test crate's own target - dropping `drevo::server` events.
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
-# `proptest` powers Phase 9 task `00057` — property-based tests for graph
+# `proptest` powers Phase 9 task `00057` - property-based tests for graph
 # invariants, FTS tokenizer round-trips, and model serialization. Test-only;
 # never compiled into the library, FFI, or WASM artifact. `default-features
-# = false` keeps the dependency tree minimal — no `fork`, no `timeout`, no
-# `regex` — which matters because the proptest harness must run on the same
+# = false` keeps the dependency tree minimal - no `fork`, no `timeout`, no
+# `regex` - which matters because the proptest harness must run on the same
 # MSRV (1.85) and CI matrix as the rest of the test suite.
 proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
-# `rcgen` powers Phase 11 task `00073` — generates a self-signed
+# `rcgen` powers Phase 11 task `00073` - generates a self-signed
 # certificate + PKCS#8 private key in-memory at test time so the
 # Bolt TLS integration tests don't need a checked-in PEM bundle
 # (which would otherwise need rotation or pin a real authority).
@@ -267,13 +267,13 @@ path = "src/bin/server.rs"
 required-features = ["http"]
 
 # NOTE: the embedded `drevo-mcp` stdio MCP server (former Phase 15 task
-# `00090`) was removed — its in-process model opened the redb file
+# `00090`) was removed - its in-process model opened the redb file
 # directly and fought `drevo-server` for redb's single-process lock. The
 # MCP server now lives in a separate repository
 # (https://github.com/ice1x/drevo-mcp) and talks to a running
 # `drevo-server` over HTTP / Bolt, so it never contends for the file.
 
-# `getrandom` has no direct `use getrandom::...` site in this crate — it is
+# `getrandom` has no direct `use getrandom::...` site in this crate - it is
 # declared as an optional dependency solely so that the `wasm` feature can
 # write `getrandom/wasm_js` and surface the browser-RNG feature flag on the
 # same `getrandom` version that `uuid` v1 already pulls in transitively.

@@ -473,7 +473,7 @@ fn build_bug_board(db: &NativeService) -> BugBoard {
 }
 
 // =========================================================================
-// Tests — run against both backends via macro
+// Tests - run against both backends via macro
 // =========================================================================
 
 macro_rules! bug_tracker_tests {
@@ -681,7 +681,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                // BUG-5 is still "open" — its fixed_by edge has resolved_at = 0
+                // BUG-5 is still "open" - its fixed_by edge has resolved_at = 0
                 let edges = db.edges_of(g.bug_5, Direction::Outgoing);
                 let fix = edges.iter().find(|e| e.kind == "fixed_by").unwrap();
                 assert_eq!(
@@ -774,7 +774,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                // v1.0.0 was the initial release — nothing blocks it
+                // v1.0.0 was the initial release - nothing blocks it
                 let blockers =
                     db.neighbors(g.rel_v1_0, Direction::Incoming, Some("blocks_release"));
                 assert!(blockers.is_empty());
@@ -819,7 +819,7 @@ macro_rules! bug_tracker_tests {
             }
 
             // -----------------------------------------------------------------
-            // 7. Kind index — list views
+            // 7. Kind index - list views
             // -----------------------------------------------------------------
 
             #[test]
@@ -881,7 +881,7 @@ macro_rules! bug_tracker_tests {
             }
 
             // -----------------------------------------------------------------
-            // 8. FTS — search by title / description
+            // 8. FTS - search by title / description
             // -----------------------------------------------------------------
 
             #[test]
@@ -942,7 +942,7 @@ macro_rules! bug_tracker_tests {
             }
 
             // -----------------------------------------------------------------
-            // 9. Subgraph — full context of a bug
+            // 9. Subgraph - full context of a bug
             // -----------------------------------------------------------------
 
             #[test]
@@ -993,7 +993,7 @@ macro_rules! bug_tracker_tests {
             }
 
             // -----------------------------------------------------------------
-            // 10. Traversals — BFS / DFS / shortest path
+            // 10. Traversals - BFS / DFS / shortest path
             // -----------------------------------------------------------------
 
             #[test]
@@ -1030,7 +1030,7 @@ macro_rules! bug_tracker_tests {
                 let db = $db_expr;
                 let g = build_bug_board(&db);
 
-                // Only reported_in edges from BUG-1 — one release, v1.0.0
+                // Only reported_in edges from BUG-1 - one release, v1.0.0
                 let reached = db
                     .bfs(g.bug_1, 1, Direction::Outgoing, Some("reported_in"))
                     .unwrap();
@@ -1131,7 +1131,7 @@ macro_rules! bug_tracker_tests {
             }
 
             // -----------------------------------------------------------------
-            // 12. Transactional updates — status transitions, reassignment
+            // 12. Transactional updates - status transitions, reassignment
             // -----------------------------------------------------------------
 
             #[test]

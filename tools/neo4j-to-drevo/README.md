@@ -2,7 +2,7 @@
 
 Migrate a Neo4j graph into a [drevo](../../README.md) database.
 
-This is a **standalone tool that depends on `drevo`** — the database and
+This is a **standalone tool that depends on `drevo`** - the database and
 its Python bindings (`drevo`) know nothing about Neo4j. The dependency
 points one way only: `neo4j-to-drevo` imports `drevo`, never the reverse.
 
@@ -19,7 +19,7 @@ python -m neo4j_to_drevo dump \
     --neo4j-password "$DREVO_NEO4J_PASSWORD" \
     --out graph.json
 
-# 2. DRY RUN — read + map + validate, report what WOULD happen, write nothing
+# 2. DRY RUN - read + map + validate, report what WOULD happen, write nothing
 python -m neo4j_to_drevo import --apoc-json graph.json --drevo-path graph.redb --dry-run
 # → [dry run] would import: 1240 nodes (0 skipped), 5310 edges (0 skipped), 0 error(s)
 # → [dry run] nothing written to graph.redb
@@ -30,19 +30,19 @@ python -m neo4j_to_drevo import --apoc-json graph.json --drevo-path graph.redb
 ```
 
 The dry run uses a throwaway in-memory drevo to exercise the *full*
-mapping — including drevo's globally-unique-title check and dangling-edge
-detection — so it surfaces every conflict you'd hit for real, then
+mapping - including drevo's globally-unique-title check and dangling-edge
+detection - so it surfaces every conflict you'd hit for real, then
 discards the result. Combine with `--on-error skip` to preview which edges
 reference unmigrated endpoints.
 
 ### Source options for `import`
 
-- `--apoc-json <file>` — an offline dump. Either the file produced by
+- `--apoc-json <file>` - an offline dump. Either the file produced by
   phase 1 (`dump`), or one exported inside Neo4j with APOC:
   `CALL apoc.export.json.all('graph.json', {useTypes:true})`. Pure stdlib,
-  no driver, no live connection — a graph migrates long after the source
+  no driver, no live connection - a graph migrates long after the source
   Neo4j is gone.
-- `--neo4j-uri bolt://… --neo4j-user … --neo4j-password …` — stream
+- `--neo4j-uri bolt://… --neo4j-user … --neo4j-password …` - stream
   straight from a running Neo4j, skipping the dump file entirely (needs
   the `[live]` extra).
 
@@ -75,7 +75,7 @@ with drevo.Drevo.open("graph.redb") as db:
 - **Dangling edges.** `--on-error skip` records edges to unmigrated
   endpoints in the report instead of failing.
 
-The `migrate()` engine is source-agnostic — it consumes any `GraphSource`
+The `migrate()` engine is source-agnostic - it consumes any `GraphSource`
 yielding `SourceNode` / `SourceRelationship`, so the same path backs both
 the APOC-dump and live-Bolt adapters (and any future source).
 

@@ -1,9 +1,9 @@
-//! End-to-end Cypher tests — Phase 10 follow-up task `00144`.
+//! End-to-end Cypher tests - Phase 10 follow-up task `00144`.
 //!
 //! `FOREACH (var IN list | update_clause …)` is Cypher's bulk-update
 //! clause: for every current binding row it evaluates `list` and runs the
 //! nested update clauses once per element with `var` bound to it. It is a
-//! pure side-effecting clause — it never changes the outer cardinality,
+//! pure side-effecting clause - it never changes the outer cardinality,
 //! and the loop variable is scoped to the body. The body is restricted to
 //! update clauses (`CREATE` / `MERGE` / `SET` / `REMOVE` / `DELETE` and
 //! nested `FOREACH`); read clauses are rejected at parse time.

@@ -165,7 +165,7 @@ fn erp_aborted_bulk_update_is_reclaimed() {
 }
 
 /// The background worker thread keeps a hot key's chain bounded under a steady
-/// stream of writes — without it, the chain would grow without limit.
+/// stream of writes - without it, the chain would grow without limit.
 #[test]
 fn background_worker_bounds_chain_growth_under_write_load() {
     let mgr = Arc::new(TransactionManager::new());
@@ -274,7 +274,7 @@ fn readers_writers_and_collector_never_tear_or_deadlock() {
 /// view and its GC pin must be established atomically. If the `xmin` is
 /// registered a moment *after* the view is captured, a concurrent vacuum can
 /// read a horizon that excludes the new snapshot, advance past a version the
-/// snapshot still resolves to, and reclaim it — making a committed key
+/// snapshot still resolves to, and reclaim it - making a committed key
 /// momentarily read as `None`. A dedicated tight writer + a dedicated tight
 /// vacuum loop (far more adversarial than the 1ms `GcWorker`) hammer that
 /// nanosecond window; on the buggy code a reader observes the key vanish.
@@ -315,7 +315,7 @@ fn begin_snapshot_pins_horizon_atomically_against_vacuum() {
     }
     // Many readers: register a snapshot and immediately read it. The seeded key
     // has always been committed, so a correctly-pinned snapshot must always
-    // resolve it to some value — never `None`.
+    // resolve it to some value - never `None`.
     for _ in 0..8 {
         let (mgr, store, stop) = (mgr.clone(), store.clone(), stop.clone());
         handles.push(thread::spawn(move || {
@@ -333,7 +333,7 @@ fn begin_snapshot_pins_horizon_atomically_against_vacuum() {
     stop.store(true, Ordering::Relaxed);
     for h in handles {
         h.join()
-            .expect("a thread panicked — begin_snapshot/GC race regression");
+            .expect("a thread panicked - begin_snapshot/GC race regression");
     }
 }
 

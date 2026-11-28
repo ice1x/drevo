@@ -4,7 +4,7 @@
 //! ops for a transaction, per line. Two binary encodings can be chosen instead,
 //! each behind a Cargo feature:
 //!
-//! - [`WalFormat::Cbor`] (`wal-cbor`) — floats are written in the shortest
+//! - [`WalFormat::Cbor`] (`wal-cbor`) - floats are written in the shortest
 //!   form that keeps their value, so an `f32` embedding component costs 5
 //!   bytes instead of ~20 characters;
 //! - [`WalFormat::MsgPack`] (`wal-msgpack`).
@@ -122,7 +122,7 @@ pub enum SealKey {}
 /// How the write-ahead log encodes its records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum WalFormat {
-    /// JSON Lines — the default, always available.
+    /// JSON Lines - the default, always available.
     #[default]
     Json,
     /// Framed CBOR records, behind the `wal-cbor` feature.
@@ -277,7 +277,7 @@ pub enum Detected {
         /// Whether the records are encrypted.
         sealed: bool,
     },
-    /// The file holds only the beginning of a binary header — a crash while a
+    /// The file holds only the beginning of a binary header - a crash while a
     /// fresh log was being created. Nothing in it was ever acknowledged.
     TornHeader,
 }
@@ -360,7 +360,7 @@ pub enum Record {
     /// The record is cut off by the end of the log.
     Incomplete,
     /// An encrypted record whose checksum holds but which does not decrypt:
-    /// a wrong key or a changed log — never a torn tail.
+    /// a wrong key or a changed log - never a torn tail.
     Undecryptable {
         /// Byte offset just past the record.
         next: usize,
@@ -532,7 +532,7 @@ pub(crate) fn log_header(format: WalFormat, key: Option<&SealKey>) -> Result<Vec
     Ok(header)
 }
 
-/// Encode one record holding `ops` — sealed with `key` when there is one.
+/// Encode one record holding `ops` - sealed with `key` when there is one.
 ///
 /// # Errors
 /// As [`WalFormat::encode_record`], and [`CoreError::Backend`] when no
@@ -1138,8 +1138,8 @@ mod wire {
 }
 
 /// The `cbor-compact` record encoding: CBOR in which the built-in field
-/// names of a record — the [`WalOp`] variants and the [`Node`] / [`Edge`]
-/// fields — are small integer map keys, and property names stay text. A
+/// names of a record - the [`WalOp`] variants and the [`Node`] / [`Edge`]
+/// fields - are small integer map keys, and property names stay text. A
 /// road-network node of three numeric properties is mostly field names as
 /// plain CBOR; here it is a third smaller.
 ///

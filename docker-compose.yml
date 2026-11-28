@@ -1,4 +1,4 @@
-# drevo — Docker Compose deployment
+# drevo - Docker Compose deployment
 #
 # Task 00047 / 00163: single-service compose file for local development and
 # small single-host deployments. Builds the image from the local Dockerfile,
@@ -14,7 +14,7 @@
 #   curl localhost:8080/health ; open http://localhost:8080/ui
 #   docker compose down          # stop; the host data folder is left untouched
 #
-# Note: the top-level `version:` key is intentionally omitted — modern
+# Note: the top-level `version:` key is intentionally omitted - modern
 # Compose Spec (docker-compose v2+) treats it as obsolete.
 
 services:

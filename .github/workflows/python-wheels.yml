@@ -1,7 +1,7 @@
-# Phase 16 task `00116` — Python wheel build matrix.
+# Phase 16 task `00116` - Python wheel build matrix.
 #
 # Drives `cibuildwheel` over the platform / CPython matrix declared in
-# the cross-cutting acceptance criteria of README.md §"Phase 16 — Python
+# the cross-cutting acceptance criteria of README.md §"Phase 16 - Python
 # Graph-RAG SDK":
 #
 #   cp310 / cp311 / cp312 / cp313  ×  Ubuntu / macOS / Windows
@@ -9,7 +9,7 @@
 # Each leaf builds a wheel via `maturin` (the build backend declared in
 # `drevo-py/pyproject.toml`) and runs `twine check dist/*` to validate
 # wheel metadata. The job uploads built wheels as a workflow artifact so
-# a downstream release step (separate task — not part of `00116`) can
+# a downstream release step (separate task - not part of `00116`) can
 # fetch them when the time comes to publish to PyPI.
 #
 # **No publishing.** Task `00116` explicitly defers package uploads:
@@ -17,7 +17,7 @@
 # but the release flow lands later once `00122` makes the Python CI
 # matrix the gating check. A scaffolding test in
 # `tests/python_package_wheels_tests.rs` asserts this file invokes
-# neither the upload subcommand nor the official upload action — flip
+# neither the upload subcommand nor the official upload action - flip
 # those guards at release-task time, not before.
 #
 # **Not on branch protection yet.** The job is wired to PR + manual
@@ -40,9 +40,9 @@ on:
   # every PR was a significant slice of the multi-hour CI wait
   # observed on this repo. PRs already get fast Python feedback from
   # `python-ci.yml` (self-hosted, ~1-2 min). Wheel builds re-exercise
-  # on every push to `main` (now zero billable cost — see below) and
+  # on every push to `main` (now zero billable cost - see below) and
   # on demand via `workflow_dispatch`, which is the right cadence
-  # because there is no PyPI publish on PR — the only consumer of
+  # because there is no PyPI publish on PR - the only consumer of
   # these wheels is the future release task.
   #
   # **Path-filter scope** narrowed on 2026-05-27 from
@@ -78,7 +78,7 @@ jobs:
     # cross-platform GitHub-hosted minutes for the upload step).
     # Until then, this workflow validates the macOS wheel build +
     # twine metadata on every main-touching change at zero billable
-    # cost — see KG `incident_2026_05_27_ci_minutes_burn` for the
+    # cost - see KG `incident_2026_05_27_ci_minutes_burn` for the
     # full incident write-up.
     runs-on: macos-latest
 
@@ -87,29 +87,29 @@ jobs:
       # pattern matches every architecture cibuildwheel knows about
       # on the runner; the abi3-py310 feature in
       # `drevo-py/Cargo.toml` lets one `cp310` wheel run on every
-      # later 3.x — but we build per-minor anyway so PyPI's metadata
+      # later 3.x - but we build per-minor anyway so PyPI's metadata
       # records the exact set of tested versions.
       CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
       # Skip the platforms NOT in the documented wheel matrix
       # (README §"Phase 16 cross-cutting acceptance criteria"):
       #
-      #   pp*                  — PyPy. drevo's PyO3 layer is built
+      #   pp*                  - PyPy. drevo's PyO3 layer is built
       #                          against CPython's abi3-py310; PyPy
       #                          interpreters speak a different ABI.
-      #   *-win32              — Windows 32-bit (`cp310-win32` etc.).
+      #   *-win32              - Windows 32-bit (`cp310-win32` etc.).
       #                          Not in the matrix; redb's memory-
       #                          mapped backend has tight 32-bit
       #                          address-space limits and the test
       #                          suite was observed to fail on win32
       #                          in PR CI (the user's PR run that
       #                          motivated this skip).
-      #   *-manylinux_i686     — Linux glibc 32-bit. Same reasoning
-      #                          as win32 — not in the matrix, redb
+      #   *-manylinux_i686     - Linux glibc 32-bit. Same reasoning
+      #                          as win32 - not in the matrix, redb
       #                          is unhappy on 32-bit.
-      #   *-musllinux_i686     — Linux musl 32-bit. Same.
-      #   cp*-musllinux_*      — musl Alpine wheels in general are
+      #   *-musllinux_i686     - Linux musl 32-bit. Same.
+      #   cp*-musllinux_*      - musl Alpine wheels in general are
       #                          deferred until a downstream consumer
-      #                          asks for them — manylinux glibc
+      #                          asks for them - manylinux glibc
       #                          covers ~all real-world deployments.
       #
       # Users on any skipped platform can still build from source via
@@ -118,17 +118,17 @@ jobs:
       CIBW_SKIP: "pp* *-win32 *-manylinux_i686 *-musllinux_i686 cp*-musllinux_*"
       # Force cibuildwheel to invoke `maturin` rather than its default
       # `pip wheel`. `pip wheel` would try to use a setuptools backend
-      # and explode immediately — `pyproject.toml` declares maturin.
+      # and explode immediately - `pyproject.toml` declares maturin.
       CIBW_BUILD_FRONTEND: "build"
       # cibuildwheel runs inside its own manylinux container on Linux.
       # Install the Rust toolchain once per platform (`BEFORE_ALL`, not
-      # `BEFORE_BUILD` — runs once, not per-wheel), then surface
+      # `BEFORE_BUILD` - runs once, not per-wheel), then surface
       # `~/.cargo/bin` through `CIBW_ENVIRONMENT_LINUX` so the build
       # step actually finds cargo. The previous `BEFORE_BUILD` form
       # without an env-PATH update failed with exit code 127
       # ("rustup: command not found") because rustup-init writes the
       # binary into `$HOME/.cargo/bin` without modifying the active
-      # shell's PATH — every subsequent command in the same script
+      # shell's PATH - every subsequent command in the same script
       # then has to use the absolute path or re-source `cargo/env`.
       # Using BEFORE_ALL + CIBW_ENVIRONMENT_LINUX is the pattern the
       # cibuildwheel docs recommend for Rust-backed wheels.
@@ -147,14 +147,14 @@ jobs:
       # InvalidWeightError subclass, __all__ consistency, RFC §3.3
       # method enumeration, ~40 tests). The tests run in cibuildwheel's
       # isolated venv (`pip install ${wheel}`) so they exercise the
-      # install path — the same one end users hit — not the dev tree.
+      # install path - the same one end users hit - not the dev tree.
       # pytest is installed via CIBW_TEST_REQUIRES so it does not
       # contaminate the wheel's own dependency closure.
       CIBW_TEST_REQUIRES: "pytest>=7 faker hypothesis"
       # `{package}` resolves to the package source (`drevo-py/`, the
       # directory passed on the cibuildwheel command line below);
       # `{project}` would resolve to the repo root (`drevo/`), which
-      # contains the Rust integration test crate — pytest finds no
+      # contains the Rust integration test crate - pytest finds no
       # Python tests there and exits with code 5 ("no tests
       # collected"). `{package}/tests` correctly points at
       # `drevo-py/tests/` where the 40 shim runtime tests live.
@@ -178,7 +178,7 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Set up Rust (host — needed on macOS / Windows)
+      - name: Set up Rust (host - needed on macOS / Windows)
         if: runner.os != 'Linux'
         uses: dtolnay/rust-toolchain@stable
 
@@ -205,7 +205,7 @@ jobs:
 
   build_sdist:
     name: Build sdist
-    # Self-hosted runner — sdist is a pure-Python tarball that does
+    # Self-hosted runner - sdist is a pure-Python tarball that does
     # not need a Linux-specific environment. Was previously
     # `ubuntu-latest`; corrected 2026-05-27 in the same change that
     # moved `build_wheels` to self-hosted.

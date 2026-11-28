@@ -1,14 +1,14 @@
-//! End-to-end Cypher `round()` precision & rounding-mode tests — Phase 10
+//! End-to-end Cypher `round()` precision & rounding-mode tests - Phase 10
 //! follow-up task `00160`.
 //!
 //! Neo4j 5 exposes three overloads of `round()`:
 //!
-//! * `round(value)` — round to the nearest integer, ties away from zero
+//! * `round(value)` - round to the nearest integer, ties away from zero
 //!   (`HALF_UP`). This is the long-standing one-argument form.
-//! * `round(value, precision)` — round to `precision` decimal places, still
+//! * `round(value, precision)` - round to `precision` decimal places, still
 //!   `HALF_UP`. A negative `precision` rounds to the left of the decimal point
 //!   (`round(1234.5, -2) = 1200.0`).
-//! * `round(value, precision, mode)` — round to `precision` decimal places
+//! * `round(value, precision, mode)` - round to `precision` decimal places
 //!   using `mode`, one of `UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`,
 //!   `HALF_DOWN`, `HALF_EVEN` (case-insensitive), mirroring Java's
 //!   `RoundingMode`.

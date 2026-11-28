@@ -1,4 +1,4 @@
-//! Change-data-capture (CDC) decoding + schema mapping — Phase 15 task `00097`.
+//! Change-data-capture (CDC) decoding + schema mapping - Phase 15 task `00097`.
 //!
 //! The [`streaming`](crate::streaming) engine (`00096`) ingests a flat stream of
 //! [`IngestEvent`]s addressed by producer-owned keys. The most common producer
@@ -9,10 +9,10 @@
 //!
 //! It does two things, both dependency-free and WASM-safe:
 //!
-//! 1. **Decode** ([`CdcChange`]) — parse the standard JSON a Postgres logical
+//! 1. **Decode** ([`CdcChange`]) - parse the standard JSON a Postgres logical
 //!    replication slot emits via the ubiquitous [`wal2json`] output plugin
 //!    (format-version 1): an envelope `{"change":[ … ]}` of per-row
-//!    insert / update / delete records. drevo bundles **no** Postgres driver —
+//!    insert / update / delete records. drevo bundles **no** Postgres driver -
 //!    decoding the plugin's plain-JSON output keeps this an always-compiled,
 //!    WASM-safe substrate, exactly as `00096` decodes broker messages without
 //!    bundling a Kafka client. A deployment supplies the actual replication-slot
@@ -21,7 +21,7 @@
 //!    the `{"change":[…]}` envelope, a bare `[…]` array, or a single change
 //!    object.
 //!
-//! 2. **Map** ([`SchemaMap`]) — turn each decoded row change into zero or more
+//! 2. **Map** ([`SchemaMap`]) - turn each decoded row change into zero or more
 //!    [`IngestEvent`]s under a declarative, per-table mapping
 //!    ([`TableMapping`]): a row becomes an [`UpsertNode`](IngestEvent::UpsertNode)
 //!    (its primary key → a stable, namespaced [`EntityKey`], chosen columns →
@@ -142,7 +142,7 @@ impl ChangeOp {
     /// # Errors
     ///
     /// Returns [`CdcError::UnsupportedOp`] for any other kind (`"truncate"`,
-    /// `"message"`, …) — those have no row-level graph translation.
+    /// `"message"`, …) - those have no row-level graph translation.
     pub fn from_kind(kind: &str) -> Result<Self> {
         match kind {
             "insert" => Ok(ChangeOp::Insert),
@@ -268,7 +268,7 @@ impl CdcChange {
     /// Decode a wal2json payload into its sequence of row changes.
     ///
     /// Accepts the standard `{"change":[ … ]}` envelope, a bare `[ … ]` array of
-    /// change objects, or a single change object — whichever the upstream tail
+    /// change objects, or a single change object - whichever the upstream tail
     /// hands over.
     ///
     /// # Errors
@@ -357,7 +357,7 @@ pub struct ForeignKey {
     pub column: String,
     /// The [`kind`](IngestEvent::UpsertEdge) assigned to the produced edge.
     pub edge_kind: String,
-    /// The mapped table name (`"schema.table"` or bare) the FK references — used
+    /// The mapped table name (`"schema.table"` or bare) the FK references - used
     /// to namespace the target node's [`EntityKey`](crate::streaming::EntityKey).
     pub references: String,
 }

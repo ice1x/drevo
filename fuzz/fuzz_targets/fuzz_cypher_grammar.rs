@@ -6,7 +6,7 @@
 //! stream** and `generate_query` (shared `cypher_grammar.rs`) turns it into a
 //! syntactically well-formed Cypher query drawn from the subset drevo's parser
 //! supports. That drives the mutator deep into the *accepting* paths of the
-//! lexer and parser — the branches a purely-random byte stream almost never
+//! lexer and parser - the branches a purely-random byte stream almost never
 //! reaches.
 //!
 //! Invariants asserted on every generated query:
@@ -14,7 +14,7 @@
 //! - **Generation is total.** `generate_query` never panics and always returns
 //!   a non-empty string (guaranteed by the generator's exhausted-stream-reads-0
 //!   contract; re-asserted here as a tripwire).
-//! - **The grammar is accepted.** Every generated query lexes *and* parses —
+//! - **The grammar is accepted.** Every generated query lexes *and* parses -
 //!   if `parse` ever rejects a generated query, either the generator drifted
 //!   out of the supported subset or the parser regressed. Both are bugs this
 //!   target exists to catch.
@@ -32,7 +32,7 @@ use drevo::cypher::lexer::tokenize;
 use drevo::cypher::parser::parse;
 use libfuzzer_sys::fuzz_target;
 
-// Shared generator — `include!`d so the libFuzzer binary and the stable
+// Shared generator - `include!`d so the libFuzzer binary and the stable
 // replay harness compile the *same* source (see the file header).
 include!("../cypher_grammar.rs");
 

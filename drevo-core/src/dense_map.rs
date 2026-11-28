@@ -2,8 +2,8 @@
 //!
 //! The engine hands out node and relationship ids from counters, so the ids
 //! in use are dense: a vector slot per id costs far less than a hash table
-//! entry. An id far beyond the ids in use — a store imported with large ids,
-//! say — goes to a small hash table instead, so a stray id never allocates a
+//! entry. An id far beyond the ids in use - a store imported with large ids,
+//! say - goes to a small hash table instead, so a stray id never allocates a
 //! huge vector.
 //!
 //! The slots are kept in shared chunks of 64: cloning the map, as a

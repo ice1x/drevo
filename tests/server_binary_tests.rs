@@ -150,7 +150,7 @@ mod server_tests {
 
     #[test]
     fn data_directory_convention() {
-        // The Dockerfile mounts a volume at /data — the server binary
+        // The Dockerfile mounts a volume at /data - the server binary
         // uses this as the default storage directory.
         let cfg = Config::from_env(|_| None).unwrap();
         assert_eq!(cfg.data_dir.to_string_lossy(), "/data");
@@ -180,7 +180,7 @@ mod server_tests {
     }
 
     // -----------------------------------------------------------------
-    // Task 00112 — end-to-end run() smoke
+    // Task 00112 - end-to-end run() smoke
     // -----------------------------------------------------------------
 
     #[tokio::test]
@@ -232,10 +232,10 @@ mod server_tests {
         );
         assert!(
             !dir_path.join("drevo.redb").exists(),
-            "run() must not open a KV redb file — the KV serving mode is removed"
+            "run() must not open a KV redb file - the KV serving mode is removed"
         );
 
-        // Trigger graceful shutdown by closing the runtime task —
+        // Trigger graceful shutdown by closing the runtime task -
         // since `run()` blocks on the shutdown signal future, we have
         // to abort instead of waiting for SIGTERM. The abort still
         // covers the bind + serve path which is what we want here.
@@ -244,14 +244,14 @@ mod server_tests {
     }
 
     // -----------------------------------------------------------------
-    // Startup version log — wiring guard (issue: version-in-startup-log)
+    // Startup version log - wiring guard (issue: version-in-startup-log)
     // -----------------------------------------------------------------
 
     #[traced_test]
     #[tokio::test]
     async fn run_logs_the_build_version_at_startup() {
         // The startup version line must be emitted by `run()` itself, so this
-        // drives the real entry point rather than a helper — deleting the
+        // drives the real entry point rather than a helper - deleting the
         // `tracing::info!(... "starting drevo")` line from `run()` fails here.
         // That log is `run`'s first statement, emitted on the first poll before
         // any bind/catalog work, so awaiting `run()` directly (default

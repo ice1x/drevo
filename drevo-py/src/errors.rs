@@ -5,12 +5,12 @@
 //! user-side `except ValueError:` block does not accidentally swallow
 //! drevo-specific failures.
 //!
-//! The one exception is `drevo.InvalidWeightError` — it extends
+//! The one exception is `drevo.InvalidWeightError` - it extends
 //! `ValueError` because "you passed me a bad number" is the canonical
 //! Python idiom for `ValueError`. The pure-Python subclass that ties the
 //! name `InvalidWeightError` to `ValueError` lands in task `00116`
 //! (`drevo/errors.py`); until then [`map_err`] raises a plain
-//! `PyValueError` with a substring-matchable message — callers that
+//! `PyValueError` with a substring-matchable message - callers that
 //! `except ValueError:` work today, callers that
 //! `except drevo.InvalidWeightError:` work the day `00116` lands without
 //! a re-raise change here.
@@ -100,12 +100,12 @@ pub(crate) fn register(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> 
 
 /// Map a [`drevo::error::DrevoError`] onto the matching Python exception.
 ///
-/// Mirrors the table in RFC §5.2 exactly — every Rust variant has a row,
+/// Mirrors the table in RFC §5.2 exactly - every Rust variant has a row,
 /// every row maps to a single Python class. The argument tuple passed to
 /// `new_err((...))` becomes the Python exception's `.args` attribute, so
 /// `NodeNotFoundError(42).args == (42,)` round-trips faithfully.
 ///
-/// Error messages are part of the public API per RFC §5.5 — substring
+/// Error messages are part of the public API per RFC §5.5 - substring
 /// stability is asserted in the Python unit-test layer (`00118`).
 pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
     use drevo::error::DrevoError as D;
@@ -114,7 +114,7 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
         D::EdgeNotFound(id) => EdgeNotFoundError::new_err((id,)),
         D::DuplicateTitle(t) => DuplicateTitleError::new_err((t,)),
         D::InvalidWeight(w) => PyValueError::new_err(format!(
-            "invalid edge weight: {w} — weight must be a finite f32"
+            "invalid edge weight: {w} - weight must be a finite f32"
         )),
         D::Locked => LockedError::new_err(()),
         D::Encode(err) => SerializationError::new_err(("encode", err.to_string())),
@@ -147,7 +147,7 @@ pub(crate) fn map_err(e: drevo::error::DrevoError) -> PyErr {
 ///
 /// Used by `handle::Drevo` to wrap every PyO3 method body in
 /// `catch_unwind` so a panic in `drevo`/`redb` never crosses the FFI
-/// boundary as an abort signal (RFC §5.4 — mirrors the C-FFI discipline
+/// boundary as an abort signal (RFC §5.4 - mirrors the C-FFI discipline
 /// audited in `audit/AUDIT-ffi.md`).
 pub(crate) fn panic_to_pyerr(payload: Box<dyn std::any::Any + Send>) -> PyErr {
     let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
@@ -165,7 +165,7 @@ mod tests {
     use super::*;
     use drevo::error::DrevoError;
 
-    /// Cheap sanity check — make sure every `DrevoError` variant maps
+    /// Cheap sanity check - make sure every `DrevoError` variant maps
     /// without panicking and produces a `PyErr` with a non-empty message.
     /// The per-variant assertion that the *type identity* is
     /// `NodeNotFoundError` (and not just a string match) lives in the Python

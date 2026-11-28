@@ -245,7 +245,7 @@ fn bfs_diamond_graph() {
     db.create_edge(make_edge(c.id, d.id, "links_to")).unwrap();
 
     let result = db.bfs(a.id, 2, Direction::Outgoing, None).unwrap();
-    assert_eq!(result.len(), 3); // B, C, D — no duplicates
+    assert_eq!(result.len(), 3); // B, C, D - no duplicates
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn scenario_cbt_thought_chain() {
     let result = db.bfs(situation.id, 3, Direction::Outgoing, None).unwrap();
     assert_eq!(result.len(), 4);
 
-    // Filter by "triggered_by" — only thought
+    // Filter by "triggered_by" - only thought
     let result = db
         .bfs(situation.id, 1, Direction::Outgoing, Some("triggered_by"))
         .unwrap();

@@ -1,4 +1,4 @@
-//! Phase 8 task 00052 — container integration test.
+//! Phase 8 task 00052 - container integration test.
 //!
 //! Closes Phase 8: builds the production Docker image (the same one
 //! [`docker-publish.yml`](../.github/workflows/docker-publish.yml) ships
@@ -6,7 +6,7 @@
 //! **named volume**, exercises a full Create / Read / Update / Delete
 //! cycle over HTTP, then stops the container and starts a *fresh*
 //! container against the **same** named volume to prove data survives
-//! a restart — the production scenario K8s `strategy.type: Recreate`
+//! a restart - the production scenario K8s `strategy.type: Recreate`
 //! (from task 00049's `k8s/base/deployment.yaml`) replays on every
 //! rolling update.
 //!
@@ -17,13 +17,13 @@
 //!    - every `live_container_*` function is `#[ignore]`-gated so a
 //!      developer / CI without Docker still gets a clean run,
 //!    - the README documents task 00052 and the opt-in command,
-//!    - the test file pins port 8080 — the same port the Dockerfile
+//!    - the test file pins port 8080 - the same port the Dockerfile
 //!      (`EXPOSE 8080`), `docker-compose.yml`, and
 //!      `k8s/base/service.yaml` already declare,
-//!    - the test uses a **named volume** mounted at `/data` — the
+//!    - the test uses a **named volume** mounted at `/data` - the
 //!      Dockerfile's `VOLUME ["/data"]` + `DREVO_DATA_DIR=/data`
 //!      contract,
-//!    - the test image tag namespace is `drevo:` (local-only — the
+//!    - the test image tag namespace is `drevo:` (local-only - the
 //!      ghcr.io tag lives in the publish workflow, not in the test).
 //!
 //! 2. **Live container (`#[ignore]`-by-default, opt-in via
@@ -36,7 +36,7 @@
 //! pointer to the Docker daemon if it does not. They never run in
 //! regular CI because the publish workflow already covers
 //! image-buildability and the structural tests cover the wire-format
-//! invariants — these tests are the manual "did the image really come
+//! invariants - these tests are the manual "did the image really come
 //! up?" gate for a maintainer cutting a release.
 
 use std::fs;
@@ -65,7 +65,7 @@ fn read_phase_history() -> String {
 }
 
 // =====================================================================
-// Structural tests — always on
+// Structural tests - always on
 // =====================================================================
 
 #[test]
@@ -121,7 +121,7 @@ fn every_live_test_is_ignored() {
 
 #[test]
 fn live_tests_pin_port_8080_inside_the_container() {
-    // The container ALWAYS listens on 8080 — the Dockerfile sets
+    // The container ALWAYS listens on 8080 - the Dockerfile sets
     // `ENV DREVO_PORT=8080` + `EXPOSE 8080`, `docker-compose.yml`
     // forwards `8080:8080`, and `k8s/base/service.yaml` targets
     // `8080`. A live test that mapped the host port to anything other
@@ -137,13 +137,13 @@ fn live_tests_pin_port_8080_inside_the_container() {
 fn live_tests_mount_data_dir_inside_the_container() {
     // `Dockerfile` declares `VOLUME [\"/data\"]` and the server defaults
     // `DREVO_DATA_DIR=/data`. The persistence test only works if the
-    // host's named volume is mounted at exactly `/data` — otherwise the
+    // host's named volume is mounted at exactly `/data` - otherwise the
     // redb file would land somewhere ephemeral and the restart half of
     // the test would silently pass against an empty database.
     let src = read_test_file();
     assert!(
         src.contains(":/data"),
-        "live tests must bind the named volume to /data — the path declared by the Dockerfile"
+        "live tests must bind the named volume to /data - the path declared by the Dockerfile"
     );
 }
 
@@ -154,7 +154,7 @@ fn live_tests_use_named_volume_not_bind_mount() {
     // not own the host path. A Docker **named volume** initialises by
     // copying the chown'd /data contents from the image, so the
     // container's non-root user can write. This is a load-bearing
-    // detail — pin it.
+    // detail - pin it.
     let src = read_test_file();
     assert!(
         src.contains("docker_volume_create") || src.contains("[\"volume\", \"create\""),
@@ -170,7 +170,7 @@ fn live_tests_perform_full_crud_cycle() {
     for verb in ["http_post", "http_get", "http_patch", "http_delete"] {
         assert!(
             src.contains(verb),
-            "CRUD coverage missing — `{verb}` is not called in the live tests"
+            "CRUD coverage missing - `{verb}` is not called in the live tests"
         );
     }
 }
@@ -236,13 +236,13 @@ fn ci_workflow_does_not_run_live_container_tests() {
     // The `ci.yml` workflow runs `cargo test --all-features` without
     // `--include-ignored`. Adding `--include-ignored` to CI would
     // require a Docker daemon on the runner and would slow CI by
-    // minutes per push — explicitly out of scope. Lock the
+    // minutes per push - explicitly out of scope. Lock the
     // non-regression: ci.yml must NOT reference --include-ignored.
     let ci = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
         .expect("read .github/workflows/ci.yml");
     assert!(
         !ci.contains("--include-ignored"),
-        "ci.yml must NOT enable --include-ignored — live container tests are opt-in only"
+        "ci.yml must NOT enable --include-ignored - live container tests are opt-in only"
     );
 }
 
@@ -259,7 +259,7 @@ const IMAGE_TAG: &str = "drevo:test-00052";
 
 #[allow(dead_code)]
 fn require_docker_daemon() {
-    // The live tests are opt-in — if a developer runs them with
+    // The live tests are opt-in - if a developer runs them with
     // `--include-ignored` they must already have Docker installed and
     // the daemon running. Surface a clear panic instead of a cryptic
     // ECONNREFUSED 30s later.
@@ -267,7 +267,7 @@ fn require_docker_daemon() {
     match output {
         Ok(out) if out.status.success() => {}
         Ok(out) => panic!(
-            "`docker info` exited non-zero — start Docker before running the live container tests.\nstderr: {}",
+            "`docker info` exited non-zero - start Docker before running the live container tests.\nstderr: {}",
             String::from_utf8_lossy(&out.stderr)
         ),
         Err(e) => panic!(
@@ -286,7 +286,7 @@ fn docker_build_image() {
         .expect("spawn `docker build`");
     assert!(
         status.success(),
-        "`docker build -t {IMAGE_TAG} .` failed — see the build output above"
+        "`docker build -t {IMAGE_TAG} .` failed - see the build output above"
     );
 }
 
@@ -345,7 +345,7 @@ impl LiveContainer {
     fn start(suffix: &str, host_port: u16, volume: &str) -> Self {
         let name = format!("drevo-test-00052-{suffix}");
         // Remove a leftover container of the same name from a prior
-        // failed run (defensive — Drop normally handles it).
+        // failed run (defensive - Drop normally handles it).
         let _ = std::process::Command::new("docker")
             .args(["rm", "-f", &name])
             .stdout(std::process::Stdio::null())
@@ -405,7 +405,7 @@ impl Drop for LiveContainer {
 }
 
 // =====================================================================
-// Minimal HTTP/1.1 client — keeps dev-deps lean (no reqwest / ureq).
+// Minimal HTTP/1.1 client - keeps dev-deps lean (no reqwest / ureq).
 // =====================================================================
 
 #[allow(dead_code)]
@@ -486,7 +486,7 @@ fn parse_id_from_response(json: &str) -> u64 {
     // The Node response is JSON like
     //   {"id":1,"uuid":"...","kind":"note",...}
     // The leading `"id":` is unique enough for the small payloads we
-    // create here — we don't need a full JSON parser.
+    // create here - we don't need a full JSON parser.
     let key = "\"id\":";
     let start = json
         .find(key)
@@ -541,37 +541,37 @@ fn live_container_supports_node_crud_via_http() {
     let port = pick_free_port();
     let _container = LiveContainer::start(&suffix, port, &volume);
 
-    // CREATE — POST /nodes
+    // CREATE - POST /nodes
     let create_body = r#"{"kind":"note","title":"hello","body":"world","body_html":"<p>world</p>","properties":{}}"#;
     let (status, body) = http_post(port, "/nodes", create_body).expect("POST /nodes");
     assert_eq!(status, 201, "POST /nodes body = {body}");
     let id = parse_id_from_response(&body);
 
-    // READ — GET /nodes/{id}
+    // READ - GET /nodes/{id}
     let (status, body) = http_get(port, &format!("/nodes/{id}")).expect("GET /nodes/{id}");
     assert_eq!(status, 200, "GET /nodes/{id} body = {body}");
     assert!(body.contains("\"title\":\"hello\""), "body = {body}");
     assert!(body.contains("\"kind\":\"note\""), "body = {body}");
 
-    // UPDATE — PATCH /nodes/{id}
+    // UPDATE - PATCH /nodes/{id}
     let patch = r#"{"title":"renamed"}"#;
     let (status, body) =
         http_patch(port, &format!("/nodes/{id}"), patch).expect("PATCH /nodes/{id}");
     assert_eq!(status, 200, "PATCH /nodes/{id} body = {body}");
     assert!(body.contains("\"title\":\"renamed\""), "body = {body}");
 
-    // LIST — GET /nodes?kind=note (the `kind` filter is mandatory; the
+    // LIST - GET /nodes?kind=note (the `kind` filter is mandatory; the
     // API does not expose an unfiltered list to avoid accidental
     // table-scans against large graphs).
     let (status, body) = http_get(port, "/nodes?kind=note").expect("GET /nodes?kind=note");
     assert_eq!(status, 200, "GET /nodes?kind=note body = {body}");
     assert!(body.contains("\"renamed\""), "list missing renamed: {body}");
 
-    // DELETE — DELETE /nodes/{id}
+    // DELETE - DELETE /nodes/{id}
     let (status, body) = http_delete(port, &format!("/nodes/{id}")).expect("DELETE /nodes/{id}");
     assert_eq!(status, 204, "DELETE /nodes/{id} body = {body}");
 
-    // Confirm the delete — subsequent GET must 404.
+    // Confirm the delete - subsequent GET must 404.
     let (status, _) = http_get(port, &format!("/nodes/{id}")).expect("GET /nodes/{id}");
     assert_eq!(status, 404, "node should be gone after DELETE");
 }
@@ -593,7 +593,7 @@ fn live_container_persists_node_across_restart() {
         http_post(port_a, "/nodes", create_body).expect("POST /nodes (container A)");
     assert_eq!(status, 201, "POST /nodes (A) body = {body}");
     let id = parse_id_from_response(&body);
-    drop(container_a); // `docker rm -f` — fresh start next.
+    drop(container_a); // `docker rm -f` - fresh start next.
 
     // ----- Container B: same named volume, must see the node -----
     let port_b = pick_free_port();
@@ -603,7 +603,7 @@ fn live_container_persists_node_across_restart() {
         http_get(port_b, &format!("/nodes/{id}")).expect("GET /nodes/{id} after restart");
     assert_eq!(
         status, 200,
-        "node {id} did not survive container restart — GET returned {status}: {body}"
+        "node {id} did not survive container restart - GET returned {status}: {body}"
     );
     assert!(
         body.contains("\"survives_restart\""),

@@ -8,7 +8,7 @@
 //! row that would blow the cap, and (c) throttle a streaming producer through
 //! the [`Backpressure`] watermarks. A concurrency storm pins that a shared
 //! budget can never be jointly overshot. The budget itself stays decoupled from
-//! the executor — fed through the public planner API exactly as `00085`–`00088`
+//! the executor - fed through the public planner API exactly as `00085`-`00088`
 //! left it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -118,7 +118,7 @@ fn plan_for(query: &str, stats: &GraphStatistics) -> PlanNode {
 #[test]
 fn distinct_report_is_refused_under_a_tight_budget_and_admitted_under_a_generous_one() {
     let (_db, stats) = bug_tracker();
-    // A DISTINCT projection must materialise its dedup set — a blocking op.
+    // A DISTINCT projection must materialise its dedup set - a blocking op.
     let plan = plan_for("MATCH (b:Bug) RETURN DISTINCT b.status", &stats);
     let row_width = 32;
     let needed = estimate_peak_memory(&plan, row_width);
@@ -179,7 +179,7 @@ fn runtime_row_buffering_hits_the_oom_guard_instead_of_exhausting_memory() {
     );
     assert!(budget.used() <= 1000);
 
-    // Dropping the buffered rows frees the whole budget — no leak.
+    // Dropping the buffered rows frees the whole budget - no leak.
     held.clear();
     assert_eq!(budget.used(), 0);
 }
@@ -238,7 +238,7 @@ fn concurrent_reservers_never_exceed_the_shared_limit() {
                 let mut mine = Vec::new();
                 for _ in 0..PER_THREAD_ATTEMPTS {
                     if let Ok(r) = budget.try_reserve(ROW) {
-                        // Live usage must never pass the ceiling, mid-storm —
+                        // Live usage must never pass the ceiling, mid-storm -
                         // the core no-overshoot invariant under contention.
                         assert!(budget.used() <= 200);
                         granted.fetch_add(1, Ordering::Relaxed);

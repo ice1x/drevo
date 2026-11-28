@@ -8,13 +8,13 @@
 //!
 //! ## Rules this module implements
 //!
-//! - `drevo-rust` §"Error Handling" — _"Never `unwrap()` / `expect()`
+//! - `drevo-rust` §"Error Handling" - _"Never `unwrap()` / `expect()`
 //!   in library code"._ Every fallible code path returns a typed
 //!   [`crate::server::ConfigError`]; the binary's `main` is the single
 //!   boundary that logs the error and exits with a non-zero status.
-//! - `drevo-rust` §"Async / Tokio" — the public API is sync where
+//! - `drevo-rust` §"Async / Tokio" - the public API is sync where
 //!   nothing awaits; only [`crate::server::run`] is `async`.
-//! - `drevo-database` §"HTTP API" — the container convention
+//! - `drevo-database` §"HTTP API" - the container convention
 //!   (`0.0.0.0:8080`, `/data/drevo.redb`) is encoded as the
 //!   [`crate::server::Config`] defaults so test code and the binary agree.
 //!
@@ -34,7 +34,7 @@
 //! | `DREVO_EXPAND_MAX_HOPS` | `6` | The most `hops` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
 //! | `DREVO_RAG_TRACE_RETENTION_DAYS` | `0` (keep) | Delete `:ContextTrace` nodes (recorded by `drevo.rag.context` with a `session`) older than this many days, in every database, at startup and every 24 hours |
 //! | `DREVO_INGEST_WORKERS` | `2` | Ingest-job items (`drevo.ingest.submit`) extracted at once, across every database; a job's `concurrency` is capped by it |
-//! | `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts` (1–100); after the last failed one the item is `dead` |
+//! | `DREVO_INGEST_MAX_ATTEMPTS` | `5` | Attempts an ingest item gets when its job names no `maxAttempts` (1-100); after the last failed one the item is `dead` |
 //! | `DREVO_COMMUNITY_MAX_LLM_SYNC` | `20` | The most communities one synchronous `drevo.community.summarize({mode: 'llm'})` may ask the chat model to summarise; more fails with an error pointing at `async: true` (a background job has no limit), and `mode: 'auto'` writes extractive summaries instead |
 //! | `DREVO_INGEST_RETRY_BASE_MS` | `2000` | A failed ingest item waits `base × 2^attempts` (at most 5 minutes, less a random part of up to half) before it is tried again |
 //! | `DREVO_EXPAND_MAX_NODES` | `5000` | The largest `maxNodes` one `drevo.graph.expand` call may ask for; more fails with an error naming the limit |
@@ -54,13 +54,13 @@
 //! | `DREVO_OIDC_USERNAME_CLAIM` | `sub` | The claim naming the user (`preferred_username`, `email`, …) |
 //! | `DREVO_OIDC_ROLES_CLAIM` | `groups` | The claim listing the user's groups |
 //! | `DREVO_OIDC_ROLE_MAP` | (none) | Groups to roles, `group=role` pairs: `admins=admin,devs=editor`. Unlisted groups give no role |
-//! | `DREVO_ENGINE`    | `native-durable` | Serving engine. `native-durable` (default) — the WAL-backed native engine IS the store of record (`<data_dir>/native.wal`), no KV. `kv` still parses but its serving mode was removed (epic #444): a `kv` process warns and is served by the native engine. |
+//! | `DREVO_ENGINE`    | `native-durable` | Serving engine. `native-durable` (default) - the WAL-backed native engine IS the store of record (`<data_dir>/native.wal`), no KV. `kv` still parses but its serving mode was removed (epic #444): a `kv` process warns and is served by the native engine. |
 //!
 //! With the `embeddings-proxy` feature (Phase 19 task `00217`), three more
 //! variables opt the server into hosting `POST /v1/embeddings` by proxying a
 //! configured upstream. They are read only when the feature is compiled in;
 //! the upstream is taken solely from configuration, never from a request (the
-//! SSRF boundary — OWASP A10):
+//! SSRF boundary - OWASP A10):
 //!
 //! | Variable                    | Default | Description                         |
 //! |-----------------------------|---------|-------------------------------------|
@@ -72,7 +72,7 @@
 //!
 //! Graceful shutdown is driven by [`crate::server::shutdown_signal`]. On Unix it
 //! races `SIGINT` (Ctrl+C) and `SIGTERM`; on non-Unix targets only
-//! `Ctrl+C` is observed — Windows console `Ctrl+Break` and Windows
+//! `Ctrl+C` is observed - Windows console `Ctrl+Break` and Windows
 //! service-stop notifications are **not** wired today and the process
 //! relies on `Ctrl+C` or `axum::serve`'s implicit drop. Tracked as a
 //! Phase 8.5 follow-up under task `00113`'s cross-cutting items.
@@ -82,17 +82,17 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-/// Default bind address — every interface (container convention).
+/// Default bind address - every interface (container convention).
 const DEFAULT_HOST: &str = "0.0.0.0";
-/// Default HTTP port — 8080 is the de-facto unprivileged HTTP port
+/// Default HTTP port - 8080 is the de-facto unprivileged HTTP port
 /// for containers.
 const DEFAULT_PORT: u16 = 8080;
-/// Default data directory — matches the volume mount in `Dockerfile`.
+/// Default data directory - matches the volume mount in `Dockerfile`.
 const DEFAULT_DATA_DIR: &str = "/data";
 
 /// First non-privileged TCP port on most POSIX systems. Ports below
 /// this value require `CAP_NET_BIND_SERVICE` (or root). Operators can
-/// still set them — [`Config::is_privileged_port`] flags it so the
+/// still set them - [`Config::is_privileged_port`] flags it so the
 /// binary can emit an explicit warning.
 const PRIVILEGED_PORT_CEILING: u16 = 1024;
 
@@ -166,7 +166,7 @@ pub struct Config {
     /// `0` disables the alert).
     pub prepared_tx_warn: Option<std::time::Duration>,
     /// Opt-in heuristic rollback of prepared transactions older than this,
-    /// from `DREVO_PREPARED_TX_TIMEOUT_SECS` (#556; unset or `0` = never —
+    /// from `DREVO_PREPARED_TX_TIMEOUT_SECS` (#556; unset or `0` = never -
     /// the default, as resolving behind the coordinator's back can break
     /// atomicity across stores).
     pub prepared_tx_timeout: Option<std::time::Duration>,
@@ -252,13 +252,13 @@ pub struct TlsFiles {
 /// KV store, or the durable native engine (the store of record).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EngineMode {
-    /// The durable native engine IS the store of record — no KV store at
-    /// all — and the **only** serving mode (epic #444). Serves the full
+    /// The durable native engine IS the store of record - no KV store at
+    /// all - and the **only** serving mode (epic #444). Serves the full
     /// native HTTP surface ([`crate::native_api::build_native_router`]) and,
     /// when `DREVO_BOLT_PORT` is set, Bolt.
     #[default]
     NativeDurable,
-    /// Legacy KV storage engine. Its *serving* path has been removed — the
+    /// Legacy KV storage engine. Its *serving* path has been removed - the
     /// value still parses (the KV code still compiles for the test corpus),
     /// but [`run`] no longer serves it: a `DREVO_ENGINE=kv` process warns and
     /// serves with the durable native engine instead.
@@ -294,8 +294,8 @@ pub enum ConfigError {
         /// Human-readable parse failure.
         reason: String,
     },
-    /// `DREVO_DATA_DIR` was set to an empty string. (Non-empty values
-    /// — absolute or relative — are accepted; existence is verified
+    /// `DREVO_DATA_DIR` was set to an empty string. (Non-empty values -
+    /// absolute or relative - are accepted; existence is verified
     /// later when the durable native store opens the data directory.)
     #[error("invalid DREVO_DATA_DIR: {reason}")]
     InvalidDataDir {
@@ -1199,7 +1199,7 @@ fn configure_extract(
 
 /// Install the server-side query embedder on the durable native service
 /// (`DREVO_ENGINE=native-durable`), when the `embeddings-proxy` feature is
-/// built and `DREVO_EMBEDDINGS_UPSTREAM` is set — so `drevo.semantic.embed`
+/// built and `DREVO_EMBEDDINGS_UPSTREAM` is set - so `drevo.semantic.embed`
 /// and `drevo.semantic.query` work on the zero-redb server too. A no-op
 /// otherwise (they report "not configured" / the capability error).
 #[cfg(feature = "embeddings-proxy")]
@@ -1216,7 +1216,7 @@ fn configure_native_query_embedder(
     Ok(())
 }
 
-/// Attach the store-backed embeddings proxy to the durable-native HTTP state —
+/// Attach the store-backed embeddings proxy to the durable-native HTTP state -
 /// the native counterpart of `configure_embeddings`. Installed unconditionally
 /// (when the feature is built) so a later Web-UI configuration enables
 /// `/v1/embeddings` with no restart.
@@ -1233,7 +1233,7 @@ fn configure_native_embeddings(
     Ok(state.with_embeddings_backend(EmbeddingBackend::Proxy(backend)))
 }
 
-/// No-op when the proxy backend is not compiled in — `/v1/embeddings` then
+/// No-op when the proxy backend is not compiled in - `/v1/embeddings` then
 /// always answers `503`.
 #[cfg(not(feature = "embeddings-proxy"))]
 fn configure_native_embeddings(
@@ -1255,7 +1255,7 @@ fn configure_native_query_embedder(
 /// Open the database, bind the TCP listener, and serve until a
 /// shutdown signal is observed.
 ///
-/// All log lines go through `tracing` — initialise the subscriber in
+/// All log lines go through `tracing` - initialise the subscriber in
 /// `main` before calling. The function is async because it awaits the
 /// server future.
 ///
@@ -1283,7 +1283,7 @@ pub struct Listening {
 }
 
 /// [`run`], sending the addresses the server listens on to `announce` once
-/// every listener is bound — for a caller that starts the server on port
+/// every listener is bound - for a caller that starts the server on port
 /// `0` and then connects to it:
 ///
 /// ```no_run
@@ -1318,7 +1318,7 @@ async fn serve(
     announce: Option<tokio::sync::oneshot::Sender<Listening>>,
 ) -> Result<(), RunError> {
     // Announce the running build up front so every log stream records which
-    // drevo binary is serving — parity with the version reported by `/`,
+    // drevo binary is serving - parity with the version reported by `/`,
     // `/status`, and the Bolt handshake. This is the first thing `run` does, so
     // the `tests/server_binary_tests.rs` wiring test can observe it immediately.
     tracing::info!(version = crate::VERSION, "starting drevo");
@@ -1327,13 +1327,13 @@ async fn serve(
     if cfg.is_privileged_port() {
         tracing::warn!(
             port = cfg.port,
-            "DREVO_PORT is below 1024 — most systems require CAP_NET_BIND_SERVICE \
+            "DREVO_PORT is below 1024 - most systems require CAP_NET_BIND_SERVICE \
              (or root) to bind privileged ports"
         );
     }
 
     // The durable native engine is the only store of record and the only
-    // serving path (epic #444 — the KV serving mode has been removed). A
+    // serving path (epic #444 - the KV serving mode has been removed). A
     // `DREVO_ENGINE=kv` process still parses its config (the KV code compiles
     // for the test corpus) but is served by the native engine, with a warning
     // so the operator notices the stale setting.
@@ -1396,10 +1396,10 @@ fn prune_rag_traces(registry: &crate::database_registry::DatabaseRegistry, days:
 }
 
 /// Serve `DREVO_ENGINE=native-durable`: the WAL-backed native engine as the
-/// store of record — no KV store, no catalog. Opens (or creates)
+/// store of record - no KV store, no catalog. Opens (or creates)
 /// `<data_dir>/native.wal`, compacts and indexes it, and serves the minimal
 /// native HTTP surface plus (when `DREVO_BOLT_PORT` is set) a Bolt listener
-/// whose sessions execute on the durable service — autocommit statements
+/// whose sessions execute on the durable service - autocommit statements
 /// only; `BEGIN` is refused until the executor can drive native
 /// transactions.
 async fn run_native_durable(
@@ -1417,7 +1417,7 @@ async fn run_native_durable(
     // opens anything.
     let tls = load_tls(&cfg)?;
     let wal = cfg.data_dir.join("native.wal");
-    tracing::info!(wal = %wal.display(), read_only = cfg.read_only, "engine=native-durable — opening the durable native store");
+    tracing::info!(wal = %wal.display(), read_only = cfg.read_only, "engine=native-durable - opening the durable native store");
     let opened = if cfg.read_only {
         crate::native_service::NativeService::open_read_only(&wal)
     } else {
@@ -1434,7 +1434,7 @@ async fn run_native_durable(
     let text2cypher_store = configure_text2cypher(&cfg)?;
     // The extraction endpoint (`drevo.extract.*`), likewise.
     let extract_store = configure_extract(&cfg)?;
-    // Opt-in server-side query embedder — the durable-engine counterpart of
+    // Opt-in server-side query embedder - the durable-engine counterpart of
     // `configure_query_embedder`; no-op unless the `embeddings-proxy` feature
     // is built.
     configure_native_query_embedder(&service, embeddings_store.clone())?;
@@ -1553,7 +1553,7 @@ async fn run_native_durable(
         );
     }
 
-    // Optional Bolt listener — same opt-in as the KV path, served by the
+    // Optional Bolt listener - same opt-in as the KV path, served by the
     // durable-native session; statements route to the database named by their
     // `db` selector via the shared catalog (issue #523).
     if let Some(bolt_port) = cfg.bolt_port {
@@ -1728,7 +1728,7 @@ async fn run_native_durable(
         Some(dir) => state.with_backup_dir(dir.clone()),
         None => state,
     };
-    // Opt-in embeddings proxy, exactly like the KV path — the restart
+    // Opt-in embeddings proxy, exactly like the KV path - the restart
     // tooling probes POST /v1/embeddings after boot. Store-backed so the key is
     // Web-UI-settable.
     let state = state.with_embeddings_config_store(embeddings_store.clone());

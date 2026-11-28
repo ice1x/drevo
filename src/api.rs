@@ -2,12 +2,12 @@
 //!
 //! This module is the engine-independent HTTP layer that the durable-native
 //! router in [`crate::native_api`] builds on. It no longer owns a router: the
-//! legacy KV `Drevo` HTTP surface — the `ApiState`/`Db` extractor, `build_router`,
-//! and every KV-backed handler — was removed with the rest of the KV serving path
+//! legacy KV `Drevo` HTTP surface - the `ApiState`/`Db` extractor, `build_router`,
+//! and every KV-backed handler - was removed with the rest of the KV serving path
 //! (epic #444). What remains is the reusable library those handlers and the
 //! native ones share:
 //!
-//! - [`ApiError`](crate::api::ApiError) — the unified error type and its
+//! - [`ApiError`](crate::api::ApiError) - the unified error type and its
 //!   `IntoResponse` + `From<…>` conversions (the `DrevoError → HTTP status`
 //!   mapping is fenced by the tests at the bottom of this file).
 //! - The request/response DTOs and query structs (`CypherRequest`,
@@ -58,7 +58,7 @@ pub enum ApiError {
     /// /v1/embeddings` when the configured embeddings upstream errors.
     BadGateway(String),
     /// A failure with a stable machine-readable `code` in the body next to
-    /// `error` and `status` — e.g. resolving an unknown prepared transaction
+    /// `error` and `status` - e.g. resolving an unknown prepared transaction
     /// (#590).
     Coded {
         /// HTTP status.
@@ -101,9 +101,9 @@ impl From<EmbeddingsError> for ApiError {
             // Bad client input (empty input, …).
             EmbeddingsError::InvalidInput(_) => Self::BadRequest(err.to_string()),
             // Operator misconfiguration (bad upstream URL): the service is not
-            // properly configured, so it cannot serve — surface as 503.
+            // properly configured, so it cannot serve - surface as 503.
             EmbeddingsError::InvalidUpstream(_) => Self::Unavailable(err.to_string()),
-            // The configured upstream failed or misbehaved — a bad gateway.
+            // The configured upstream failed or misbehaved - a bad gateway.
             EmbeddingsError::Upstream(_) => Self::BadGateway(err.to_string()),
         }
     }
@@ -210,7 +210,7 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 }
 
 // ---------------------------------------------------------------------
-// Shared list-handler defaults (task 00109 audit fix — F3)
+// Shared list-handler defaults (task 00109 audit fix - F3)
 // ---------------------------------------------------------------------
 
 /// Default `limit` applied to `GET /nodes` and `GET /edges` when the
@@ -221,7 +221,7 @@ pub const DEFAULT_LIST_LIMIT: usize = 50;
 
 /// Maximum `limit` accepted by `GET /nodes` and `GET /edges`. Requests
 /// above this cap are silently clamped so that a pathological client
-/// cannot force an unbounded scan over the kind index — the same
+/// cannot force an unbounded scan over the kind index - the same
 /// rationale as [`MAX_SEARCH_LIMIT`] for the FTS endpoint.
 pub const MAX_LIST_LIMIT: usize = 1000;
 
@@ -232,7 +232,7 @@ pub const MAX_LIST_LIMIT: usize = 1000;
 /// Query parameters accepted by `GET /nodes`.
 ///
 /// `kind` is mandatory because list queries are always scoped to a
-/// single node kind — the underlying index is `node_kind:{kind}:`.
+/// single node kind - the underlying index is `node_kind:{kind}:`.
 #[derive(Debug, Deserialize)]
 pub struct ListNodesQuery {
     /// Node kind to filter by (required).
@@ -272,7 +272,7 @@ pub struct ListEdgesQuery {
 
 /// Query parameters accepted by `GET /nodes/{id}/edges`.
 ///
-/// `direction` is optional — when absent, the handler defaults to
+/// `direction` is optional - when absent, the handler defaults to
 /// [`Direction::Both`](crate::model::Direction::Both). Accepted values (case-insensitive): `outgoing`,
 /// `incoming`, `both`.
 #[derive(Debug, Deserialize)]
@@ -362,7 +362,7 @@ pub const MAX_SEARCH_LIMIT: usize = 1000;
 
 /// JSON body for `POST /search/fts`.
 ///
-/// `query` is required — a missing field yields 400 Bad Request. An
+/// `query` is required - a missing field yields 400 Bad Request. An
 /// empty string is accepted but produces no results, mirroring the
 /// underlying `search_fts` behaviour. `limit` is
 /// optional and defaults to [`DEFAULT_SEARCH_LIMIT`].
@@ -385,8 +385,8 @@ pub struct SearchFtsResponse {
 // ── Cypher over HTTP (`POST /cypher`) types ─────────────────────────────
 // The request/response shapes for the Cypher-over-HTTP endpoint, served by
 // `crate::native_api`. A response carries BOTH a tabular result (`columns` +
-// `rows`) and a `graph` projection — every Node / Relationship / Path value in
-// the rows, deduped by id (see `exec_result_to_response` / `collect_graph`) —
+// `rows`) and a `graph` projection - every Node / Relationship / Path value in
+// the rows, deduped by id (see `exec_result_to_response` / `collect_graph`) -
 // that the browser renders on the canvas the same way it renders
 // `/export/json` and `/subgraph`.
 
@@ -616,8 +616,8 @@ pub(crate) fn exec_result_to_response(result: ExecResult) -> CypherResponse {
 ///
 /// `kind` is mandatory; everything else has a default. `collapse` selects
 /// the keyword-similarity axis: `none` (default), `lexical`, or `semantic`.
-/// Semantic collapse needs an embedder, which the HTTP server does not host
-/// — it is rejected with 400; use the Rust/Python API with precomputed
+/// Semantic collapse needs an embedder, which the HTTP server does not host -
+/// it is rejected with 400; use the Rust/Python API with precomputed
 /// embeddings for the semantic axis.
 #[derive(Debug, Deserialize)]
 pub struct FacetsQuery {
@@ -653,16 +653,16 @@ pub struct FacetsResponse {
 // ---------------------------------------------------------------------
 
 /// JSON body accepted by `POST /import/json`. Carries the raw dump produced
-/// by `GET /export/json` (or `Drevo::export_json`) — the server parses,
+/// by `GET /export/json` (or `Drevo::export_json`) - the server parses,
 /// validates the format header, and replays the payload into the live
 /// database.
 #[derive(Debug, Deserialize)]
 pub struct ImportJsonRequest {
-    /// Raw `drevo-json-v1` payload — the full output of `GET /export/json`.
+    /// Raw `drevo-json-v1` payload - the full output of `GET /export/json`.
     pub dump: String,
 }
 
-/// JSON body accepted by `POST /import/graphml`. Carries a GraphML document —
+/// JSON body accepted by `POST /import/graphml`. Carries a GraphML document -
 /// drevo's own `GET /export/graphml` output, or any GraphML that follows the
 /// same `<key>` / `<data>` conventions.
 #[derive(Debug, Deserialize)]
@@ -685,10 +685,10 @@ pub struct DatabaseListResponse {
     pub read_only_server: bool,
 }
 
-/// Request body for `POST /databases` — create a new named database.
+/// Request body for `POST /databases` - create a new named database.
 #[derive(Debug, Deserialize)]
 pub struct CreateDatabaseRequest {
-    /// The name of the database to create. Validated by the registry: 1–63
+    /// The name of the database to create. Validated by the registry: 1-63
     /// characters of `[A-Za-z0-9_-]`, beginning with a letter, digit, or
     /// underscore.
     pub name: String,
@@ -696,7 +696,7 @@ pub struct CreateDatabaseRequest {
 
 /// The engine-independent body of `POST /v1/embeddings`, shared by the KV
 /// router and the durable-native one (`crate::native_api`): validate, then
-/// proxy to the operator-configured backend — or answer the deterministic
+/// proxy to the operator-configured backend - or answer the deterministic
 /// `400` / `503` without one.
 pub(crate) async fn embeddings_response(
     backend: Option<&EmbeddingBackend>,
@@ -724,8 +724,8 @@ pub(crate) fn embeddings_config_status(
 
 /// The engine-independent body of `POST /config/embeddings`: apply a partial
 /// update (validate upstream, keep the secret when the key field is blank),
-/// persist it (`0600`), and hot-swap it in. Returns the new secret-free status
-/// — the API key is never echoed back. A malformed upstream is a `400`.
+/// persist it (`0600`), and hot-swap it in. Returns the new secret-free status -
+/// the API key is never echoed back. A malformed upstream is a `400`.
 pub(crate) fn embeddings_config_apply(
     store: Option<&crate::embeddings::EmbeddingsConfigStore>,
     update: crate::embeddings::EmbeddingsConfigUpdate,
@@ -798,7 +798,7 @@ pub(crate) fn text2cypher_config_apply(
 /// audited under task `00109`. Constructing the variants directly here
 /// guarantees that adding a new [`DrevoError`] variant breaks **both** the
 /// production match arm in [`ApiError::into_response`] **and** this test
-/// at compile time — making the mapping a deliberate decision rather than
+/// at compile time - making the mapping a deliberate decision rather than
 /// an accidental default.
 #[cfg(test)]
 mod error_mapping_tests {
@@ -864,7 +864,7 @@ mod error_mapping_tests {
         // The `Encode` and `Decode` variants of `DrevoError` wrap bincode
         // error types that cannot be constructed outside the bincode
         // crate. They share the `Io` 500 arm in `api.rs`, so
-        // the regression coverage above already exercises that arm — but
+        // the regression coverage above already exercises that arm - but
         // we still need a compile-time fence that fails when those
         // variants are removed or renamed. The `#[allow(dead_code)]`
         // match below is that fence: it has to mention each variant by

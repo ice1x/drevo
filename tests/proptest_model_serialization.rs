@@ -1,23 +1,23 @@
-//! Phase 9 task `00057` — property-based serialization round-trip tests
+//! Phase 9 task `00057` - property-based serialization round-trip tests
 //! for the model layer.
 //!
 //! Properties covered:
 //!
-//! 1. **bincode round-trip preserves Node** — for arbitrary `Node` values,
+//! 1. **bincode round-trip preserves Node** - for arbitrary `Node` values,
 //!    `decode(encode(n)) == n`.
-//! 2. **bincode round-trip preserves Edge** — same, for `Edge`.
-//! 3. **JSON round-trip preserves Node** — `serde_json::from_str(to_string(n)) == n`.
-//! 4. **JSON round-trip preserves Edge** — same, for `Edge`.
-//! 5. **`Properties` bincode is order-independent** — two maps with the
+//! 2. **bincode round-trip preserves Edge** - same, for `Edge`.
+//! 3. **JSON round-trip preserves Node** - `serde_json::from_str(to_string(n)) == n`.
+//! 4. **JSON round-trip preserves Edge** - same, for `Edge`.
+//! 5. **`Properties` bincode is order-independent** - two maps with the
 //!    same logical content but different HashMap insertion orders produce
 //!    byte-identical bincode output. This is a property-test upgrade of
 //!    `tests/db_invariants_tests.rs::properties_bincode_is_deterministic_*`.
-//! 6. **`Node::apply_patch` is the union of its patch fields** — applying
+//! 6. **`Node::apply_patch` is the union of its patch fields** - applying
 //!    a patch that sets `(kind, title, body, body_html, properties)` to
 //!    `Some(_)` produces a node whose fields match the patch's `Some`
 //!    values and whose other fields match the original. `updated_at`
 //!    advances monotonically.
-//! 7. **`now_ms` is monotonic-or-equal across two adjacent calls** — total
+//! 7. **`now_ms` is monotonic-or-equal across two adjacent calls** - total
 //!    function never panics, and time never travels backwards (cross-link
 //!    with `drevo-rust` §"Error Handling" + AUDIT-model F-rules).
 //!
@@ -44,12 +44,12 @@ use std::collections::HashMap;
 ///   `-258947837.17905352` and round-trip-equality property tests fail
 ///   on a measurement artifact, not a real bug.
 /// * The Cypher / Bolt / Vector phases all serialise numeric properties
-///   through bincode, JSON, or PackStream — none of those wire formats
+///   through bincode, JSON, or PackStream - none of those wire formats
 ///   promise IEEE-754 round-trip preservation. The property tests below
 ///   only need to assert "the same content serialises to identical
 ///   bytes", which booleans / ints / strings / arrays / objects already
 ///   stress comprehensively.
-/// * Real applications can still store floats — there is just no test-level
+/// * Real applications can still store floats - there is just no test-level
 ///   property to assert about them beyond what the Rust stdlib already
 ///   guarantees, so generating them adds noise without coverage.
 fn json_value() -> impl Strategy<Value = serde_json::Value> {
@@ -243,7 +243,7 @@ proptest! {
 }
 
 // ---------------------------------------------------------------
-// Node::apply_patch — patch semantics + updated_at advances
+// Node::apply_patch - patch semantics + updated_at advances
 // ---------------------------------------------------------------
 
 proptest! {
@@ -254,7 +254,7 @@ proptest! {
 
     /// Applying a patch updates every `Some` field and leaves every `None`
     /// field unchanged. `updated_at` is set to `now_ms()` regardless of
-    /// what the input's `updated_at` was — the property tests this by
+    /// what the input's `updated_at` was - the property tests this by
     /// bracketing the call with `now_ms()` reads and asserting the new
     /// value sits inside that window.
     ///
@@ -301,7 +301,7 @@ proptest! {
             None    => prop_assert_eq!(&updated.properties, &node.properties),
         }
         // id / uuid / created_at are immutable for the lifetime of the
-        // node — this is invariant #4 (UUID immutability) plus the model
+        // node - this is invariant #4 (UUID immutability) plus the model
         // contract on created_at.
         prop_assert_eq!(updated.id, node.id);
         prop_assert_eq!(updated.uuid, node.uuid);
@@ -317,12 +317,12 @@ proptest! {
 }
 
 // ---------------------------------------------------------------
-// now_ms — total, monotonic-or-equal
+// now_ms - total, monotonic-or-equal
 // ---------------------------------------------------------------
 
 #[test]
 fn now_ms_is_total_under_many_calls() {
-    // Not a proptest case — but covers the "never panics" property
+    // Not a proptest case - but covers the "never panics" property
     // exhaustively for a large number of calls. The proptest framework
     // adds nothing here because the function takes no input.
     for _ in 0..10_000 {
@@ -336,7 +336,7 @@ fn now_ms_is_weakly_monotonic_within_one_thread() {
     let b = now_ms();
     // System clock can technically go backwards, but within one thread
     // and within microseconds the only way for `b < a` to happen is an
-    // NTP-stepped clock — extremely rare. We treat it as a soft
+    // NTP-stepped clock - extremely rare. We treat it as a soft
     // assertion: log if it happens, don't fail.
     assert!(
         b >= a || (a - b) < 1000,
@@ -347,12 +347,12 @@ fn now_ms_is_weakly_monotonic_within_one_thread() {
 }
 
 // ---------------------------------------------------------------
-// Direction — all three variants are distinct (smoke)
+// Direction - all three variants are distinct (smoke)
 // ---------------------------------------------------------------
 
 #[test]
 fn direction_all_three_variants_are_distinct() {
-    // `Direction` is `PartialEq + Eq` but deliberately not `Hash` — using
+    // `Direction` is `PartialEq + Eq` but deliberately not `Hash` - using
     // a vector + `dedup` instead of a `HashSet` keeps that constraint
     // honest, so any future `derive(Hash)` shows up in code review rather
     // than silently leaking from a test.
@@ -372,7 +372,7 @@ fn direction_all_three_variants_are_distinct() {
 }
 
 // ---------------------------------------------------------------
-// Sanity — a hand-rolled fixture round-trips
+// Sanity - a hand-rolled fixture round-trips
 // ---------------------------------------------------------------
 
 #[test]

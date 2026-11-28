@@ -2,13 +2,13 @@
 //!
 //! drevo stores a node's primary label in [`crate::model::Node::kind`], but
 //! Cypher lets a node carry any number of labels. The extras live in a reserved
-//! property, [`crate::labels::SECONDARY_LABELS_KEY`], as a JSON array of strings
-//! — never surfaced through user-level `n.<prop>` access (the executor filters it
+//! property, [`crate::labels::SECONDARY_LABELS_KEY`], as a JSON array of strings -
+//! never surfaced through user-level `n.<prop>` access (the executor filters it
 //! out when it builds the visible property map).
 //!
 //! [`crate::labels::secondary_labels`] is the single source of truth for parsing that array, so
-//! every consumer — the Cypher executor's label matching and the native
-//! secondary-label index — reads labels identically and can never drift.
+//! every consumer - the Cypher executor's label matching and the native
+//! secondary-label index - reads labels identically and can never drift.
 
 use crate::model::Node;
 

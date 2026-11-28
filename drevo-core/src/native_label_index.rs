@@ -14,7 +14,7 @@
 //! (see [`NativeGraph::changes_since`](crate::native::NativeGraph::changes_since))
 //! rather than coupling to the write path. Combined with the primary-kind index,
 //! it lets the executor gather label candidates as
-//! `nodes_by_kind(label) ∪ node_ids(label)` — never a full scan.
+//! `nodes_by_kind(label) ∪ node_ids(label)` - never a full scan.
 //!
 //! # Usage
 //!
@@ -93,7 +93,7 @@ impl NativeLabelIndex {
     }
 
     /// Node ids carrying `label` as a **secondary** label, in ascending order.
-    /// Empty when no node carries it. (Primary-kind matches are not here — the
+    /// Empty when no node carries it. (Primary-kind matches are not here - the
     /// engine's `nodes_by_kind` covers those; the executor unions the two.)
     pub fn node_ids(&self, label: &str) -> Vec<u64> {
         self.postings
@@ -106,7 +106,7 @@ impl NativeLabelIndex {
     /// since the last [`cursor`](Self::cursor).
     ///
     /// If the feed was trimmed past this index's cursor (a `lagged` batch), the
-    /// index is rebuilt from a fresh snapshot of every node — the standard
+    /// index is rebuilt from a fresh snapshot of every node - the standard
     /// re-snapshot recovery for a consumer that fell behind the retention
     /// window.
     pub fn sync(&mut self, graph: &NativeGraph) {

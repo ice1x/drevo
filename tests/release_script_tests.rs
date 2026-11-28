@@ -2,7 +2,7 @@
 //! Makefile wiring that fronts it.
 //!
 //! Only the DRY-RUN path (`scripts/release.sh next … --from <base>`) is
-//! exercised — it is pure arithmetic with no git side effects, so the suite
+//! exercised - it is pure arithmetic with no git side effects, so the suite
 //! never creates or pushes a tag.
 
 use std::path::{Path, PathBuf};
@@ -82,7 +82,7 @@ fn makefile_wires_image_and_release_targets() {
 fn release_image_walks_the_patch_space_from_the_seed() {
     // The deploy-image version line starts at the Cargo.toml `0.0.0` seed and
     // walks the PATCH space: the first `make release-image` (no git tags yet)
-    // is 0.0.1, then 0.0.2, … — not a jump straight to 0.1.0.
+    // is 0.0.1, then 0.0.2, … - not a jump straight to 0.1.0.
     assert_eq!(next_version("patch", "0.0.0"), "0.0.1");
     assert_eq!(next_version("patch", "0.0.1"), "0.0.2");
 
@@ -106,11 +106,11 @@ fn release_targets_do_not_push_from_the_makefile() {
     let makefile = read("Makefile");
     assert!(
         !makefile.contains("git push"),
-        "the Makefile must not `git push` directly — releasing goes through scripts/release.sh"
+        "the Makefile must not `git push` directly - releasing goes through scripts/release.sh"
     );
     assert!(
         !makefile.contains("docker push"),
-        "the Makefile must not `docker push` directly — image release goes through scripts/release.sh"
+        "the Makefile must not `docker push` directly - image release goes through scripts/release.sh"
     );
 }
 
@@ -133,7 +133,7 @@ fn release_script_supports_one_shot_image_build_and_push() {
         "release.sh `image` mode must push the container image"
     );
     // Must push to the registry the deploy actually uses (Docker Hub by
-    // default), overridable via DREVO_IMAGE — not hard-wired to ghcr.io.
+    // default), overridable via DREVO_IMAGE - not hard-wired to ghcr.io.
     assert!(
         s.contains("DREVO_IMAGE") && s.contains("ice1x/drevo"),
         "release.sh `image` mode must default to the Docker Hub deploy image, DREVO_IMAGE-overridable"
@@ -195,7 +195,7 @@ fn release_image_refuses_a_noop_rebuild() {
     // Guard against re-shipping an image with no source change (the "built
     // 0.0.27 with the same code as 0.0.26" case): if HEAD is already the commit
     // the latest release tag points at, the new image would be identical bar its
-    // version/build-date, so `image` mode must refuse — with a `--force` escape.
+    // version/build-date, so `image` mode must refuse - with a `--force` escape.
     let script = read("scripts/release.sh");
     assert!(
         script.contains("--force") && script.contains("force=1"),

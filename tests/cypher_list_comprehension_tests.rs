@@ -1,4 +1,4 @@
-//! End-to-end Cypher list-comprehension tests — Phase 10 follow-up task `00146`.
+//! End-to-end Cypher list-comprehension tests - Phase 10 follow-up task `00146`.
 //!
 //! A list comprehension `[var IN list WHERE predicate | projection]` evaluates
 //! `list`, binds each element to `var` in a child scope, keeps the elements for
@@ -272,7 +272,7 @@ fn comprehension_with_parameter_list() {
     assert_eq!(ints(&list_cell(&rows)), vec![5, 8]);
 }
 
-// ===== Scenario 1 — CBT journal =============================================
+// ===== Scenario 1 - CBT journal =============================================
 
 #[test]
 fn cbt_filter_distressing_tags() {
@@ -293,7 +293,7 @@ fn cbt_filter_distressing_tags() {
     );
 }
 
-// ===== Scenario 2 — story / book editor =====================================
+// ===== Scenario 2 - story / book editor =====================================
 
 #[test]
 fn story_uppercase_chapter_titles() {
@@ -312,7 +312,7 @@ fn story_uppercase_chapter_titles() {
     );
 }
 
-// ===== Scenario 3 — IT task manager =========================================
+// ===== Scenario 3 - IT task manager =========================================
 
 #[test]
 fn tasks_select_overdue_estimates() {
@@ -329,7 +329,7 @@ fn tasks_select_overdue_estimates() {
     assert_eq!(ints(&list_cell(&rows)), vec![13, 21]);
 }
 
-// ===== Scenario 4 — ERP =====================================================
+// ===== Scenario 4 - ERP =====================================================
 
 #[test]
 fn erp_apply_discount_to_line_items() {
@@ -346,7 +346,7 @@ fn erp_apply_discount_to_line_items() {
     assert_eq!(ints(&list_cell(&rows)), vec![90, 225]);
 }
 
-// ===== Scenario 5 — bug tracker =============================================
+// ===== Scenario 5 - bug tracker =============================================
 
 #[test]
 fn bugs_keep_high_severity_ids() {

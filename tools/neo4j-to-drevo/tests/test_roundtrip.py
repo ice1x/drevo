@@ -1,10 +1,10 @@
-"""Integration test — a realistic Neo4j-shaped graph migrated into a real
+"""Integration test - a realistic Neo4j-shaped graph migrated into a real
 drevo backend, then verified through drevo's own query surface.
 
 The use-case proof: build an IT-task-manager graph the way a Neo4j export
 presents it (labelled nodes + typed relationships + mixed property
 types), run it through `migrate`, and assert the data is queryable in
-drevo afterwards — traversal, FTS, and property fidelity.
+drevo afterwards - traversal, FTS, and property fidelity.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Unit tests for `Drevo.search_fts` (00118).
 
-The FTS surface is small — query string + limit, returns
-`list[ScoredNode]` — but the contract has subtle edges (empty query,
+The FTS surface is small - query string + limit, returns
+`list[ScoredNode]` - but the contract has subtle edges (empty query,
 limit truncation, no-match) that the integration suite (00119) cannot
 exercise efficiently. One assertion per case.
 """

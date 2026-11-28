@@ -10,7 +10,7 @@
 //! - `n.title` is `null`, and `keys(n)` / `properties(n)` do not list it;
 //! - copying a node's properties onto another (`SET b = properties(a)`) adds
 //!   no title;
-//! - a real title — given at create time or set later — is an ordinary
+//! - a real title - given at create time or set later - is an ordinary
 //!   property, and removing it leaves the node untitled again.
 
 use std::collections::HashMap;

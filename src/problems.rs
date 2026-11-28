@@ -10,7 +10,7 @@
 //! anywhere, never reach the buffer.
 //!
 //! Statement failures that are the server's problem rather than the
-//! client's — a statement timeout (#547), a storage error — are reported
+//! client's - a statement timeout (#547), a storage error - are reported
 //! through `note_exec_error`. It logs them at ERROR under the
 //! `drevo::query` target with the query text, so they land both in the
 //! server log and in the feed, and it counts timeouts for
@@ -367,7 +367,7 @@ pub fn report_stale_prepared(
     newly
 }
 
-/// Report an ingest job that turned `failed` — every item left is `dead` —
+/// Report an ingest job that turned `failed` - every item left is `dead` -
 /// at ERROR (target `drevo::ingest`), which lands in the problem feed, with
 /// the number of dead items and the error that ended the last of them.
 pub(crate) fn report_failed_ingest_job(
@@ -389,8 +389,8 @@ pub(crate) fn report_failed_ingest_job(
 
 /// Roll back, heuristically, every transaction prepared on `service` longer
 /// than `timeout` (#556, the opt-in `DREVO_PREPARED_TX_TIMEOUT_SECS`). Each
-/// one is logged at ERROR (target `drevo::tx`) — it overrides whatever the
-/// coordinator decides — and a late commit is told so. Returns the gids
+/// one is logged at ERROR (target `drevo::tx`) - it overrides whatever the
+/// coordinator decides - and a late commit is told so. Returns the gids
 /// rolled back.
 pub fn heuristic_rollback_expired(
     database: &str,
@@ -417,7 +417,7 @@ pub fn heuristic_rollback_expired(
                 );
                 rolled.push(p.gid);
             }
-            // Resolved concurrently — nothing to do.
+            // Resolved concurrently - nothing to do.
             Err(crate::native::ResolveError::UnknownGid(_))
             | Err(crate::native::ResolveError::HeuristicRollback(_)) => {}
             Err(e) => tracing::error!(

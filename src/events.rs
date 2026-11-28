@@ -336,7 +336,7 @@ impl Follower {
     }
 }
 
-/// `GET /events` — see the [module docs](self).
+/// `GET /events` - see the [module docs](self).
 pub async fn stream(
     State(state): State<NativeApiState>,
     signed_in: Option<axum::Extension<crate::security::SignedIn>>,

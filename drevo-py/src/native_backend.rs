@@ -1,11 +1,11 @@
-//! `NativeBackend` — a Drevo-shaped facade over the native engine
+//! `NativeBackend` - a Drevo-shaped facade over the native engine
 //! ([`NativeService`]), so the Python binding runs on the native durable engine
-//! instead of the KV/redb store (issue #446, epic #444 — "drevo-py off redb").
+//! instead of the KV/redb store (issue #446, epic #444 - "drevo-py off redb").
 //!
 //! The Python handle (`handle.rs`) was written against the `Drevo` (KV) inherent
 //! API. This adapter presents the **same method names, signatures and
 //! `Result<_, DrevoError>` shapes** over `NativeService` (+ its `NativeGraph`),
-//! so the handle bodies are unchanged — all the KV↔native reconciliation lives
+//! so the handle bodies are unchanged - all the KV↔native reconciliation lives
 //! here, in one compiler-checked place. The Python API is byte-for-byte
 //! identical to before; only the storage backend changed.
 //!
@@ -38,7 +38,7 @@ pub struct NativeBackend {
 impl NativeBackend {
     // ── Lifecycle ────────────────────────────────────────────────────────
 
-    /// Open (or create) the durable native store — the WAL at `path`.
+    /// Open (or create) the durable native store - the WAL at `path`.
     pub fn open(path: &Path) -> Result<Self> {
         Ok(Self::serving(NativeService::open(path)?))
     }

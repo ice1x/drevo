@@ -1,4 +1,4 @@
-//! Multi-version concurrency control (MVCC) — Phase 13 task `00081`.
+//! Multi-version concurrency control (MVCC) - Phase 13 task `00081`.
 //!
 //! This module is the foundation of drevo's concurrency story: the point
 //! where readers stop blocking writers *logically*, not just physically.
@@ -9,16 +9,16 @@
 //!
 //! It models MVCC the way PostgreSQL does, in three cooperating pieces:
 //!
-//! * [`TransactionManager`](crate::mvcc::TransactionManager) — allocates
+//! * [`TransactionManager`](crate::mvcc::TransactionManager) - allocates
 //!   monotonically increasing [`Xid`](crate::mvcc::Xid)s, records each one's
 //!   [`XidStatus`](crate::mvcc::XidStatus) (in-progress / committed /
 //!   aborted) in a commit log, and captures point-in-time
 //!   [`Snapshot`](crate::mvcc::Snapshot)s.
-//! * [`Version`](crate::mvcc::Version) — an immutable value stamped with the
+//! * [`Version`](crate::mvcc::Version) - an immutable value stamped with the
 //!   `xmin` that created it and the `xmax` that retired it. Storage is
 //!   append-only: an update retires the old version and appends a new one;
 //!   nothing is mutated in place.
-//! * [`VersionedStore`](crate::mvcc::VersionedStore) — a key → version-chain
+//! * [`VersionedStore`](crate::mvcc::VersionedStore) - a key → version-chain
 //!   map whose [`get`] resolves a key against a snapshot and whose [`put`] /
 //!   [`delete`] append versions on behalf of a transaction.
 //!
@@ -28,7 +28,7 @@
 //!
 //! # The visibility rule
 //!
-//! Every read reduces to one predicate — is a version visible to a
+//! Every read reduces to one predicate - is a version visible to a
 //! snapshot? A version is visible iff the transaction that **created** it is
 //! visible to the snapshot and the transaction that **deleted** it is not:
 //!
@@ -52,8 +52,8 @@
 //! `xmin` is the [`gc_horizon`](crate::mvcc::TransactionManager::gc_horizon).
 //! [`VersionedStore::vacuum`](crate::mvcc::VersionedStore::vacuum) physically
 //! removes every version that is invisible to all readers at or above that
-//! horizon — versions deleted/superseded by a committed transaction below it,
-//! and versions created by an aborted transaction below it — while preserving
+//! horizon - versions deleted/superseded by a committed transaction below it,
+//! and versions created by an aborted transaction below it - while preserving
 //! every live version and anything a registered reader can still see. The
 //! background [`GcWorker`](crate::mvcc::GcWorker) thread runs that vacuum on a
 //! cadence (native targets only; WASM hosts vacuum manually).
@@ -68,12 +68,12 @@
 //! refused with
 //! [`MvccError::WriteConflict`](crate::mvcc::MvccError::WriteConflict)
 //! (first-updater-wins). [`run_with_retry`](crate::mvcc::run_with_retry) wraps
-//! the discipline into forward progress — it re-snapshots and replays the
+//! the discipline into forward progress - it re-snapshots and replays the
 //! transaction body until it commits or the retry budget is exhausted.
 //!
 //! # Configurable isolation levels (task `00084`)
 //!
-//! The primitives above give exactly one behaviour — snapshot isolation. The
+//! The primitives above give exactly one behaviour - snapshot isolation. The
 //! [`isolation`](crate::mvcc::isolation) module turns that into the three configurable
 //! [`IsolationLevel`](crate::mvcc::IsolationLevel)s an SQL-style engine offers,
 //! by controlling *when* a transaction's read snapshot is captured and *what*
@@ -97,7 +97,7 @@
 //! # What lands later in Phase 13
 //!
 //! * Wiring the standalone MVCC engine into the `Drevo`
-//!   redb-backed mutation paths — the module remains a self-contained engine,
+//!   redb-backed mutation paths - the module remains a self-contained engine,
 //!   as it has since `00081`.
 //!
 //! These all build directly on the primitives defined here.
@@ -117,7 +117,7 @@ pub mod store;
 /// Transaction ids, the commit log, and snapshots
 /// ([`TransactionManager`], [`Snapshot`], [`Xid`], [`XidStatus`]).
 pub mod transaction;
-/// Tuple versioning — the `xmin` / `xmax`-stamped [`Version`].
+/// Tuple versioning - the `xmin` / `xmax`-stamped [`Version`].
 pub mod version;
 
 pub use error::{MvccError, Result};

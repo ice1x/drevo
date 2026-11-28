@@ -1,11 +1,11 @@
 # cargo-nextest configuration.
 #
-# Resource cap for the self-hosted CI runner — which is also a daily-driver
+# Resource cap for the self-hosted CI runner - which is also a daily-driver
 # Mac. The full nextest suite opens many redb databases in parallel; at the
 # default parallelism (`num-cpus`, 10 logical cores on the runner) the
 # combined CPU + RAM load can make the *whole machine* unresponsive when CI
 # runs alongside interactive use (the desktop beach-balls and apps won't
-# launch — a hard freeze requiring a power-cycle). Capping the number of
+# launch - a hard freeze requiring a power-cycle). Capping the number of
 # concurrently-running test processes leaves headroom for the OS / UI and
 # for the parallel `cargo build` that precedes the run.
 #

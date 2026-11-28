@@ -1,4 +1,4 @@
-//! Parallel vs serial PageRank (RFC #307 Phase 8 slice 3) — the parallel
+//! Parallel vs serial PageRank (RFC #307 Phase 8 slice 3) - the parallel
 //! speedup the MVCC-snapshot design buys, measured on synthetic graphs large
 //! enough for the rayon fan-out to pay for itself.
 //!
@@ -22,7 +22,7 @@ use drevo::algorithms::{
 };
 
 /// A deterministic scale-free-ish graph: `n` nodes, ~`avg_deg` out-edges each to
-/// pseudo-random targets, plus a supernode (id 1) many nodes point at — so the
+/// pseudo-random targets, plus a supernode (id 1) many nodes point at - so the
 /// power iteration does real, uneven work.
 fn build_graph(n: usize, avg_deg: usize) -> AdjacencyList {
     let node_ids: Vec<u64> = (1..=n as u64).collect();
@@ -30,7 +30,7 @@ fn build_graph(n: usize, avg_deg: usize) -> AdjacencyList {
     let mut x = 0x9E37_79B9_7F4A_7C15u64;
     for from in 1..=n as u64 {
         for _ in 0..avg_deg {
-            // xorshift — a dependency-free deterministic mixer.
+            // xorshift - a dependency-free deterministic mixer.
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;

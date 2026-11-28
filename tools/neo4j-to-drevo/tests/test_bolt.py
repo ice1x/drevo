@@ -1,7 +1,7 @@
 """Unit tests for the `Neo4jSource` live-Bolt adapter.
 
 The adapter is the only part that touches the real `neo4j` driver. These
-tests **mock the driver entirely** — they assert the adapter issues the
+tests **mock the driver entirely** - they assert the adapter issues the
 expected node/relationship Cypher, maps driver records to the
 source-agnostic records the engine consumes, and closes the driver. No
 Neo4j server, no `neo4j` package required (the driver is a `MagicMock`).

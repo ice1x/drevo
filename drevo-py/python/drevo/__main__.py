@@ -2,15 +2,15 @@
 
 Run as ``python -m drevo <command>`` or, once installed, ``drevo <command>``.
 
-Commands (all safety-first — ``dump`` only reads; ``restore``/``shrink`` never
+Commands (all safety-first - ``dump`` only reads; ``restore``/``shrink`` never
 overwrite their source):
 
-* ``dump <db> <out.graphml>``   — write a faithful, portable GraphML backup.
-* ``restore <in.graphml> <db>`` — import a GraphML dump into ``db`` (created if
+* ``dump <db> <out.graphml>``   - write a faithful, portable GraphML backup.
+* ``restore <in.graphml> <db>`` - import a GraphML dump into ``db`` (created if
   absent); prints an import report.
-* ``compact <db>``              — reclaim redb free pages in place.
-* ``bloat <db>``                — report physical vs. logical size + bloat ratio.
-* ``shrink <db> <out_db>``      — dump ``db`` and re-import into a fresh
+* ``compact <db>``              - reclaim redb free pages in place.
+* ``bloat <db>``                - report physical vs. logical size + bloat ratio.
+* ``shrink <db> <out_db>``      - dump ``db`` and re-import into a fresh
   ``out_db`` (the robust way to shed copy-on-write high-water-mark bloat).
 
 The heavy lifting lives in Rust (``drevo.Drevo.export_graphml`` /
@@ -142,11 +142,11 @@ def _cmd_bloat(args: argparse.Namespace) -> int:
         f"bloat={ratio}"
     )
     # bloat_ratio is file/stored, so it only rises above ~1 when the file holds
-    # real reclaimable copy-on-write slack — the index footprint no longer
+    # real reclaimable copy-on-write slack - the index footprint no longer
     # inflates it. 2.0 matches the auto-compaction default.
     if report.bloat_ratio is not None and report.bloat_ratio >= 2.0:
         print(
-            "  hint: reclaimable bloat — run `drevo compact` (in place) or "
+            "  hint: reclaimable bloat - run `drevo compact` (in place) or "
             "`drevo shrink <db> <out_db>` to return slack to the OS.",
             file=sys.stderr,
         )
@@ -194,7 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result: int = args.func(args)
         return result
-    except Exception as exc:  # noqa: BLE001 — CLI boundary: report, don't traceback
+    except Exception as exc:  # noqa: BLE001 - CLI boundary: report, don't traceback
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

@@ -66,8 +66,8 @@ impl SecurityContext {
         Self { compiled: None }
     }
 
-    /// Compile `held` — the privileges of every role the user has, granted or
-    /// denied — for a user whose home database is `home`.
+    /// Compile `held` - the privileges of every role the user has, granted or
+    /// denied - for a user whose home database is `home`.
     #[must_use]
     pub fn new(held: impl IntoIterator<Item = (Access, Privilege)>, home: &str) -> Self {
         let held: Vec<(Access, Privilege)> = held.into_iter().collect();

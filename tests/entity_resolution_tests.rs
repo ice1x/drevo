@@ -569,7 +569,7 @@ fn a_merge_failing_after_its_first_writes_leaves_nothing() {
          YIELD rel RETURN rel",
     );
     // An :Alias of that name already exists, so creating the merge's own
-    // :Alias fails — after the fact was moved and the node deleted.
+    // :Alias fails - after the fact was moved and the node deleted.
     run_ok(
         &svc,
         "CREATE CONSTRAINT alias_name FOR (a:Alias) REQUIRE a.name IS UNIQUE",

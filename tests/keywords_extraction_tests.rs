@@ -1,4 +1,4 @@
-//! End-to-end Cypher `keywords(...)` tests — Phase 17 task `00132`.
+//! End-to-end Cypher `keywords(...)` tests - Phase 17 task `00132`.
 //!
 //! `keywords(text, k [, stem])` is drevo's keyword-extraction scalar
 //! function: it returns the top-`k` salient terms of `text`, ranked by

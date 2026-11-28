@@ -1,5 +1,5 @@
 //! End-to-end tests for `CALL drevo.memory.recallSemantic(session, text, k)`
-//! (issue #533, semantic-recall slice) — session-scoped agent-memory recall by
+//! (issue #533, semantic-recall slice) - session-scoped agent-memory recall by
 //! **meaning**: the query text is embedded server-side and `:Message` nodes of
 //! the session are ranked by cosine similarity to it.
 //!
@@ -14,7 +14,7 @@
 //! What they lock:
 //! - the query **text** reaches the configured upstream and the resulting
 //!   vector ranks this session's messages best-first (other sessions excluded);
-//! - a paraphrase with no shared token is still recalled — the point of
+//! - a paraphrase with no shared token is still recalled - the point of
 //!   semantic over BM25 recall (`drevo.memory.recall` would miss it);
 //! - with no embedder installed the call fails with a clean engine-capability
 //!   error instead of panicking.
@@ -154,7 +154,7 @@ fn recall_semantic_respects_k() {
 }
 
 /// The realistic agent flow: register `:Message` for auto-embedding once, then
-/// write turns *without* vectors (as the MCP `add_message` does) — the write
+/// write turns *without* vectors (as the MCP `add_message` does) - the write
 /// path embeds them, and semantic recall finds them with no client-side work.
 ///
 /// The target reads `text`; a `body` target works equally since #536 (the

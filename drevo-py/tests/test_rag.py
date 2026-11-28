@@ -20,7 +20,7 @@ declare the right surface), this suite drives the actual code paths:
   (`lambda_=1.0 → pure relevance`, `lambda_=0.0 → pure diversity`)
   and is closed-form deterministic given a stub embedder.
 
-The 00118 unit-test task will *expand* this file — what lives here is
+The 00118 unit-test task will *expand* this file - what lives here is
 the minimum runtime gate that locks the 00117 contract: every public
 symbol from `drevo.rag.__all__` is exercised in at least one happy-path
 and at least one edge-case test.
@@ -53,7 +53,7 @@ from drevo.rag import (
 
 
 def test_document_protocol_is_runtime_checkable() -> None:
-    """`isinstance(obj, Document)` must work — duck-typing at the boundary
+    """`isinstance(obj, Document)` must work - duck-typing at the boundary
     relies on the @runtime_checkable decorator from typing.Protocol."""
     d = SimpleDocument(page_content="hello", metadata={"source": "test"})
     assert isinstance(d, Document)
@@ -61,7 +61,7 @@ def test_document_protocol_is_runtime_checkable() -> None:
 
 def test_arbitrary_class_satisfies_document_protocol() -> None:
     """Any class with `page_content: str` + `metadata: dict` must satisfy
-    the Document protocol — that is the whole point of using Protocol
+    the Document protocol - that is the whole point of using Protocol
     instead of inheriting from langchain.Document (RFC §8.1)."""
 
     @dataclass
@@ -74,8 +74,8 @@ def test_arbitrary_class_satisfies_document_protocol() -> None:
 
 
 def test_simple_document_default_metadata_is_empty_dict() -> None:
-    """SimpleDocument with no metadata arg must default to an empty dict
-    — `ingest_documents` calls `dict(doc.metadata)` and would crash on None."""
+    """SimpleDocument with no metadata arg must default to an empty dict -
+    `ingest_documents` calls `dict(doc.metadata)` and would crash on None."""
     d = SimpleDocument(page_content="x")
     assert d.metadata == {}
 
@@ -140,7 +140,7 @@ def test_ingest_documents_schema_property_map_renames_fields(
     docs = [SimpleDocument(page_content="b", metadata={"author": "alice"})]
     nodes = ingest_documents(drevo_db, docs, schema=schema)
     # property_map renames the metadata key on the way into the node
-    # properties (RFC §8.2 — "metadata key → property key").
+    # properties (RFC §8.2 - "metadata key → property key").
     assert nodes[0].properties.get("creator") == "alice"
 
 
@@ -232,7 +232,7 @@ def test_expand_neighborhood_kind_filter_excludes_other_kinds(
 def test_expand_neighborhood_reports_hops_used(drevo_db: drevo.Drevo) -> None:
     nodes = _build_chain(drevo_db, 2)
     nh = expand_neighborhood(drevo_db, nodes[0].uuid, hops=5)
-    # Frontier exhausts after 1 hop — chain length 2 can't go deeper.
+    # Frontier exhausts after 1 hop - chain length 2 can't go deeper.
     assert nh.hops_used == 1
 
 
@@ -284,7 +284,7 @@ def test_retriever_returns_context_with_stats(drevo_db: drevo.Drevo) -> None:
 def test_retriever_retrieve_with_embedding_seeds_on_nearest_vector(
     drevo_db: drevo.Drevo,
 ) -> None:
-    """Phase 12 task 00079 — `retrieve_with_embedding` resolves seeds via
+    """Phase 12 task 00079 - `retrieve_with_embedding` resolves seeds via
     the first-class vector store and expands them like `retrieve`."""
     a = drevo_db.create_node(drevo.NewNode(kind="doc", title="a"))
     b = drevo_db.create_node(drevo.NewNode(kind="doc", title="b"))

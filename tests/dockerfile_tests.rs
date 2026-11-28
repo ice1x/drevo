@@ -163,8 +163,8 @@ fn dockerfile_sets_env_defaults() {
 fn dockerfile_features_are_build_arg_overridable() {
     // The compiled Cargo feature set is a build ARG (`CARGO_FEATURES`) so a
     // deployment can override it via `docker build --build-arg` without editing
-    // the Dockerfile. The deploy image's DEFAULT ships the full server —
-    // http + embeddings-proxy — so `/v1/embeddings` (issue #217)
+    // the Dockerfile. The deploy image's DEFAULT ships the full server -
+    // http + embeddings-proxy - so `/v1/embeddings` (issue #217)
     // is available out of the box (runtime-gated to 503 until configured); the
     // build must consume the ARG rather than a hardcoded feature list.
     let content = read_dockerfile();
@@ -178,7 +178,7 @@ fn dockerfile_features_are_build_arg_overridable() {
     );
     assert!(
         !arg_line.contains("redb"),
-        "redb was retired (epic #444 P8) — CARGO_FEATURES must not reference it: {arg_line}"
+        "redb was retired (epic #444 P8) - CARGO_FEATURES must not reference it: {arg_line}"
     );
     assert!(
         arg_line.contains("embeddings-proxy"),
@@ -232,7 +232,7 @@ fn dockerfile_copies_static_web_assets() {
     // `include_str!("../static/web/…")` in src/web_ui.rs, so the builder stage
     // must COPY `static/` into the build context or the release build fails
     // with "couldn't read static/web/styles.css". Regression source: task
-    // 00163 — the container had never been built end-to-end and silently
+    // 00163 - the container had never been built end-to-end and silently
     // lacked this COPY.
     let content = read_dockerfile();
     let has_copy = content
@@ -287,7 +287,7 @@ fn read_dockerfile() -> String {
 }
 
 /// Every file `include!`d by `build.rs` (e.g. `version_resolve.rs`, #274/#276)
-/// must be COPY'd into the builder stage — otherwise the container build fails
+/// must be COPY'd into the builder stage - otherwise the container build fails
 /// at build-script compile time with "couldn't read <file>", even though a host
 /// `cargo build` (where the file is present) is green. This regression shipped
 /// once: `version_resolve.rs` was added at the repo root but not added to the
@@ -318,18 +318,18 @@ fn dockerfile_copies_every_build_rs_include() {
         assert!(
             dockerfile.contains(file),
             "build.rs does `include!(\"{file}\")`, but no COPY line in the Dockerfile pulls \
-             `{file}` into the builder stage — the container build will fail with \
+             `{file}` into the builder stage - the container build will fail with \
              \"couldn't read `{file}`\". Add it to the root `COPY ... ./` line."
         );
     }
 }
 
 // ------------------------------------------------------------------
-// Manifest-parse correctness — every Cargo.toml `[[bench]]`,
+// Manifest-parse correctness - every Cargo.toml `[[bench]]`,
 // `[[bin]]`, and `[[test]]` declaration must be reachable in the
 // Docker build context. A declaration without a matching file (or a
 // COPY that misses the directory) makes `cargo build` fail at
-// manifest-parse time inside the container — which is exactly how
+// manifest-parse time inside the container - which is exactly how
 // Phase 8 task 00051 (GHCR publish) caught the missing `COPY benches/`
 // on its first run. These tests lock the invariant going forward so
 // a future bench / bin / test addition cannot regress the container
@@ -340,7 +340,7 @@ fn dockerfile_copies_every_build_rs_include() {
 /// blocks from `Cargo.toml` and return the directory each block points at
 /// (e.g. `benches`, `src/bin`, `tests`, `examples`). The Dockerfile must COPY
 /// every directory in the returned set into the builder stage, or manifest
-/// parsing fails inside the container — cargo validates every declared
+/// parsing fails inside the container - cargo validates every declared
 /// target's path when it parses the manifest, even for `cargo build --bin`,
 /// and `required-features` gates *building* a target, not the path check.
 fn cargo_manifest_target_dirs() -> Vec<String> {
@@ -398,8 +398,8 @@ fn cargo_manifest_target_dirs_collector_finds_benches() {
     let dirs = cargo_manifest_target_dirs();
     assert!(
         dirs.iter().any(|d| d == "benches"),
-        "helper failed to discover the `benches/` directory from `[[bench]]` declarations \
-         — without it the COPY-coverage test below would pass trivially. Got: {dirs:?}"
+        "helper failed to discover the `benches/` directory from `[[bench]]` declarations - \
+         without it the COPY-coverage test below would pass trivially. Got: {dirs:?}"
     );
     assert!(
         dirs.iter().any(|d| d == "src/bin"),
@@ -411,8 +411,8 @@ fn cargo_manifest_target_dirs_collector_finds_benches() {
 fn dockerignore_does_not_shadow_cargo_targets() {
     // A `.dockerignore` exclusion that matches a directory the
     // Dockerfile then tries to COPY produces:
-    //   ERROR: failed to compute cache key: ".../<dir>": not found
-    // — i.e. the COPY can't find the directory because dockerignore
+    //   ERROR: failed to compute cache key: ".../<dir>": not found -
+    // i.e. the COPY can't find the directory because dockerignore
     // hid it from the build context. This is the second half of the
     // bug Phase 8 task 00051 surfaced (the first half was Cargo.toml
     // declaring benches with no COPY; the fix added the COPY but
@@ -436,7 +436,7 @@ fn dockerignore_does_not_shadow_cargo_targets() {
                 !is_match,
                 ".dockerignore excludes `{pattern}` but `Cargo.toml` declares a target rooted \
                  at `{dir}/` ([[bench]] / [[bin]] / [[test]]) that the Dockerfile must COPY. \
-                 The exclusion hides the directory from the build context — the COPY would \
+                 The exclusion hides the directory from the build context - the COPY would \
                  fail with `not found`. Remove the exclusion (or re-include with `!{dir}/`)."
             );
         }
@@ -445,9 +445,9 @@ fn dockerignore_does_not_shadow_cargo_targets() {
 
 /// Read every directory listed in `[workspace] members = [...]` of the
 /// root `Cargo.toml`. The Dockerfile must COPY each member directory
-/// into the builder stage — otherwise cargo refuses to load the
+/// into the builder stage - otherwise cargo refuses to load the
 /// workspace manifest *even when the target being built does not depend
-/// on the member* (the regression task `00115` first surfaced — Docker
+/// on the member* (the regression task `00115` first surfaced - Docker
 /// Publish failed with "failed to load manifest for workspace member
 /// `/build/drevo-py`" after `drevo-py` joined the workspace but did not
 /// land in the Dockerfile).
@@ -518,7 +518,7 @@ fn dockerfile_copies_every_workspace_member_dir() {
     // For every non-root entry in `[workspace] members = [...]`, the
     // Dockerfile must COPY that directory into the builder stage. Cargo
     // refuses to load the workspace manifest if a declared member's
-    // Cargo.toml is missing — even when `cargo build --bin <name>`
+    // Cargo.toml is missing - even when `cargo build --bin <name>`
     // targets a binary that does not depend on the missing member.
     //
     // Regression source: Phase 16 task 00115 promoted the repo to a
@@ -557,8 +557,8 @@ fn dockerfile_copies_every_cargo_manifest_target_dir() {
     // COPY that exact directory or COPY a parent directory that
     // contains it. Otherwise `cargo build` inside the container
     // fails at manifest-parse time with:
-    //   error: can't find `<name>` bench at `benches/<name>.rs`
-    // — which is the bug Phase 8 task 00051 (GHCR publish) caught
+    //   error: can't find `<name>` bench at `benches/<name>.rs` -
+    // which is the bug Phase 8 task 00051 (GHCR publish) caught
     // on its first CI run.
     let dockerfile = read_dockerfile();
     let copy_lines: Vec<&str> = dockerfile
@@ -569,7 +569,7 @@ fn dockerfile_copies_every_cargo_manifest_target_dir() {
         // A directory `foo/bar` is "covered" if any COPY line
         // mentions `foo/bar` OR a prefix `foo/` OR a single
         // leading `./` variant. We don't try to parse the whole
-        // COPY grammar — substring checks are enough for the
+        // COPY grammar - substring checks are enough for the
         // simple `COPY src/ src/` / `COPY benches/ benches/`
         // shape this Dockerfile uses, and the dockerignore test
         // already locks the file layout.

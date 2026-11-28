@@ -1,13 +1,13 @@
 //! HTTP surface for the durable-native server mode (RFC
-//! `docs/rfc-native-core.md` #307, Phase 4/7 — `DREVO_ENGINE=native-durable`).
+//! `docs/rfc-native-core.md` #307, Phase 4/7 - `DREVO_ENGINE=native-durable`).
 //!
 //! A router over a [`crate::native_service::NativeService`]: liveness
 //! (`/health`, `/ready`), identity (`/status`), Cypher (`POST /cypher`,
 //! full-text included), the storage panel, the Web UI, and the full raw-REST
-//! graph surface — node/edge CRUD (`/nodes`, `/edges`), per-node traversal
+//! graph surface - node/edge CRUD (`/nodes`, `/edges`), per-node traversal
 //! (`/nodes/{id}/edges` / `/neighbors` / `/subgraph`), shortest path
 //! (`/paths/shortest`), keyword faceting (`/facets`), JSON import
-//! (`POST /import/json`), and Prometheus metrics (`/metrics`) — all on the
+//! (`POST /import/json`), and Prometheus metrics (`/metrics`) - all on the
 //! **same routes and contracts as the KV router** ([`crate::api`]), so a
 //! non-Cypher client migrates from KV to native-durable unchanged.
 //!
@@ -15,8 +15,8 @@
 //! /databases/{name}`, issue #523) is served here over a
 //! [`crate::database_registry::DatabaseRegistry`]: the always-present default
 //! is the durable graph the process was pointed at, and additional named
-//! databases can be created, listed, dropped, and — via Cypher `USE` over
-//! `POST /cypher` and the Bolt `db` selector — queried; in the durable server
+//! databases can be created, listed, dropped, and - via Cypher `USE` over
+//! `POST /cypher` and the Bolt `db` selector - queried; in the durable server
 //! they persist across restarts (issue #523). A client that names no database
 //! still sees exactly the single-graph behaviour.
 
@@ -58,7 +58,7 @@ pub const DEFAULT_DB: &str = "drevo";
 /// Shared state of the durable-native HTTP surface.
 #[derive(Clone)]
 pub struct NativeApiState {
-    /// The store of record — the default database's service.
+    /// The store of record - the default database's service.
     pub service: Arc<NativeService>,
     /// The multi-database catalog (issue #523). Its default entry is the same
     /// [`Arc`] as [`service`](Self::service), so existing single-database
@@ -70,7 +70,7 @@ pub struct NativeApiState {
     /// Graceful-shutdown flag: flipped once on SIGTERM/Ctrl+C so `/health`
     /// and `/ready` report draining.
     shutting_down: Arc<AtomicBool>,
-    /// Optional embeddings proxy backend — `POST /v1/embeddings` answers
+    /// Optional embeddings proxy backend - `POST /v1/embeddings` answers
     /// `503` ("not configured") without one, exactly like the KV router.
     embeddings: Option<Arc<EmbeddingBackend>>,
     /// Shared runtime embeddings config store backing `/config/embeddings`
@@ -86,7 +86,7 @@ pub struct NativeApiState {
     /// The server's users, for the Cypher user-management commands.
     security: crate::security::Security,
     /// Prometheus metrics registry backing `GET /metrics` and the per-request
-    /// instrumentation middleware — a [`DrevoMetrics`] registry, so a scrape
+    /// instrumentation middleware - a [`DrevoMetrics`] registry, so a scrape
     /// looks identical on either engine.
     metrics: Arc<DrevoMetrics>,
     /// Body formats offered next to JSON (issue #581); JSON only by default.
@@ -109,7 +109,7 @@ impl NativeApiState {
 
     /// Wrap a service for serving atop an existing multi-database catalog.
     ///
-    /// Used when the catalog must be shared with another surface — the Bolt
+    /// Used when the catalog must be shared with another surface - the Bolt
     /// listener threads the same [`DatabaseRegistry`] so a `CREATE DATABASE`
     /// over HTTP is visible to Bolt sessions and vice versa (issue #523). The
     /// registry's default service and `service` are expected to be the same
@@ -230,7 +230,7 @@ impl NativeApiState {
         self
     }
 
-    /// Mark the API as draining — `/health` and `/ready` answer 503 after.
+    /// Mark the API as draining - `/health` and `/ready` answer 503 after.
     pub fn signal_shutdown(&self) {
         self.shutting_down.store(true, Ordering::Release);
     }
@@ -243,7 +243,7 @@ impl NativeApiState {
 /// Build the durable-native router. See the [module docs](self).
 pub fn build_native_router(state: NativeApiState) -> Router {
     Router::new()
-        // `GET /` — server info (name + version). The Web UI probes it on load
+        // `GET /` - server info (name + version). The Web UI probes it on load
         // (`loadServerInfo`); without it the UI shows "Cannot reach drevo HTTP
         // API at /" even though every other endpoint is up. Serves the same
         // body as `/status`.
@@ -282,7 +282,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/databases", get(list_databases).post(create_database))
         .route("/databases/{name}", delete(drop_database))
         .route("/nodes/{id}", get(get_node))
-        // Raw-REST graph CRUD + traversal + faceting — the same routes/contracts
+        // Raw-REST graph CRUD + traversal + faceting - the same routes/contracts
         // as the KV router (src/api.rs), served over the native engine so a
         // non-Cypher client migrates unchanged. Cypher/Bolt clients never needed
         // these; a raw-REST client did (issue: native-router REST-CRUD parity).
@@ -294,7 +294,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .route("/facets", get(facets))
         .route("/paths/shortest", get(get_shortest_path))
         .route("/import/json", post(import_json))
-        // Prometheus scrape — same exposition format and gauges as the KV
+        // Prometheus scrape - same exposition format and gauges as the KV
         // router, refreshed from the WAL store's physical size + uptime.
         .route("/metrics", get(metrics))
         .route("/problems", get(problems))
@@ -313,7 +313,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         )
         .route("/report", get(problem_report))
         // The storage panel is engine-agnostic: the same endpoints/contracts as
-        // the KV router, implemented over the WAL store — bloat = physical WAL
+        // the KV router, implemented over the WAL store - bloat = physical WAL
         // vs compacted size, shrink = WAL compaction, benchmark = the same
         // throwaway probe with native FTS. Keyspaces are a redb-file concept
         // with no WAL analogue, so that one returns an empty breakdown.
@@ -324,7 +324,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         // Physical backups of every database and the server's files.
         .route("/admin/backup", post(admin_backup))
         .route("/admin/backups", get(admin_backups))
-        // The Web UI — the same embedded, same-origin assets as the KV
+        // The Web UI - the same embedded, same-origin assets as the KV
         // server (`crate::web_ui`), pointed at the same-shape endpoints.
         // Committed changes as Server-Sent Events.
         .route("/events", get(crate::events::stream))
@@ -420,7 +420,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
             state.clone(),
             limit_in_flight,
         ))
-        // Per-request metrics instrumentation — layered after the routes so it
+        // Per-request metrics instrumentation - layered after the routes so it
         // wraps every handler and before `with_state` so it can extract the
         // shared state, exactly as the KV router does.
         .layer(axum::middleware::from_fn_with_state(
@@ -436,7 +436,7 @@ pub fn build_native_router(state: NativeApiState) -> Router {
         .with_state(state)
 }
 
-/// `POST /v1/embeddings` — the OpenAI-compatible embeddings proxy, identical
+/// `POST /v1/embeddings` - the OpenAI-compatible embeddings proxy, identical
 /// to the KV router's route (shared body); the restart tooling's key-check
 /// depends on it being present in every server mode.
 async fn embeddings(
@@ -447,7 +447,7 @@ async fn embeddings(
     embeddings_response(state.embeddings.as_deref(), req).await
 }
 
-/// `GET /config/embeddings` — secret-free view of the runtime embeddings
+/// `GET /config/embeddings` - secret-free view of the runtime embeddings
 /// config (shared body with the KV router).
 async fn get_embeddings_config(
     State(state): State<NativeApiState>,
@@ -455,7 +455,7 @@ async fn get_embeddings_config(
     crate::api::embeddings_config_status(state.embeddings_config.as_deref())
 }
 
-/// `POST /config/embeddings` — validate + persist + hot-swap the runtime
+/// `POST /config/embeddings` - validate + persist + hot-swap the runtime
 /// embeddings config (shared body); the API key is never echoed back.
 async fn set_embeddings_config(
     State(state): State<NativeApiState>,
@@ -465,14 +465,14 @@ async fn set_embeddings_config(
     crate::api::embeddings_config_apply(state.embeddings_config.as_deref(), update)
 }
 
-/// `GET /config/text2cypher` — the text-to-Cypher provider without its key.
+/// `GET /config/text2cypher` - the text-to-Cypher provider without its key.
 async fn get_text2cypher_config(
     State(state): State<NativeApiState>,
 ) -> Result<Json<crate::text2cypher::Text2CypherStatus>, ApiError> {
     crate::api::text2cypher_config_status(state.text2cypher_config.as_deref())
 }
 
-/// `POST /config/text2cypher` — change the provider: persisted, installed at
+/// `POST /config/text2cypher` - change the provider: persisted, installed at
 /// once; the key is never echoed back.
 async fn set_text2cypher_config(
     State(state): State<NativeApiState>,
@@ -482,14 +482,14 @@ async fn set_text2cypher_config(
     crate::api::text2cypher_config_apply(state.text2cypher_config.as_deref(), update)
 }
 
-/// `GET /config/extract` — the extraction endpoint without its key.
+/// `GET /config/extract` - the extraction endpoint without its key.
 async fn get_extract_config(
     State(state): State<NativeApiState>,
 ) -> Result<Json<crate::extract::settings::ExtractConfigStatus>, ApiError> {
     crate::api::extract_config_status(state.extract_config.as_deref())
 }
 
-/// `POST /config/extract` — change the extraction endpoint: persisted,
+/// `POST /config/extract` - change the extraction endpoint: persisted,
 /// installed at once; the key is never echoed back.
 async fn set_extract_config(
     State(state): State<NativeApiState>,
@@ -525,13 +525,13 @@ fn slow_query_status() -> SlowQueryStatus {
     }
 }
 
-/// `GET /config/slow-query` — the slow-statement threshold and how many
+/// `GET /config/slow-query` - the slow-statement threshold and how many
 /// statements were logged.
 async fn get_slow_query_config() -> Json<SlowQueryStatus> {
     Json(slow_query_status())
 }
 
-/// `POST /config/slow-query` — change the slow-statement threshold at once,
+/// `POST /config/slow-query` - change the slow-statement threshold at once,
 /// until the server restarts (`DREVO_SLOW_QUERY_MS` sets it at start).
 async fn set_slow_query_config(
     body: Result<Json<SlowQueryUpdate>, JsonRejection>,
@@ -550,7 +550,7 @@ async fn set_slow_query_config(
     Ok(Json(slow_query_status()))
 }
 
-/// `POST /search/fts` — BM25 full-text search over the native index, the
+/// `POST /search/fts` - BM25 full-text search over the native index, the
 /// same request/response shape as the KV route.
 async fn search_fts(
     State(state): State<NativeApiState>,
@@ -564,13 +564,13 @@ async fn search_fts(
     Ok(Json(SearchFtsResponse { results }))
 }
 
-/// `GET /export/json` — the `drevo-json-v1` dump, same body as the KV route.
+/// `GET /export/json` - the `drevo-json-v1` dump, same body as the KV route.
 async fn export_json(State(state): State<NativeApiState>) -> Result<Response, ApiError> {
     let dump = state.service.export_json()?;
     Ok((StatusCode::OK, [("content-type", "application/json")], dump).into_response())
 }
 
-/// `GET /export/overview` — what the Web UI's graph overview draws: every
+/// `GET /export/overview` - what the Web UI's graph overview draws: every
 /// node and relationship with its kind, title and small property values;
 /// large values are left out and named (see [`crate::overview`]).
 async fn export_overview(State(state): State<NativeApiState>) -> Result<Response, ApiError> {
@@ -593,7 +593,7 @@ impl From<RegistryError> for ApiError {
                 ApiError::Conflict(err.to_string())
             }
             RegistryError::NotFound(_) => ApiError::NotFound(err.to_string()),
-            // A durable-WAL open/delete failure is a server-side I/O fault —
+            // A durable-WAL open/delete failure is a server-side I/O fault -
             // route it through the existing `Db(Io)` arm so it surfaces as 500
             // without adding an `ApiError` variant.
             RegistryError::Storage { .. } => ApiError::Db(crate::error::DrevoError::Io(
@@ -609,7 +609,7 @@ impl From<RegistryError> for ApiError {
     }
 }
 
-/// `GET /databases` — every database in the catalog (issue #523), in the KV
+/// `GET /databases` - every database in the catalog (issue #523), in the KV
 /// route's response shape so the Web UI's selector keeps working. With only the
 /// default database present this is `{ "databases": ["drevo"], "default":
 /// "drevo" }`, exactly as before.
@@ -617,7 +617,7 @@ async fn list_databases(State(state): State<NativeApiState>) -> Json<DatabaseLis
     Json(database_list(&state.registry))
 }
 
-/// `POST /databases` — create a new named database (issue #523). The body is
+/// `POST /databases` - create a new named database (issue #523). The body is
 /// `{ "name": "<db>" }`; the name is validated (400 on a bad name, 409 if it
 /// already exists). Returns `201 Created` with the updated database list.
 ///
@@ -634,7 +634,7 @@ async fn create_database(
     Ok((StatusCode::CREATED, Json(database_list(&state.registry))))
 }
 
-/// `DELETE /databases/{name}` — drop a named database (issue #523). Dropping the
+/// `DELETE /databases/{name}` - drop a named database (issue #523). Dropping the
 /// default database is a 409; an unknown name is a 404. Returns `200 OK` with
 /// the updated database list.
 async fn drop_database(
@@ -645,7 +645,7 @@ async fn drop_database(
     Ok(Json(database_list(&state.registry)))
 }
 
-/// `GET /nodes/{id}` — one node, the KV route's shape (the Web UI's detail
+/// `GET /nodes/{id}` - one node, the KV route's shape (the Web UI's detail
 /// pane fetch).
 async fn get_node(
     State(state): State<NativeApiState>,
@@ -654,7 +654,7 @@ async fn get_node(
     Ok(Json(state.service.get_node(id)?))
 }
 
-/// `POST /nodes` — create a node from a JSON [`NewNode`](crate::model::NewNode)
+/// `POST /nodes` - create a node from a JSON [`NewNode`](crate::model::NewNode)
 /// body; returns the stored node (201). KV-router parity.
 async fn create_node(
     State(state): State<NativeApiState>,
@@ -665,7 +665,7 @@ async fn create_node(
     Ok((StatusCode::CREATED, Json(node)))
 }
 
-/// `GET /nodes?kind=&limit=&offset=` — list nodes of a kind, paginated. A
+/// `GET /nodes?kind=&limit=&offset=` - list nodes of a kind, paginated. A
 /// missing `kind` is a 400, exactly as the KV router reports it.
 async fn list_nodes(
     State(state): State<NativeApiState>,
@@ -684,7 +684,7 @@ async fn list_nodes(
     Ok(Json(NodeListResponse { nodes }))
 }
 
-/// `POST /edges` — create an edge from a JSON [`NewEdge`](crate::model::NewEdge)
+/// `POST /edges` - create an edge from a JSON [`NewEdge`](crate::model::NewEdge)
 /// body; returns the stored edge (201). A missing endpoint node is a 404.
 async fn create_edge(
     State(state): State<NativeApiState>,
@@ -695,7 +695,7 @@ async fn create_edge(
     Ok((StatusCode::CREATED, Json(edge)))
 }
 
-/// `GET /edges?kind=&limit=&offset=` — list edges of a kind, paginated. A
+/// `GET /edges?kind=&limit=&offset=` - list edges of a kind, paginated. A
 /// missing `kind` is a 400, matching the KV router.
 async fn list_edges(
     State(state): State<NativeApiState>,
@@ -714,7 +714,7 @@ async fn list_edges(
     Ok(Json(EdgeListResponse { edges }))
 }
 
-/// `GET /facets?kind=&property=&k=&collapse=&threshold=` — keyword faceting over
+/// `GET /facets?kind=&property=&k=&collapse=&threshold=` - keyword faceting over
 /// nodes of `kind`, keywords scored with the native FTS corpus statistics. Same
 /// contract as the KV router; `collapse=semantic` is rejected (no HTTP-hosted
 /// embedder), exactly as there.
@@ -757,9 +757,9 @@ async fn facets(
     Ok(Json(FacetsResponse { facets }))
 }
 
-/// `GET /paths/shortest?from=&to=` — Dijkstra over the native graph. Both
+/// `GET /paths/shortest?from=&to=` - Dijkstra over the native graph. Both
 /// endpoints must exist (404 otherwise); an unreachable target is a 200 with
-/// `{"path": null}`, so a client can tell "no such node" from "no route" —
+/// `{"path": null}`, so a client can tell "no such node" from "no route" -
 /// identical to the KV router.
 async fn get_shortest_path(
     State(state): State<NativeApiState>,
@@ -774,7 +774,7 @@ async fn get_shortest_path(
     let to =
         to.ok_or_else(|| ApiError::BadRequest("query parameter 'to' is required".to_string()))?;
 
-    // Validate both endpoints up front — `get_node` surfaces a missing node as
+    // Validate both endpoints up front - `get_node` surfaces a missing node as
     // 404, distinguishing it from an unreachable target (`{"path": null}`).
     state.service.get_node(from)?;
     state.service.get_node(to)?;
@@ -783,7 +783,7 @@ async fn get_shortest_path(
     Ok(Json(ShortestPathResponse { path }))
 }
 
-/// Parse the `direction` query parameter into a [`Direction`] — `outgoing` /
+/// Parse the `direction` query parameter into a [`Direction`] - `outgoing` /
 /// `incoming` / `both` (case-insensitive), defaulting to `Both`. Local copy of
 /// the KV router's helper so the native surface owns it once KV is removed.
 fn parse_direction(value: Option<&str>) -> Result<Direction, ApiError> {
@@ -797,7 +797,7 @@ fn parse_direction(value: Option<&str>) -> Result<Direction, ApiError> {
     }
 }
 
-/// `GET /nodes/{id}/edges?direction=` — edges incident to the node. Like the KV
+/// `GET /nodes/{id}/edges?direction=` - edges incident to the node. Like the KV
 /// router, a missing node yields an empty list, not a 404.
 async fn get_node_edges(
     State(state): State<NativeApiState>,
@@ -810,7 +810,7 @@ async fn get_node_edges(
     Ok(Json(EdgeListResponse { edges }))
 }
 
-/// `GET /nodes/{id}/neighbors?direction=&depth=&kind=` — BFS reachable nodes.
+/// `GET /nodes/{id}/neighbors?direction=&depth=&kind=` - BFS reachable nodes.
 /// A missing start node is a 404 (distinguishing "no neighbours" from "no
 /// node"), exactly as the KV router.
 async fn get_node_neighbors(
@@ -825,13 +825,13 @@ async fn get_node_neighbors(
     }) = query?;
     let direction = parse_direction(direction.as_deref())?;
     let depth = depth.unwrap_or(DEFAULT_NEIGHBORS_DEPTH);
-    // Surface a missing node as 404 — `bfs` would otherwise return empty.
+    // Surface a missing node as 404 - `bfs` would otherwise return empty.
     state.service.get_node(id)?;
     let nodes = state.service.bfs(id, depth, direction, kind.as_deref())?;
     Ok(Json(NodeListResponse { nodes }))
 }
 
-/// `GET /nodes/{id}/subgraph?depth=` — the subgraph within `depth` hops of the
+/// `GET /nodes/{id}/subgraph?depth=` - the subgraph within `depth` hops of the
 /// root. 404 if the root does not exist (the shared traversal maps that to
 /// `NodeNotFound`), matching the KV router.
 async fn get_node_subgraph(
@@ -845,7 +845,7 @@ async fn get_node_subgraph(
     Ok(Json(sub))
 }
 
-/// `POST /import/json` — replay a `drevo-json-v1` dump (a `GET /export/json`
+/// `POST /import/json` - replay a `drevo-json-v1` dump (a `GET /export/json`
 /// body) into the durable store; returns an
 /// [`ImportReport`](crate::dump::ImportReport). Same contract as the KV router.
 async fn import_json(
@@ -856,10 +856,10 @@ async fn import_json(
     Ok(Json(state.service.import_json(&req.dump)?))
 }
 
-/// Prometheus content type — must be exact; scrapers key off it.
+/// Prometheus content type - must be exact; scrapers key off it.
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// `GET /metrics` — render process metrics in the Prometheus text format, the
+/// `GET /metrics` - render process metrics in the Prometheus text format, the
 /// same registry/gauges as the KV router. The uptime gauge is refreshed from
 /// `started_at` and the physical-size gauge from the WAL's on-disk size just
 /// before rendering, so a scrape needs no background ticker.
@@ -950,7 +950,7 @@ async fn metrics(State(state): State<NativeApiState>) -> Response {
         .into_response()
 }
 
-/// Per-request instrumentation middleware — the native counterpart of the KV
+/// Per-request instrumentation middleware - the native counterpart of the KV
 /// router's `track_metrics`: count in-flight, time the handler, record the
 /// status class + latency into the shared [`DrevoMetrics`].
 async fn track_metrics(
@@ -969,14 +969,14 @@ async fn track_metrics(
     response
 }
 
-/// `GET /storage/bloat` — physical WAL size vs compacted (logical) size, in the
+/// `GET /storage/bloat` - physical WAL size vs compacted (logical) size, in the
 /// same [`BloatReport`](crate::report::BloatReport) contract as the KV router, so the
 /// Web UI's storage panel is engine-agnostic.
 async fn storage_bloat(State(state): State<NativeApiState>) -> Json<crate::report::BloatReport> {
     Json(state.service.storage_bloat())
 }
 
-/// `POST /storage/shrink` — compact the append-only WAL to its current state and
+/// `POST /storage/shrink` - compact the append-only WAL to its current state and
 /// report reclaimed bytes (same [`CompactReport`](crate::report::CompactReport)
 /// contract as the KV router).
 async fn storage_shrink(
@@ -995,7 +995,7 @@ struct BackupRequest {
     since: Option<String>,
 }
 
-/// `POST /admin/backup` — back up every database and the server's files
+/// `POST /admin/backup` - back up every database and the server's files
 /// into the backup directory while the server keeps serving:
 /// `{"name": "monday", "since": "sunday"}`, both optional. Answers with the
 /// backup's summary (`server.json`) plus its `name` and `path`.
@@ -1047,7 +1047,7 @@ async fn admin_backup(
     Ok(Json(out))
 }
 
-/// `GET /admin/backups` — the backups in the backup directory, newest
+/// `GET /admin/backups` - the backups in the backup directory, newest
 /// first: `{"backups": [{name, created_at_ms, databases, …}]}`.
 async fn admin_backups(
     State(state): State<NativeApiState>,
@@ -1073,16 +1073,16 @@ async fn admin_backups(
     })))
 }
 
-/// `GET /storage/keyspaces` — the KV router breaks its redb file into per-prefix
+/// `GET /storage/keyspaces` - the KV router breaks its redb file into per-prefix
 /// keyspaces; the WAL store keeps its indexes in memory (rebuilt from the log on
-/// open), so this reports the live in-memory index structures — records plus the
-/// adjacency, title and kind indexes — in the same `{ "keyspaces": [...] }`
+/// open), so this reports the live in-memory index structures - records plus the
+/// adjacency, title and kind indexes - in the same `{ "keyspaces": [...] }`
 /// shape, keeping the panel's Keyspaces table populated and engine-agnostic.
 async fn storage_keyspaces(State(state): State<NativeApiState>) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "keyspaces": state.service.keyspace_stats() }))
 }
 
-/// `POST /storage/benchmark` — the same self-contained probe as the KV router:
+/// `POST /storage/benchmark` - the same self-contained probe as the KV router:
 /// write throughput on a throwaway in-memory database (never touches the live
 /// graph) plus median FTS latency read-only against this engine's live data.
 async fn storage_benchmark(
@@ -1103,7 +1103,7 @@ async fn storage_benchmark(
         properties: Properties::default(),
     };
 
-    // Write throughput on throwaway in-memory native stores — never the live graph.
+    // Write throughput on throwaway in-memory native stores - never the live graph.
     let scratch = crate::native_service::NativeService::in_memory();
     let t0 = Instant::now();
     for i in 0..incr_n {
@@ -1146,7 +1146,7 @@ async fn storage_benchmark(
     })))
 }
 
-/// `GET /export/graphml` — the full graph as a GraphML 1.0 document, byte-
+/// `GET /export/graphml` - the full graph as a GraphML 1.0 document, byte-
 /// compatible with the KV server's export (the backup path).
 async fn export_graphml(State(state): State<NativeApiState>) -> Result<Response, ApiError> {
     let xml = state.service.export_graphml()?;
@@ -1158,7 +1158,7 @@ async fn export_graphml(State(state): State<NativeApiState>) -> Result<Response,
         .into_response())
 }
 
-/// `POST /import/graphml` — restore a GraphML document (a drevo backup, or
+/// `POST /import/graphml` - restore a GraphML document (a drevo backup, or
 /// interop GraphML) into the durable graph. Idempotent for drevo's own
 /// exports; id collisions with different content are conflicts.
 async fn import_graphml(
@@ -1178,7 +1178,7 @@ async fn health(State(state): State<NativeApiState>) -> Response {
     }
 }
 
-/// `GET /status` — same shape as the KV server's, plus the engine marker.
+/// `GET /status` - same shape as the KV server's, plus the engine marker.
 ///
 /// `text2cypher` is `{"model": "<model or null>"}` while
 /// `drevo.cypher.fromText` has an upstream configured, else `null`; the web
@@ -1198,7 +1198,7 @@ async fn status(State(state): State<NativeApiState>) -> Json<serde_json::Value> 
     }))
 }
 
-/// `POST /cypher` — parse and execute on the durable service, with catalog
+/// `POST /cypher` - parse and execute on the durable service, with catalog
 /// admin and per-database routing (issue #523).
 ///
 /// A leading `SHOW DATABASES`, `CREATE DATABASE <name> [IF NOT EXISTS]`, or
@@ -1325,7 +1325,7 @@ const RAG_CONTEXT_QUERY: &str = "CALL drevo.rag.context($query, $config) \
      YIELD text, tokens, format, nodeIds, relIds, truncated, mode, traceId, scope \
      RETURN text, tokens, format, nodeIds, relIds, truncated, mode, traceId, scope";
 
-/// `POST /rag/context {query, db?, config?, timeoutMs?}` — the graph-RAG
+/// `POST /rag/context {query, db?, config?, timeoutMs?}` - the graph-RAG
 /// context for a question: `drevo.rag.context(query, config)` run as the
 /// signed-in user, with the same privilege checks and time limits as
 /// `POST /cypher`,
@@ -1507,7 +1507,7 @@ fn run_cypher_on(
     Ok(exec_result_to_response(result))
 }
 
-/// `GET /transactions/prepared` — the prepared, unresolved two-phase-commit
+/// `GET /transactions/prepared` - the prepared, unresolved two-phase-commit
 /// transactions of the default database (#556), by ascending gid.
 async fn list_prepared_http(State(state): State<NativeApiState>) -> Json<serde_json::Value> {
     let prepared: Vec<serde_json::Value> = state
@@ -1560,7 +1560,7 @@ fn unresolved_error(
     }
 }
 
-/// `POST /transactions/prepared/{gid}/commit` — apply a prepared transaction
+/// `POST /transactions/prepared/{gid}/commit` - apply a prepared transaction
 /// (#556). 404 for an unknown gid.
 async fn commit_prepared_http(
     State(state): State<NativeApiState>,
@@ -1571,7 +1571,7 @@ async fn commit_prepared_http(
     Ok(Json(serde_json::json!({ "gid": gid, "committed": true })))
 }
 
-/// `POST /transactions/prepared/{gid}/rollback` — discard a prepared
+/// `POST /transactions/prepared/{gid}/rollback` - discard a prepared
 /// transaction (#556). 404 for an unknown gid.
 async fn rollback_prepared_http(
     State(state): State<NativeApiState>,
@@ -1584,7 +1584,7 @@ async fn rollback_prepared_http(
     Ok(Json(serde_json::json!({ "gid": gid, "rolled_back": true })))
 }
 
-/// `POST /transactions/prepared/{gid}/heuristic-rollback` — an operator rolls
+/// `POST /transactions/prepared/{gid}/heuristic-rollback` - an operator rolls
 /// back an abandoned prepared transaction heuristically (#556): a later
 /// coordinator commit gets 409 instead of a silent 404.
 async fn heuristic_rollback_prepared_http(
@@ -1623,7 +1623,7 @@ fn issue_repo() -> &'static str {
         .trim_start_matches("https://github.com/")
 }
 
-/// `GET /report?db=<name>` — the server half of the Web UI's "Report a
+/// `GET /report?db=<name>` - the server half of the Web UI's "Report a
 /// problem" (#552): build and engine, effective limits, the secret-free
 /// embeddings status, the database's size and labels, and the recent problem
 /// feed. Everything here may end up in a public GitHub issue, so nothing
@@ -1709,7 +1709,7 @@ fn graph_summary(service: &NativeService) -> Result<(i64, i64, Vec<String>), Api
     Ok((nodes, edges, labels))
 }
 
-/// `GET /problems?since=<seq>` — the server's recent WARN/ERROR events (#552),
+/// `GET /problems?since=<seq>` - the server's recent WARN/ERROR events (#552),
 /// oldest first, plus the `next` cursor for incremental polling by the Web UI.
 async fn problems(
     axum::extract::Query(q): axum::extract::Query<ProblemsQuery>,
@@ -1721,7 +1721,7 @@ async fn problems(
 /// Handle a catalog admin command (issue #523): `SHOW DATABASES` lists the
 /// registry, `CREATE DATABASE` registers a new in-memory database, and `USE`
 /// routes a trailing query to the named database. A bare `USE` (no trailing
-/// query) only validates that the database exists — an HTTP request carries no
+/// query) only validates that the database exists - an HTTP request carries no
 /// session to hold the selection across requests.
 fn handle_admin_cypher(
     state: &NativeApiState,
@@ -2036,7 +2036,7 @@ struct LoginRequest {
     password: String,
 }
 
-/// `POST /auth/login {username, password}` — log in and start a session: the
+/// `POST /auth/login {username, password}` - log in and start a session: the
 /// reply carries the session token (for `Authorization: Bearer`) and sets it
 /// as the Web UI's `drevo_session` cookie (HttpOnly, SameSite=Strict).
 async fn auth_login(
@@ -2076,7 +2076,7 @@ async fn auth_login(
     Ok(resp)
 }
 
-/// `POST /auth/logout` — end the caller's session (cookie or Bearer token) and
+/// `POST /auth/logout` - end the caller's session (cookie or Bearer token) and
 /// clear the cookie.
 async fn auth_logout(
     State(state): State<NativeApiState>,
@@ -2120,7 +2120,7 @@ fn secure_flag(state: &NativeApiState) -> &'static str {
     }
 }
 
-/// `GET /auth/me` — the signed-in user: `{user, passwordChangeRequired}`;
+/// `GET /auth/me` - the signed-in user: `{user, passwordChangeRequired}`;
 /// `user` is `null` when the server needs no login.
 async fn auth_me(
     signed_in: Option<axum::Extension<crate::security::SignedIn>>,
@@ -2186,7 +2186,7 @@ fn access_of(registry: &DatabaseRegistry, name: &str) -> &'static str {
     }
 }
 
-/// An empty successful Cypher result (no columns, no rows) — the acknowledgement
+/// An empty successful Cypher result (no columns, no rows) - the acknowledgement
 /// for a `CREATE DATABASE` or a bare `USE`.
 fn empty_cypher_response() -> CypherResponse {
     CypherResponse {

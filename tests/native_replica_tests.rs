@@ -1,6 +1,6 @@
 //! Cross-process WAL-shipping replication for the native engine (issue #383,
 //! Phase 9). A replica in a *separate* engine handle catches up with a durable
-//! primary using only the primary's on-disk WAL file as the channel — a
+//! primary using only the primary's on-disk WAL file as the channel - a
 //! `WalTailer` reads newly-appended records and `apply_wal_ops` replays them
 //! verbatim onto the replica's graph.
 
@@ -30,7 +30,7 @@ fn edge(from: u64, to: u64) -> NewEdge {
 }
 
 /// The primary writes to its durable WAL; a replica (a distinct `NativeGraph`
-/// handle) converges by tailing that WAL file — nothing else is shared.
+/// handle) converges by tailing that WAL file - nothing else is shared.
 #[test]
 fn wal_tailer_replicates_a_durable_primary_across_handles() {
     let dir = tempfile::tempdir().unwrap();
@@ -73,7 +73,7 @@ fn wal_tailer_replicates_a_durable_primary_across_handles() {
     assert_eq!(tailer.offset(), off);
 }
 
-/// Failover: a warm replica is promoted to a durable primary — it keeps the
+/// Failover: a warm replica is promoted to a durable primary - it keeps the
 /// mirrored data, accepts new writes, and those writes survive a reopen.
 #[test]
 fn promote_durable_takes_over_as_a_crash_safe_primary() {
@@ -117,7 +117,7 @@ fn promote_durable_takes_over_as_a_crash_safe_primary() {
 }
 
 /// A record still being written (no trailing newline yet) must not be consumed
-/// until it is complete — a reader never applies half a line.
+/// until it is complete - a reader never applies half a line.
 #[test]
 fn wal_tailer_leaves_a_partial_trailing_line() {
     use std::io::Write;

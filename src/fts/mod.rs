@@ -2,11 +2,11 @@
 //!
 //! Two layers:
 //!
-//! - [`tokenizer`] — pure normalization + trigram extraction. Lowercases,
+//! - [`tokenizer`] - pure normalization + trigram extraction. Lowercases,
 //!   strips punctuation, and emits 3-character sliding windows. CJK
 //!   characters additionally emit 2-character bigrams between consecutive
 //!   CJK glyphs.
-//! - keyword extraction (`keywords`) and faceting ([`facet`]) — the salience
+//! - keyword extraction (`keywords`) and faceting ([`facet`]) - the salience
 //!   and grouping layers built on the tokenizer. The trigram inverted index
 //!   itself now lives in the native engine (`drevo_core::native_fts`); the KV
 //!   `fts:` keyspace index was removed with the KV engine (epic #444).
@@ -23,7 +23,7 @@ pub mod facet;
 /// Keyword extraction: top-`k` salient terms via word tokenization,
 /// stopword removal, and BM25 IDF salience (task `00132`).
 pub(crate) mod keywords;
-/// Porter stemmer (1980) — pure-Rust, used optionally by keyword extraction.
+/// Porter stemmer (1980) - pure-Rust, used optionally by keyword extraction.
 pub(crate) mod stemmer;
 /// English stopword list for keyword extraction.
 pub(crate) mod stopwords;

@@ -3,38 +3,38 @@
 Every public method on `Drevo` wraps its storage I/O in
 `Python::allow_threads`. The contract the suite pins here:
 
-* **GIL release on storage I/O** — while one Python thread is inside
+* **GIL release on storage I/O** - while one Python thread is inside
   a storage call on the handle, an unrelated Python thread (one that
   does *not* touch the handle) keeps making progress. The proxy is a
   pure-Python counter incremented by the second thread; if the GIL
   were not released, no ticks would land while the first thread was
   inside the Rust call.
 
-* **Per-thread sequential reuse** — a `Drevo` handle is `Send`, so a
+* **Per-thread sequential reuse** - a `Drevo` handle is `Send`, so a
   thread spawned with the handle can call `create_node` /
   `get_node` / etc.; on join, the next thread sees every committed
   row.
 
-* **Concurrent writers on the same live handle** — N Python threads
+* **Concurrent writers on the same live handle** - N Python threads
   each calling `create_node` produce N×M unique node ids; no torn
   rows, no missing rows, no deadlock. The PyO3 wrapper drops its
   mutex guard before entering `py.allow_threads(...)` (see
   `drevo-py/src/handle.rs::borrow_db`); without that, the GIL+Mutex
-  combination deadlocks after 1–2 iterations because thread A holds
+  combination deadlocks after 1-2 iterations because thread A holds
   the Rust mutex with the GIL released while thread B holds the GIL
   blocked on the same mutex.
 
-* **Reader + writer interleaved on the same handle** — a reader
+* **Reader + writer interleaved on the same handle** - a reader
   polling `list_nodes_by_kind` while a writer inserts rows observes
   a monotonically non-decreasing count. redb's internal MVCC
   guarantees each read transaction sees a single consistent
   snapshot.
 
-* **Traversal during writes** — a `bfs` running while edges are
+* **Traversal during writes** - a `bfs` running while edges are
   added returns nodes that are all real (no ghost ids that fail a
   subsequent `get_node` lookup).
 
-* **Sequential close-then-reopen cycles** — repeated open / close
+* **Sequential close-then-reopen cycles** - repeated open / close
   releases the file lock so the next session can re-acquire it.
 """
 
@@ -54,7 +54,7 @@ def test_python_thread_progresses_while_storage_io_runs(
 
     The counter is the observable proxy for "Python bytecode is actually
     executing on the side thread". If `allow_threads` were a no-op the
-    counter would barely advance — the storage thread would hold the
+    counter would barely advance - the storage thread would hold the
     GIL through every redb call.
 
     The side thread takes care to never touch `disk_db`: it is the
@@ -81,10 +81,10 @@ def test_python_thread_progresses_while_storage_io_runs(
         stop.set()
         p.join()
 
-    # Loose lower bound — we expect thousands of ticks on any modern
+    # Loose lower bound - we expect thousands of ticks on any modern
     # machine. The point is that the counter is decidedly non-zero,
     # which means GIL release happened.
-    assert tick[0] > 0, "python thread never advanced — GIL was not released"
+    assert tick[0] > 0, "python thread never advanced - GIL was not released"
 
 
 def test_handle_is_usable_after_worker_thread_returns(
@@ -93,7 +93,7 @@ def test_handle_is_usable_after_worker_thread_returns(
     """A worker thread that does storage I/O and then exits leaves the
     handle in a usable state for the next caller.
 
-    Pins the `Drevo: Send` contract — handing the handle off, doing
+    Pins the `Drevo: Send` contract - handing the handle off, doing
     work, joining, then resuming on the original thread must work.
     """
     created_ids: list[int] = []
@@ -192,7 +192,7 @@ def test_concurrent_readers_during_writes_observe_monotonic_count(
     disk_db: drevo.Drevo,
 ) -> None:
     """A reader running alongside a writer sees a non-decreasing count
-    of matching rows — never goes backwards (which would imply a torn
+    of matching rows - never goes backwards (which would imply a torn
     or rolled-back commit).
     """
     writer_done = threading.Event()
@@ -227,7 +227,7 @@ def test_threaded_traversal_during_writes_returns_consistent_snapshot(
     disk_db: drevo.Drevo,
 ) -> None:
     """A `bfs` running while edges are added to the same root returns
-    only real nodes — every id from the traversal lookups back to a
+    only real nodes - every id from the traversal lookups back to a
     live `Node`. redb's MVCC chooses a consistent snapshot at txn-open
     time, so the reader never sees a ghost id.
     """
@@ -267,7 +267,7 @@ def test_threaded_traversal_during_writes_returns_consistent_snapshot(
 
 
 def test_gil_release_around_search_fts(disk_db: drevo.Drevo) -> None:
-    """`search_fts` (a read path) also releases the GIL — a side
+    """`search_fts` (a read path) also releases the GIL - a side
     thread doing pure Python work advances while a sequence of
     queries runs on the main thread.
     """

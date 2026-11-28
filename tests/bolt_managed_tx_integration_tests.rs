@@ -1,17 +1,17 @@
 //! Integration tests for concurrent managed Bolt transactions on the durable
-//! native engine — issue #298, epic #444.
+//! native engine - issue #298, epic #444.
 //!
 //! Where `bolt_managed_tx_tests` pins the per-statement contract single-
 //! threaded, these drive the **real** failure condition: many OS threads, each
 //! a separate Bolt connection on one shared [`NativeService`], running
 //! graphiti-style *managed* transactions (`BEGIN → several RUN → COMMIT`)
-//! concurrently — exactly what a Neo4j driver's pooled `execute_write` does.
+//! concurrently - exactly what a Neo4j driver's pooled `execute_write` does.
 //!
 //! The durable engine uses **optimistic concurrency**: a transaction commits
 //! against the graph version it began on, and a concurrent commit that moved
 //! the graph forward makes an in-flight commit fail with
-//! `Neo.TransientError.Transaction.Outdated`. This is coarse-grained — even
-//! transactions touching disjoint nodes serialize — so the contract these tests
+//! `Neo.TransientError.Transaction.Outdated`. This is coarse-grained - even
+//! transactions touching disjoint nodes serialize - so the contract these tests
 //! pin is the driver one: **retry the managed transaction on a transient
 //! failure** and every unit of work eventually commits. Each connection's
 //! transaction is independent (its own `NativeTx`), so a failed or still-open
@@ -21,7 +21,7 @@
 //!   * a bug-tracker / knowledge-graph bulk write (entity + episode node + a
 //!     `MENTIONS` edge) run as one managed transaction, hammered from N threads
 //!     with driver-style retry, and
-//!   * the driver's retry path — a transaction that fails a statement, then
+//!   * the driver's retry path - a transaction that fails a statement, then
 //!     fresh transactions on other connections that must still commit while the
 //!     failed one is left open.
 
@@ -193,7 +193,7 @@ fn concurrent_managed_transactions_all_commit() {
 #[test]
 fn concurrent_rollbacks_do_not_bleed_across_connections() {
     // Half the threads commit their write, half roll back. Each connection's
-    // rollback must undo only its own node — never a peer's committed one.
+    // rollback must undo only its own node - never a peer's committed one.
     const THREADS: usize = 6;
 
     let db = open();
@@ -207,7 +207,7 @@ fn concurrent_rollbacks_do_not_bleed_across_connections() {
                     // Committers retry on the transient conflict until they land.
                     bulk_write_note(&mut s, t);
                 } else {
-                    // Rollbacks never conflict — they discard their own writes.
+                    // Rollbacks never conflict - they discard their own writes.
                     let begin = s.handle(ClientMessage::Begin {
                         extra: BTreeMap::new(),
                     });
@@ -258,11 +258,11 @@ fn bulk_write_note(s: &mut Session, t: usize) {
 fn driver_retry_after_failed_statement_succeeds_concurrently() {
     // Model the driver's managed-tx retry: connection A's tx fails a statement
     // (division by zero) and stays open; connections B, C and D keep committing
-    // their own transactions — none is blocked by A's still-open failed
+    // their own transactions - none is blocked by A's still-open failed
     // transaction (each connection has an independent `NativeTx`).
     let db = open();
 
-    // A: open a tx, fail a statement (division by zero — a permanent client
+    // A: open a tx, fail a statement (division by zero - a permanent client
     // error, not a transient conflict), leave it open (as a pool would).
     let mut a = hello(&db);
     assert!(is_success(

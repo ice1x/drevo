@@ -6,7 +6,7 @@
 //!
 //! The encoding is deterministic: drevo builds `serde_json` without the
 //! `preserve_order` feature, so object keys serialize in sorted (`BTreeMap`)
-//! order — the same normalization [`crate::model::Properties`] relies on for
+//! order - the same normalization [`crate::model::Properties`] relies on for
 //! stable output. Two values that are logically equal therefore encode to
 //! byte-equal output (e.g. two objects that differ only in key order), and the
 //! indexes match on exact canonical-byte equality.

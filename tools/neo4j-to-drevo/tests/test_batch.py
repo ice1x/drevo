@@ -19,7 +19,7 @@ from neo4j_to_drevo import _engine
 
 
 class ListSource:
-    """Minimal in-memory ``GraphSource`` (structural — duck-typed)."""
+    """Minimal in-memory ``GraphSource`` (structural - duck-typed)."""
 
     def __init__(self, nodes: list[SourceNode], rels: list[SourceRelationship]) -> None:
         self._nodes = nodes
@@ -61,7 +61,7 @@ def test_batched_duplicate_titles_disambiguated_across_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(_engine, "_BATCH_SIZE", 1)  # each node is its own chunk
-    # Same source 'name' on every node — the engine disambiguates titles
+    # Same source 'name' on every node - the engine disambiguates titles
     # across chunks, so every migrated node keeps a distinct title.
     nodes = [
         SourceNode(id=f"n{i}", labels=["Person"], properties={"name": "same"}) for i in range(4)

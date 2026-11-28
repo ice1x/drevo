@@ -5,7 +5,7 @@
 # `tests/cypher_neo4j_parity.rs` can run the curated corpus against a real
 # reference engine and diff the answers against drevo's golden baseline.
 #
-# This is NEVER part of CI — it is an on-demand, developer-driven reference.
+# This is NEVER part of CI - it is an on-demand, developer-driven reference.
 # Bring it up, run the ignored test, tear it down:
 #
 #   docker compose -f tests/cypher_neo4j_parity/docker-compose.yml up -d

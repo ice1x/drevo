@@ -1,4 +1,4 @@
-//! Cypher abstract syntax tree — Phase 10 task `00062`.
+//! Cypher abstract syntax tree - Phase 10 task `00062`.
 //!
 //! The AST is the output of [`crate::cypher::parser::parse`] and the input
 //! of the upcoming executor (task `00063`). It is a faithful structural
@@ -19,7 +19,7 @@ use crate::cypher::lexer::Span;
 ///
 /// One or more [`SingleQuery`] parts joined by `UNION` / `UNION ALL`.
 /// The first part never carries a `union` field; subsequent parts always
-/// do (the parser enforces this invariant — `parts[i].union` for `i > 0`
+/// do (the parser enforces this invariant - `parts[i].union` for `i > 0`
 /// is the union *kind that joins `parts[i-1]` to `parts[i]`*).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Query {
@@ -66,13 +66,13 @@ pub struct UnionPart {
 /// How two [`SingleQuery`]s are combined by a `UNION` operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnionKind {
-    /// `UNION` — duplicates removed.
+    /// `UNION` - duplicates removed.
     Distinct,
-    /// `UNION ALL` — duplicates preserved.
+    /// `UNION ALL` - duplicates preserved.
     All,
 }
 
-/// A single (UNION-free) Cypher query — a non-empty ordered sequence of
+/// A single (UNION-free) Cypher query - a non-empty ordered sequence of
 /// clauses.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SingleQuery {
@@ -112,25 +112,25 @@ pub enum Clause {
     /// (issue #868).
     Explain(ExplainClause),
     /// `SEARCH var IN (VECTOR INDEX Label.property FOR expr [WHERE pred]
-    /// LIMIT k) [SCORE AS alias]` — declarative vector search (issue #430),
+    /// LIMIT k) [SCORE AS alias]` - declarative vector search (issue #430),
     /// lowered to the cosine `vector_scan`.
     Search(SearchClause),
     /// `CREATE VECTOR INDEX <name> [IF NOT EXISTS] FOR (n:Label) ON (n.property)
-    /// [OPTIONS {…}]` — register a named vector index (issue #532). The Neo4j
+    /// [OPTIONS {…}]` - register a named vector index (issue #532). The Neo4j
     /// DDL that binds an index name to a `(label, property)` pair.
     CreateVectorIndex(CreateVectorIndex),
     /// `CREATE [RANGE|BTREE] INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label])
-    /// ON (n.a.b, n.c.*, …)` — an index on nested property paths (issue #578).
+    /// ON (n.a.b, n.c.*, …)` - an index on nested property paths (issue #578).
     CreatePathIndex(CreatePathIndex),
-    /// `DROP INDEX <name> [IF EXISTS]` — drop a path or vector index.
+    /// `DROP INDEX <name> [IF EXISTS]` - drop a path or vector index.
     DropIndex(DropIndex),
-    /// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE …`
-    /// — declare a node constraint (issues #604, #606).
+    /// `CREATE CONSTRAINT [<name>] [IF NOT EXISTS] FOR (n:Label) REQUIRE …` -
+    /// declare a node constraint (issues #604, #606).
     CreateConstraint(CreateConstraint),
-    /// `DROP CONSTRAINT <name> [IF EXISTS]` — drop a declared constraint.
+    /// `DROP CONSTRAINT <name> [IF EXISTS]` - drop a declared constraint.
     DropConstraint(DropConstraint),
     /// `CREATE [RANGE|TEXT|POINT|LOOKUP|FULLTEXT] INDEX …` and
-    /// `CREATE CONSTRAINT …` — accepted for Neo4j-client compatibility but a
+    /// `CREATE CONSTRAINT …` - accepted for Neo4j-client compatibility but a
     /// **no-op**: drevo auto-indexes and has no schema DDL (issue #532). Parsed
     /// and ignored so a driver's schema bootstrap does not fail.
     SchemaNoop(SchemaNoop),
@@ -176,7 +176,7 @@ pub struct MergeClause {
 pub struct DeleteClause {
     /// `true` when the source read `DETACH DELETE`.
     pub detach: bool,
-    /// Targets — usually variables, but the spec allows arbitrary
+    /// Targets - usually variables, but the spec allows arbitrary
     /// expressions evaluating to a node or relationship.
     pub targets: Vec<Expression>,
     /// Source span of the keyword that introduced the clause (`DELETE`
@@ -196,28 +196,28 @@ pub struct SetClause {
 /// One item in a `SET` clause.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SetItem {
-    /// `target.prop = value` — set a single property.
+    /// `target.prop = value` - set a single property.
     Property {
         /// Property access expression on the left of `=`.
         target: Expression,
         /// Value to assign.
         value: Expression,
     },
-    /// `target = map` — replace the entire property map.
+    /// `target = map` - replace the entire property map.
     Replace {
         /// Variable being replaced.
         target: Expression,
         /// New properties.
         value: Expression,
     },
-    /// `target += map` — merge new properties over existing ones.
+    /// `target += map` - merge new properties over existing ones.
     Merge {
         /// Variable being merged into.
         target: Expression,
         /// Properties to merge in.
         value: Expression,
     },
-    /// `target :Label1:Label2` — add labels to a node.
+    /// `target :Label1:Label2` - add labels to a node.
     Labels {
         /// Variable to label.
         target: Expression,
@@ -238,9 +238,9 @@ pub struct RemoveClause {
 /// One item in a `REMOVE` clause.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RemoveItem {
-    /// `target.prop` — remove a property.
+    /// `target.prop` - remove a property.
     Property(Expression),
-    /// `target :Label1:Label2` — remove labels.
+    /// `target :Label1:Label2` - remove labels.
     Labels {
         /// Variable to unlabel.
         target: Expression,
@@ -249,7 +249,7 @@ pub enum RemoveItem {
     },
 }
 
-/// `WITH` clause — query pipelining boundary.
+/// `WITH` clause - query pipelining boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WithClause {
     /// `true` when `WITH DISTINCT` was written.
@@ -268,7 +268,7 @@ pub struct WithClause {
     pub span: Span,
 }
 
-/// `RETURN` clause — terminal projection.
+/// `RETURN` clause - terminal projection.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReturnClause {
     /// `true` when `RETURN DISTINCT` was written.
@@ -288,9 +288,9 @@ pub struct ReturnClause {
 /// One projection in a `WITH` / `RETURN` clause.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProjectionItem {
-    /// `*` — project all bound variables.
+    /// `*` - project all bound variables.
     Star,
-    /// `expr [AS alias]` — project a single expression with an optional
+    /// `expr [AS alias]` - project a single expression with an optional
     /// alias.
     Expression {
         /// Expression to project.
@@ -338,7 +338,7 @@ pub struct UnwindClause {
 /// An update clause that iterates `list`, binding `variable` to each
 /// element in turn and running the nested update `clauses` for that
 /// element. Cypher restricts the body to update clauses (`CREATE`,
-/// `MERGE`, `SET`, `REMOVE`, `DELETE`, and nested `FOREACH`) — read
+/// `MERGE`, `SET`, `REMOVE`, `DELETE`, and nested `FOREACH`) - read
 /// clauses such as `MATCH` / `RETURN` / `WITH` are not allowed inside.
 /// `FOREACH` never changes the outer query's cardinality; the loop
 /// variable is scoped to the body and is not visible afterwards.
@@ -354,7 +354,7 @@ pub struct ForeachClause {
     pub span: Span,
 }
 
-/// `CALL proc.name(args) [YIELD …]` — invoke a built-in procedure.
+/// `CALL proc.name(args) [YIELD …]` - invoke a built-in procedure.
 ///
 /// drevo ships a small set of read-only schema-introspection procedures
 /// (`db.labels`, `db.relationshipTypes`, `db.propertyKeys`). A procedure
@@ -429,7 +429,7 @@ pub enum SubqueryImports {
     All,
 }
 
-/// `SEARCH` clause — declarative vector search (issue #430).
+/// `SEARCH` clause - declarative vector search (issue #430).
 ///
 /// `SEARCH var IN (VECTOR INDEX Label.property FOR query_vector [WHERE pred]
 /// LIMIT k) [SCORE AS alias]` constrains the search `var` to the top-`k` nodes
@@ -482,7 +482,7 @@ pub struct CreateVectorIndex {
     /// `true` for a relationship index (`FOR ()-[r:TYPE]-()`), queried with
     /// `db.index.vector.queryRelationships`.
     pub relationship: bool,
-    /// `IF NOT EXISTS` was given — a name clash is a no-op rather than an error.
+    /// `IF NOT EXISTS` was given - a name clash is a no-op rather than an error.
     pub if_not_exists: bool,
     /// Source span of the `CREATE` keyword.
     pub span: Span,
@@ -491,7 +491,7 @@ pub struct CreateVectorIndex {
 /// `CREATE [RANGE|BTREE] INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label])
 /// ON (n.a.b, n.c.*, …) [OPTIONS {…}]` (issue #578): index the values at
 /// nested property paths. Each path is indexed on its own (not as a composite
-/// key). Top-level paths are dropped by the parser — they are always indexed.
+/// key). Top-level paths are dropped by the parser - they are always indexed.
 ///
 /// `CREATE TEXT INDEX [<name>] [IF NOT EXISTS] FOR (n[:Label]) ON (n.prop)
 /// [OPTIONS {…}]` (issue #589) has the same shape with `kind` = `Text` and
@@ -506,7 +506,7 @@ pub struct CreatePathIndex {
     pub label: Option<String>,
     /// The paths, in declaration order.
     pub paths: Vec<crate::native_path_index::PropertyPath>,
-    /// `IF NOT EXISTS` was given — a name clash is a no-op rather than an error.
+    /// `IF NOT EXISTS` was given - a name clash is a no-op rather than an error.
     pub if_not_exists: bool,
     /// Source span of the `CREATE` keyword.
     pub span: Span,
@@ -517,7 +517,7 @@ pub struct CreatePathIndex {
 pub struct DropIndex {
     /// The index name.
     pub name: String,
-    /// `IF EXISTS` was given — a missing name is a no-op rather than an error.
+    /// `IF EXISTS` was given - a missing name is a no-op rather than an error.
     pub if_exists: bool,
     /// Source span of the `DROP` keyword.
     pub span: Span,
@@ -537,7 +537,7 @@ pub struct CreateConstraint {
     pub kind: crate::constraint_registry::ConstraintKind,
     /// The constrained properties, in order.
     pub properties: Vec<String>,
-    /// `IF NOT EXISTS` was given — a taken name or an equivalent constraint is
+    /// `IF NOT EXISTS` was given - a taken name or an equivalent constraint is
     /// a no-op rather than an error.
     pub if_not_exists: bool,
     /// Source span of the `CREATE` keyword.
@@ -549,7 +549,7 @@ pub struct CreateConstraint {
 pub struct DropConstraint {
     /// The constraint name.
     pub name: String,
-    /// `IF EXISTS` was given — a missing name is a no-op rather than an error.
+    /// `IF EXISTS` was given - a missing name is a no-op rather than an error.
     pub if_exists: bool,
     /// Source span of the `DROP` keyword.
     pub span: Span,
@@ -560,7 +560,7 @@ pub struct DropConstraint {
 /// enforces no constraints, so this parses and does nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaNoop {
-    /// What was accepted — `"index"` or `"constraint"` — for a clear no-op note.
+    /// What was accepted - `"index"` or `"constraint"` - for a clear no-op note.
     pub kind: &'static str,
     /// Source span of the `CREATE` keyword.
     pub span: Span,
@@ -589,7 +589,7 @@ pub struct NamedPattern {
     /// The path itself.
     pub path: PathPattern,
     /// `Some(..)` when the pattern is wrapped in `shortestPath(...)` or
-    /// `allShortestPaths(...)` — the executor then searches for the
+    /// `allShortestPaths(...)` - the executor then searches for the
     /// shortest connecting path(s) instead of enumerating every match.
     pub shortest: Option<ShortestKind>,
 }
@@ -597,14 +597,14 @@ pub struct NamedPattern {
 /// Which shortest-path search wraps a [`NamedPattern`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShortestKind {
-    /// `shortestPath(...)` — a single shortest path (the first found among
+    /// `shortestPath(...)` - a single shortest path (the first found among
     /// any of equal minimum length).
     Single,
-    /// `allShortestPaths(...)` — one row per path of the minimum length.
+    /// `allShortestPaths(...)` - one row per path of the minimum length.
     All,
 }
 
-/// A path pattern — head node plus zero or more `(rel, node)` legs.
+/// A path pattern - head node plus zero or more `(rel, node)` legs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathPattern {
     /// Leading node pattern.
@@ -622,7 +622,7 @@ pub struct PathSegment {
     pub node: NodePattern,
 }
 
-/// A node pattern — `(variable :Label1:Label2 {props})`.
+/// A node pattern - `(variable :Label1:Label2 {props})`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodePattern {
     /// Optional variable bound to the node.
@@ -633,7 +633,7 @@ pub struct NodePattern {
     /// [`NodePattern::label_expr`] holds the full test.
     pub labels: Vec<String>,
     /// The full label expression when it is not a plain conjunction of names
-    /// (`:A|B`, `:!A`, `:%`, grouping — #572). MATCH only; CREATE / MERGE
+    /// (`:A|B`, `:!A`, `:%`, grouping - #572). MATCH only; CREATE / MERGE
     /// reject it at parse time.
     pub label_expr: Option<LabelExpr>,
     /// Optional inline property map literal.
@@ -655,7 +655,7 @@ pub struct NodePattern {
 pub enum LabelExpr {
     /// A single label (or relationship type) name.
     Name(String),
-    /// `%` — any label at all.
+    /// `%` - any label at all.
     Any,
     /// `!e`.
     Not(Box<LabelExpr>),
@@ -737,7 +737,7 @@ impl std::fmt::Display for LabelExpr {
     }
 }
 
-/// A relationship pattern — `-[variable :Type1|Type2 *1..3 {props}]->`.
+/// A relationship pattern - `-[variable :Type1|Type2 *1..3 {props}]->`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelationshipPattern {
     /// Direction encoded by the arrows.
@@ -745,7 +745,7 @@ pub struct RelationshipPattern {
     /// Optional variable bound to the relationship.
     pub variable: Option<String>,
     /// Allowed relationship types (any-of for MATCH; CREATE / MERGE
-    /// require exactly one and the parser does NOT enforce that — the
+    /// require exactly one and the parser does NOT enforce that - the
     /// executor does).
     pub types: Vec<String>,
     /// Variable-length-path range, if `*` appears inside the brackets.
@@ -764,22 +764,22 @@ pub struct RelationshipPattern {
 /// Direction of a [`RelationshipPattern`] as written in source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// `-[…]->` — left-to-right.
+    /// `-[…]->` - left-to-right.
     Outgoing,
-    /// `<-[…]-` — right-to-left.
+    /// `<-[…]-` - right-to-left.
     Incoming,
-    /// `-[…]-` — either direction.
+    /// `-[…]-` - either direction.
     Undirected,
 }
 
 /// Variable-length-path range as written inside `[*…]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelLength {
-    /// `[*]` — one or more hops (the executor decides the upper bound).
+    /// `[*]` - one or more hops (the executor decides the upper bound).
     Any,
-    /// `[*N]` — exactly `N` hops.
+    /// `[*N]` - exactly `N` hops.
     Exact(i64),
-    /// `[*N..M]` / `[*..M]` / `[*N..]` — bounded range.
+    /// `[*N..M]` / `[*..M]` / `[*N..]` - bounded range.
     Range {
         /// Inclusive lower bound (`None` = unbounded below, defaults to 1
         /// for the executor).
@@ -798,7 +798,7 @@ pub struct MapLiteral {
     pub span: Span,
 }
 
-/// An expression — the recursive heart of the AST.
+/// An expression - the recursive heart of the AST.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
     /// Integer literal.
@@ -813,7 +813,7 @@ pub enum Expression {
     False(Span),
     /// `NULL`.
     Null(Span),
-    /// Bare identifier — a variable reference.
+    /// Bare identifier - a variable reference.
     Variable(String, Span),
     /// `$name` or `$0` query parameter.
     Parameter(String, Span),
@@ -876,12 +876,12 @@ pub enum Expression {
         /// Span of the `IS` keyword.
         span: Span,
     },
-    /// `expr:Label1:Label2` / `expr:A|!B` — a label predicate (#568, #572).
+    /// `expr:Label1:Label2` / `expr:A|!B` - a label predicate (#568, #572).
     ///
     /// Evaluates the [`LabelExpr`] against a node's labels or a
     /// relationship's type; `null` for a `null` operand.
     HasLabels {
-        /// Operand — usually a variable bound to a node or relationship.
+        /// Operand - usually a variable bound to a node or relationship.
         expr: Box<Expression>,
         /// The label expression to test.
         labels: LabelExpr,
@@ -929,13 +929,13 @@ pub enum Expression {
         /// Span of the `CASE` keyword.
         span: Span,
     },
-    /// `[var IN list WHERE predicate | projection]` — a list comprehension.
+    /// `[var IN list WHERE predicate | projection]` - a list comprehension.
     ///
     /// Evaluates `list`, binds each element to `var` in a child scope, keeps
     /// the elements for which `predicate` holds (when present), and collects
     /// `projection` of each survivor (or the element itself when there is no
     /// `| projection`). At least one of `predicate` / `projection` is always
-    /// present — without either the bracket form is an ordinary list literal.
+    /// present - without either the bracket form is an ordinary list literal.
     ListComprehension {
         /// The loop variable bound to each list element in turn.
         variable: String,
@@ -949,7 +949,7 @@ pub enum Expression {
         /// Span of the leading `[`.
         span: Span,
     },
-    /// `kind(var IN list WHERE predicate)` — a list predicate function
+    /// `kind(var IN list WHERE predicate)` - a list predicate function
     /// (`all` / `any` / `none` / `single`).
     ///
     /// Evaluates `list`, binds each element to `var` in a child scope, and
@@ -957,7 +957,7 @@ pub enum Expression {
     /// [`ListPredicateKind`] quantifier. The `WHERE predicate` is mandatory
     /// (unlike a list comprehension's optional filter).
     ListPredicate {
-        /// Which quantifier — `all` / `any` / `none` / `single`.
+        /// Which quantifier - `all` / `any` / `none` / `single`.
         kind: ListPredicateKind,
         /// The loop variable bound to each list element in turn.
         variable: String,
@@ -968,7 +968,7 @@ pub enum Expression {
         /// Span of the function-name keyword.
         span: Span,
     },
-    /// `reduce(acc = init, var IN list | expr)` — a left fold over a list.
+    /// `reduce(acc = init, var IN list | expr)` - a left fold over a list.
     ///
     /// Evaluates `init` in the current scope to seed `accumulator`, then walks
     /// `list` left to right binding each element to `variable` and the running
@@ -990,7 +990,7 @@ pub enum Expression {
         /// Span of the `reduce` keyword.
         span: Span,
     },
-    /// `base { selector, … }` — a map projection.
+    /// `base { selector, … }` - a map projection.
     ///
     /// Builds a new map by projecting selected entries off `base` (a node,
     /// relationship, or map value). Each [`MapProjectionSelector`] contributes
@@ -1006,11 +1006,11 @@ pub enum Expression {
         /// Span of the opening `{`.
         span: Span,
     },
-    /// `[ pattern WHERE predicate | projection ]` — a pattern comprehension.
+    /// `[ pattern WHERE predicate | projection ]` - a pattern comprehension.
     ///
     /// Builds a list by matching `pattern` (a path with at least one
-    /// relationship) relative to the current row — anchored on any variables
-    /// the surrounding query has already bound — keeping the matches for which
+    /// relationship) relative to the current row - anchored on any variables
+    /// the surrounding query has already bound - keeping the matches for which
     /// `predicate` holds (when present), and collecting `projection` over each
     /// survivor. Unlike a [list comprehension](Expression::ListComprehension)
     /// the `| projection` is mandatory; a path with no match yields an empty
@@ -1027,7 +1027,7 @@ pub enum Expression {
         /// Span of the leading `[`.
         span: Span,
     },
-    /// A pattern predicate `(a)-[:R]->(b)` in a boolean position — `true` iff
+    /// A pattern predicate `(a)-[:R]->(b)` in a boolean position - `true` iff
     /// at least one match of the path pattern exists relative to the current
     /// row. The predicate-valued sibling of [`Self::PatternComprehension`]:
     /// where a pattern comprehension shapes a list off the graph, this tests
@@ -1041,7 +1041,7 @@ pub enum Expression {
         /// Span of the leading `(`.
         span: Span,
     },
-    /// `EXISTS { [MATCH] pattern [WHERE predicate] }` — an existential subquery.
+    /// `EXISTS { [MATCH] pattern [WHERE predicate] }` - an existential subquery.
     ///
     /// `true` iff at least one match of the enclosed `pattern` survives the
     /// optional inner `WHERE` `predicate`, relative to the current row. The
@@ -1063,7 +1063,7 @@ pub enum Expression {
         /// Span of the leading `EXISTS`.
         span: Span,
     },
-    /// `COUNT { [MATCH] pattern [WHERE predicate] }` — a counting subquery.
+    /// `COUNT { [MATCH] pattern [WHERE predicate] }` - a counting subquery.
     ///
     /// Returns the **number** of matches of the enclosed `pattern` that survive
     /// the optional inner `WHERE` `predicate`, relative to the current row. The
@@ -1090,33 +1090,33 @@ pub enum Expression {
         /// Span of the leading `COUNT`.
         span: Span,
     },
-    /// `count(*)` — the only context in which `*` is a valid sub-expression.
+    /// `count(*)` - the only context in which `*` is a valid sub-expression.
     Star(Span),
 }
 
 /// One selector inside a [`Expression::MapProjection`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum MapProjectionSelector {
-    /// `.key` — copy property `key` from the base (absent → `null`).
+    /// `.key` - copy property `key` from the base (absent → `null`).
     Property(String),
-    /// `.*` — copy every property of the base.
+    /// `.*` - copy every property of the base.
     AllProperties,
-    /// `key: expr` — a computed entry, `expr` evaluated in the current scope.
+    /// `key: expr` - a computed entry, `expr` evaluated in the current scope.
     Literal(String, Expression),
-    /// `var` — shorthand for `var: var`, the in-scope variable `var`.
+    /// `var` - shorthand for `var: var`, the in-scope variable `var`.
     Variable(String),
 }
 
 /// The quantifier of a [`Expression::ListPredicate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListPredicateKind {
-    /// `all(x IN list WHERE pred)` — `true` iff `pred` holds for every element.
+    /// `all(x IN list WHERE pred)` - `true` iff `pred` holds for every element.
     All,
-    /// `any(x IN list WHERE pred)` — `true` iff `pred` holds for some element.
+    /// `any(x IN list WHERE pred)` - `true` iff `pred` holds for some element.
     Any,
-    /// `none(x IN list WHERE pred)` — `true` iff `pred` holds for no element.
+    /// `none(x IN list WHERE pred)` - `true` iff `pred` holds for no element.
     None,
-    /// `single(x IN list WHERE pred)` — `true` iff `pred` holds for exactly one.
+    /// `single(x IN list WHERE pred)` - `true` iff `pred` holds for exactly one.
     Single,
 }
 
@@ -1172,9 +1172,9 @@ impl Expression {
 /// Unary operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    /// `-expr` — arithmetic negation.
+    /// `-expr` - arithmetic negation.
     Neg,
-    /// `+expr` — arithmetic identity. Kept distinct from `Neg` for
+    /// `+expr` - arithmetic identity. Kept distinct from `Neg` for
     /// faithful round-tripping of source.
     Plus,
     /// `NOT expr`.
@@ -1208,7 +1208,7 @@ pub enum BinaryOp {
     Gt,
     /// `>=`.
     Ge,
-    /// `=~` — regex match.
+    /// `=~` - regex match.
     RegexMatch,
     /// `||` - concatenation of two strings or two lists.
     Concat,

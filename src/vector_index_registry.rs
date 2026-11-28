@@ -1,19 +1,19 @@
 //! Named vector-index registry (issue #532).
 //!
-//! Neo4j addresses a vector index by an arbitrary **name** —
+//! Neo4j addresses a vector index by an arbitrary **name** -
 //! `CREATE VECTOR INDEX moviePlots FOR (m:Movie) ON (m.plotEmbedding)` and then
 //! `CALL db.index.vector.queryNodes('moviePlots', 5, $q)`. drevo has always been
 //! able to *search* an embedding property (`drevo.vector.query`, the `SEARCH …
 //! VECTOR INDEX Label.property` clause), but it had no way to bind that arbitrary
 //! name to the `(label, property)` pair it stands for. This registry is that
 //! binding, and nothing more: drevo auto-indexes embeddings, so there is no
-//! separate structure to build — the name is metadata that lets a Neo4j-shaped
+//! separate structure to build - the name is metadata that lets a Neo4j-shaped
 //! client's `CREATE VECTOR INDEX` / `db.index.vector.queryNodes` round-trip work
 //! unmodified.
 //!
 //! It is the vector-index sibling of [`crate::semantic_index::SemanticIndexRegistry`]
-//! and is persisted the same way — in the `semantic.json` sidecar next to the WAL
-//! (see [`crate::native_service`]) — so registrations survive a restart.
+//! and is persisted the same way - in the `semantic.json` sidecar next to the WAL
+//! (see [`crate::native_service`]) - so registrations survive a restart.
 
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +61,7 @@ pub enum VectorIndexError {
 
 /// A registry of named vector indexes, keyed by `name`.
 ///
-/// A `Vec` (not a map) so the serialised form is a plain JSON array — a stable,
+/// A `Vec` (not a map) so the serialised form is a plain JSON array - a stable,
 /// diff-friendly shape in the `semantic.json` sidecar. Empty by default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VectorIndexRegistry {

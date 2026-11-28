@@ -4,7 +4,7 @@
 //! Nodes are taken best-ranked first. Each brings its own block (a bullet or
 //! a line built from its text properties) plus the relationships to the nodes
 //! already taken; a node whose block would push the text over the budget is
-//! skipped whole — never cut mid-sentence — and the fill goes on with the
+//! skipped whole - never cut mid-sentence - and the fill goes on with the
 //! next one. Markdown has the layout of drevo-py's
 //! `Context.to_text('markdown')`: the nodes taken are written under
 //! `## Seeds` / `## Neighbours` sorted by kind, name and id, and their
@@ -67,7 +67,7 @@ pub enum Format {
     /// empty section reads `- (none)`.
     Markdown,
     /// One `|`-separated line per node (`name | Label | text`) followed by
-    /// the lines of its relationships (`A | REL | B`) — the fewest tokens.
+    /// the lines of its relationships (`A | REL | B`) - the fewest tokens.
     Triples,
     /// One JSON object: `{"nodes":[{id, labels, props}], "rels":[{from, id,
     /// props, to, type}], "stats":{nodes, rels}}`, keys sorted.
@@ -353,8 +353,8 @@ fn text_values(node: &NodeValue, options: &RenderOptions) -> Vec<String> {
 }
 
 /// The properties [`RenderOptions::max_body_chars`] applies to: long text.
-/// Every other property — `name` and `title` above all, which say what a
-/// node is — is written whole.
+/// Every other property - `name` and `title` above all, which say what a
+/// node is - is written whole.
 const LONG_TEXT: [&str; 4] = ["body", "text", "description", "quote"];
 
 /// How many characters of property `key` are written.
@@ -481,7 +481,7 @@ fn node_piece(node: &NodeValue, names: &HashMap<u64, String>, options: &RenderOp
         Format::Markdown => {
             line.push_str(&format!("- {name} (kind={labels}, id={})", node.id));
             if !rest.is_empty() {
-                line.push_str(&format!(": {}", rest.join(" — ")));
+                line.push_str(&format!(": {}", rest.join(" - ")));
             }
             for p in prov {
                 line.push(' ');
@@ -494,7 +494,7 @@ fn node_piece(node: &NodeValue, names: &HashMap<u64, String>, options: &RenderOp
                 line.push_str(&format!(" | {labels}"));
             }
             if !rest.is_empty() {
-                line.push_str(&format!(" | {}", rest.join(" — ")));
+                line.push_str(&format!(" | {}", rest.join(" - ")));
             }
             for p in prov {
                 line.push_str(&format!(" | {p}"));
@@ -1167,7 +1167,7 @@ Anna | WROTE | Пятница\n";
             out.text,
             format!(
                 "{name} | Person | Ведё…\n\
-                 {title} | Entry | Серд… — Я оп…\n\
+                 {title} | Entry | Серд… - Я оп…\n\
                  {name} | WROTE | {title} | «мне …»\n\
                  Все … | Thought\n\
                  {title} | CONTAINS | Все …\n"
@@ -1354,7 +1354,7 @@ Anna | WROTE | Пятница\n";
         let out = render(&graph, &opts(Format::Markdown));
         assert_eq!(
             out.text,
-            "## Seeds\n- Dose (kind=Med:Note, id=9): true — 20 — a, 1.5\n\n\
+            "## Seeds\n- Dose (kind=Med:Note, id=9): true - 20 - a, 1.5\n\n\
              ## Neighbours\n- (none)\n\n## Edges\n- (none)\n"
         );
     }

@@ -1,9 +1,9 @@
 ---
 name: drevo-database
-description: drevo internals — storage layout, indexes, traversal, FTS, transactions, and the path toward Cypher executor, Bolt protocol, and vector search
+description: drevo internals - storage layout, indexes, traversal, FTS, transactions, and the path toward Cypher executor, Bolt protocol, and vector search
 ---
 
-# drevo — Database Internals
+# drevo - Database Internals
 
 ## When to Use
 When implementing or modifying anything that touches storage, indexes, traversal, FTS, the HTTP API, the future Cypher executor, the future Bolt protocol, or the future vector index.
@@ -78,8 +78,8 @@ pub trait StorageBackend: Send + Sync {
 ```
 
 Two backends:
-- **`MemoryBackend`** — `BTreeMap<Vec<u8>, Vec<u8>>` wrapped in `RwLock`. Used for tests, WASM, and ephemeral workloads. Optional `flush()` snapshots to disk via bincode.
-- **`RedbBackend`** — wraps `redb::Database`. ACID, persistent, B+tree. Default on native.
+- **`MemoryBackend`** - `BTreeMap<Vec<u8>, Vec<u8>>` wrapped in `RwLock`. Used for tests, WASM, and ephemeral workloads. Optional `flush()` snapshots to disk via bincode.
+- **`RedbBackend`** - wraps `redb::Database`. ACID, persistent, B+tree. Default on native.
 
 All integration tests run against both backends via macro parameterization. This is the foundation that lets WASM exist at all.
 
@@ -94,11 +94,11 @@ All integration tests run against both backends via macro parameterization. This
 
 ### `kind_index`
 - B-tree map `String → Vec<u64>`
-- Powers `list_nodes_by_kind(kind, limit, offset)` — pagination is O(limit)
+- Powers `list_nodes_by_kind(kind, limit, offset)` - pagination is O(limit)
 - Future Cypher `MATCH (n:Person)` maps to a `kind_index` lookup
 
 ### FTS index (`fts/`)
-- Trigram inverted index — WASM-safe, no external dependencies
+- Trigram inverted index - WASM-safe, no external dependencies
 - On `create_node` / `update_node`: tokenize `title + body` into trigrams, store `trigram → Vec<node_id>`
 - On `search_fts(query)`: extract query trigrams, intersect posting lists, rank by TF-IDF
 - Normalization: lowercase, strip punctuation; CJK characters become bigrams (one Han / Hiragana / Katakana glyph = 1.5 trigrams of value)
@@ -125,7 +125,7 @@ All implemented; complexity is the algorithm's natural bound:
 | Dijkstra | `shortest_path(from, to)` | O((V+E) log V) | weighted by `edge.weight` |
 | Subgraph | `subgraph(root, depth)` | O((V+E) within radius) | BFS Both directions, returns SubGraph |
 
-Edge-kind filtering at the traversal level is dramatic — measured at ~50µs vs ~245µs at depth 2 in the criterion benches. Always push filters into the traversal when possible.
+Edge-kind filtering at the traversal level is dramatic - measured at ~50µs vs ~245µs at depth 2 in the criterion benches. Always push filters into the traversal when possible.
 
 ### Direction
 ```rust
@@ -139,7 +139,7 @@ Outgoing = follow `out_edges`; Incoming = follow `in_edges`; Both = union.
 
 Current implementation: redb's `begin_write()` / `commit()`. Single writer, multiple readers in different sessions.
 
-The `transaction<F, T>(&self, f: F) -> Result<T>` API on `Drevo` wraps a closure in a write transaction; mutations inside the closure either all commit or all abort. Undo-log–based rollback (and explicit `BEGIN/COMMIT/ROLLBACK`) is Phase 9 task `00053` / Phase 11 task `00072`.
+The `transaction<F, T>(&self, f: F) -> Result<T>` API on `Drevo` wraps a closure in a write transaction; mutations inside the closure either all commit or all abort. Undo-log-based rollback (and explicit `BEGIN/COMMIT/ROLLBACK`) is Phase 9 task `00053` / Phase 11 task `00072`.
 
 Future: MVCC (Phase 13) replaces single-writer locking with multi-version concurrency control.
 
@@ -155,9 +155,9 @@ Future: MVCC (Phase 13) replaces single-writer locking with multi-version concur
 - Search (3): `drevo_search_fts`, `drevo_list_nodes_by_kind`, `drevo_list_recent`
 - Utility (2): `drevo_last_error`, `drevo_free_string`
 
-JSON over the boundary — see `drevo-rust` skill for details.
+JSON over the boundary - see `drevo-rust` skill for details.
 
-Every entry is wrapped in `std::panic::catch_unwind` via the `ffi_guard_ptr!` / `ffi_guard_int!` macros (see audit task `00110`). A panic across the boundary is caught, recorded as a thread-local error, and the function returns its error sentinel (`NULL` or `-1`) — never UB.
+Every entry is wrapped in `std::panic::catch_unwind` via the `ffi_guard_ptr!` / `ffi_guard_int!` macros (see audit task `00110`). A panic across the boundary is caught, recorded as a thread-local error, and the function returns its error sentinel (`NULL` or `-1`) - never UB.
 
 ---
 
@@ -202,30 +202,30 @@ Unified JSON error handling: `DrevoError` → HTTP status + JSON body `{ error: 
 
 When implementing new code, leave the door open for these upcoming subsystems. None of them ship in the current code, but they all sit on top of the existing storage.
 
-### Cypher Executor (Phase 10, tasks `00061`–`00069`)
+### Cypher Executor (Phase 10, tasks `00061`-`00069`)
 - Will live in `src/cypher/` (lexer.rs, parser.rs, ast.rs, executor.rs)
 - Maps Cypher labels → `kind`; properties → `properties` HashMap; relationships → edges
 - Reuses existing traversal for `MATCH (a)-[*1..3]->(b)`
-- Pattern matching is the new code — everything below it is already there
+- Pattern matching is the new code - everything below it is already there
 
-### Bolt Protocol (Phase 11, tasks `00070`–`00074`)
+### Bolt Protocol (Phase 11, tasks `00070`-`00074`)
 - Will live in `src/bolt/` (codec.rs, session.rs, handshake.rs)
 - PackStream codec → Cypher executor → result rows back as PackStream
 - Reuses HTTP-layer auth model (after `00074`)
 
-### Vector Storage (Phase 12, tasks `00075`–`00079`)
+### Vector Storage (Phase 12, tasks `00075`-`00079`)
 - New `Value::Vector(Vec<f32>)` variant on the property value enum
 - HNSW index in `src/vector/` with persistence in a new redb table
 - Cypher extension: `similar(n.embedding, $q, threshold)` predicate
 - SIMD-accelerated cosine / euclidean / dot product
 
-### MVCC (Phase 13, tasks `00080`–`00084`)
+### MVCC (Phase 13, tasks `00080`-`00084`)
 - Per-tuple `xmin` / `xmax` columns on Node / Edge
 - Transaction snapshot ID → visibility check on every read
 - GC thread compacts dead versions
-- Touches every read and write path — the highest-risk refactor in the roadmap
+- Touches every read and write path - the highest-risk refactor in the roadmap
 
-### Query Optimizer (Phase 14, tasks `00085`–`00089`)
+### Query Optimizer (Phase 14, tasks `00085`-`00089`)
 - Statistics collected during writes: cardinality per kind, average degree
 - Cost model: B+tree seeks vs full scans
 - Plan caching keyed by parameterized Cypher hash
@@ -237,9 +237,9 @@ When implementing new code, leave the door open for these upcoming subsystems. N
 
 From the current benchmarks (see README's `Current Status` section):
 
-- `search_fts` on broad single-word queries: ~800ms — exceeds the 50ms target. Bottleneck: `scan_prefix` on large posting lists. Optimization opportunities: cached posting-list lengths, batch scan, inverted-index compaction.
-- `shortest_path` on dense graphs: ~1s — Dijkstra explores the full reachable set. Use bidirectional BFS for unweighted shortest paths once Phase 14 lands.
-- `subgraph depth 3`: ~60ms — edge collection across discovered nodes is the cost. Lazy edge iteration (Phase 14 supernode handling) will help.
+- `search_fts` on broad single-word queries: ~800ms - exceeds the 50ms target. Bottleneck: `scan_prefix` on large posting lists. Optimization opportunities: cached posting-list lengths, batch scan, inverted-index compaction.
+- `shortest_path` on dense graphs: ~1s - Dijkstra explores the full reachable set. Use bidirectional BFS for unweighted shortest paths once Phase 14 lands.
+- `subgraph depth 3`: ~60ms - edge collection across discovered nodes is the cost. Lazy edge iteration (Phase 14 supernode handling) will help.
 - `RedbBackend` bulk insert: per-operation transactions are unusable at scale. Always batch into one write transaction per logical operation.
 
 ---
@@ -255,9 +255,9 @@ src/
   storage/         StorageBackend trait + MemoryBackend + RedbBackend
   fts/             trigram tokenizer + index
   traversal.rs     BFS, DFS, Dijkstra, subgraph
-  api.rs           HTTP API (axum) — feature-gated `http`
-  ffi.rs           C FFI — not compiled on WASM
-  wasm.rs          wasm-bindgen wrapper — feature-gated `wasm`
+  api.rs           HTTP API (axum) - feature-gated `http`
+  ffi.rs           C FFI - not compiled on WASM
+  wasm.rs          wasm-bindgen wrapper - feature-gated `wasm`
   bin/             server binaries (drevo-server)
 tests/
   storage_tests.rs       backend parity (Memory + Redb)

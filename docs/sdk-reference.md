@@ -73,7 +73,7 @@ fn neighbors(&self, node_id: u64, direction: Direction, kind: Option<&str>) -> R
 `Direction` is `Outgoing | Incoming | Both`. `shortest_path` is weighted (Dijkstra over
 `Edge::weight`).
 
-`weighted_path` returns the cheapest route by a relationship cost — node ids, relationship ids
+`weighted_path` returns the cheapest route by a relationship cost - node ids, relationship ids
 and the summed cost. `WeightedPathOptions` picks the relationship kinds, the direction, the cost
 (`EdgeCost::Weight` or `EdgeCost::Property("car_s")`), an optional `max_cost`, and an optional
 `GeoHeuristic { lat, lon, max_speed_mps }` that turns the search into A* over node coordinates.
@@ -146,7 +146,7 @@ with drevo.Drevo.open("graph.redb") as db:        # or Drevo.open_in_memory()
     got = db.get_node(n.id)
     db.update_node(n.id, drevo.NodePatch(properties={"status": "done"}))
 
-    # Traversal — Direction is an IntEnum: OUT / IN / BOTH
+    # Traversal - Direction is an IntEnum: OUT / IN / BOTH
     neighbours = db.bfs(n.id, max_depth=2, direction=drevo.Direction.OUT)
 
     # Cheapest route by a relationship cost; A* with a GeoHeuristic
@@ -222,7 +222,7 @@ curl -H "Authorization: Bearer $token" http://localhost:8080/databases
 | `GET` | `/auth/me` | The signed-in user: `{user, passwordChangeRequired}` (`user` is `null` when no login is required). |
 | `GET` | `/` | Server metadata (name, version). |
 | `GET` | `/health` | Liveness (503 while shutting down). |
-| `GET` | `/ready` | Readiness — exercises the backend. |
+| `GET` | `/ready` | Readiness - exercises the backend. |
 | `GET` | `/status` | Uptime and process info. |
 | `GET` | `/metrics` | Prometheus exposition format. |
 | `POST` | `/nodes` | Create a node. |
@@ -283,8 +283,8 @@ With `DREVO_TLS_CERT` / `DREVO_TLS_KEY` set the Bolt port speaks `bolt+s://` (fe
 ## MCP tools
 
 The Model Context Protocol server for AI agents (Claude Code, Cline, Claude
-Desktop) is maintained in a separate repository —
-[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp) — and connects
+Desktop) is maintained in a separate repository -
+[github.com/ice1x/drevo-mcp](https://github.com/ice1x/drevo-mcp) - and connects
 to a running `drevo-server` over HTTP / the Neo4j-compatible Bolt port rather
 than opening the redb file, so it never contends for redb's single-process lock.
 See that repo's README for the tool list and client setup.
@@ -297,9 +297,9 @@ See that repo's README for the tool list and client setup.
 |---------|---------|---------|
 | `redb-backend` | ✅ | Disk-backed redb storage; `Drevo::open` / `recover`. |
 | `http` | ✅ | Axum HTTP API server **and** the Bolt TCP listener. |
-| `auth` | — | Argon2id user store + session tokens from the `drevo-auth` crate (transport-agnostic auth). `bolt-auth` is the same feature under its earlier name. |
-| `bolt-tls` | — | rustls TLS for HTTPS and `bolt+s://` (`DREVO_TLS_CERT` / `DREVO_TLS_KEY`); implies `http`. |
-| `wasm` | — | WebAssembly build (excludes `bolt`, `ffi`). |
+| `auth` | - | Argon2id user store + session tokens from the `drevo-auth` crate (transport-agnostic auth). `bolt-auth` is the same feature under its earlier name. |
+| `bolt-tls` | - | rustls TLS for HTTPS and `bolt+s://` (`DREVO_TLS_CERT` / `DREVO_TLS_KEY`); implies `http`. |
+| `wasm` | - | WebAssembly build (excludes `bolt`, `ffi`). |
 | `cbindgen` | ✅ | Generate the C header (`drevo.h`) from the FFI surface. |
 
 The in-memory backend (`Drevo::open_in_memory`) needs no features and is always available,

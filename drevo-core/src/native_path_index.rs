@@ -7,9 +7,9 @@
 //! [`NativePathIndex`] indexes the values a set of declared
 //! [`PathIndexSpec`]s point at:
 //!
-//! - one nested field — `meta.author`;
-//! - every path under a map — `meta.*`;
-//! - the whole property map — `*`;
+//! - one nested field - `meta.author`;
+//! - every path under a map - `meta.*`;
+//! - the whole property map - `*`;
 //!
 //! each optionally restricted to nodes carrying a label. Leaves are indexed
 //! with the same rules as the top-level index: strings, booleans and integers
@@ -17,7 +17,7 @@
 //! below a list is a path.
 //!
 //! Lookups return a **superset** of the matching node ids, or `None` when no
-//! declared spec covers the path for the given labels — the caller then scans
+//! declared spec covers the path for the given labels - the caller then scans
 //! and its exact filter decides. A spec for label `L` covers a lookup only when
 //! the pattern requires `L`, because nodes without `L` were never indexed.
 //!

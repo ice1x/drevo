@@ -1,11 +1,11 @@
-//! Text-to-Cypher LLM proxy (issue #429) — the `drevo.cypher.fromText(prompt)`
+//! Text-to-Cypher LLM proxy (issue #429) - the `drevo.cypher.fromText(prompt)`
 //! procedure's backend, modeled on the `/v1/embeddings` proxy
 //! ([`crate::embeddings`]).
 //!
 //! # What this is
 //!
 //! A **thin proxy** that turns a natural-language question into a Cypher query
-//! by forwarding it — together with the live graph schema — to an
+//! by forwarding it - together with the live graph schema - to an
 //! operator-configured LLM upstream (OpenAI/Ollama/vLLM/… `chat/completions`).
 //! It **returns** the generated Cypher string; it never executes it, so an
 //! LLM-authored mutation can only run if the client explicitly chooses to.
@@ -14,7 +14,7 @@
 //!
 //! - [`Text2CypherConfig`](crate::text2cypher::Text2CypherConfig) is built from
 //!   the environment only
-//!   ([`from_env`](crate::text2cypher::Text2CypherConfig::from_env)) — the
+//!   ([`from_env`](crate::text2cypher::Text2CypherConfig::from_env)) - the
 //!   upstream is an operator choice, never a request's (the SSRF boundary).
 //!   `http`/`https` only.
 //! - [`CypherGenerator`](crate::text2cypher::CypherGenerator) is the synchronous
@@ -25,7 +25,7 @@
 //!   `embeddings-proxy` feature) are the `reqwest`-backed implementation. The
 //!   sync generator bridges the async client from the executor's synchronous,
 //!   tokio-worker-thread context via a dedicated OS thread + current-thread
-//!   runtime — exactly like [`crate::embeddings::SyncEmbedder`], sidestepping
+//!   runtime - exactly like [`crate::embeddings::SyncEmbedder`], sidestepping
 //!   the runtime-in-runtime panic.
 //! - A process-global install
 //!   ([`install`](crate::text2cypher::install) /
@@ -44,7 +44,7 @@ pub enum Text2CypherError {
          (set DREVO_TEXT2CYPHER_UPSTREAM/MODEL/API_KEY)"
     )]
     NotConfigured,
-    /// The configured upstream URL is malformed or uses an unsupported scheme —
+    /// The configured upstream URL is malformed or uses an unsupported scheme -
     /// a server-configuration fault.
     #[error("invalid text-to-Cypher upstream: {0}")]
     InvalidUpstream(String),
@@ -77,7 +77,7 @@ impl Text2CypherConfig {
     /// Read the text-to-Cypher configuration from a getter mimicking
     /// [`std::env::var`].
     ///
-    /// Returns `Ok(None)` when `DREVO_TEXT2CYPHER_UPSTREAM` is unset — the
+    /// Returns `Ok(None)` when `DREVO_TEXT2CYPHER_UPSTREAM` is unset - the
     /// procedure then reports "not configured". Recognised variables:
     ///
     /// | Variable                      | Meaning                                   |
@@ -115,7 +115,7 @@ impl Text2CypherConfig {
 }
 
 /// Validate and normalise an upstream URL: trimmed, non-empty, `http`/`https`
-/// only (the SSRF boundary — an operator choice, never a request's).
+/// only (the SSRF boundary - an operator choice, never a request's).
 fn validate_upstream(raw: &str) -> Result<String, Text2CypherError> {
     let upstream = raw.trim().to_string();
     if upstream.is_empty() {
@@ -359,7 +359,7 @@ pub fn build_system_prompt(
     format!(
         "You are a Cypher query generator for drevo, a Neo4j-compatible graph database.\n\
          Translate the user's natural-language question into a SINGLE Cypher query.\n\
-         Return ONLY the Cypher query text — no explanation, no markdown code fences.\n\
+         Return ONLY the Cypher query text - no explanation, no markdown code fences.\n\
          Use only the labels, relationship types, and property keys listed below. If the \
          question cannot be answered with this schema, return a single line starting with `//`.\n\
          \n\
@@ -392,7 +392,7 @@ pub fn extract_cypher(content: &str) -> String {
     body.trim().to_string()
 }
 
-/// A synchronous text-to-Cypher generator — the procedure depends only on this
+/// A synchronous text-to-Cypher generator - the procedure depends only on this
 /// trait, so it is engine- and transport-agnostic and a test can supply a fake.
 pub trait CypherGenerator: Send + Sync {
     /// Turn `question` into a Cypher query, given the pre-built `system` prompt
@@ -511,7 +511,7 @@ impl ChatProxyBackend {
 }
 
 /// A [`CypherGenerator`] that drives the async chat client from synchronous
-/// code without nesting tokio runtimes — a dedicated OS thread with its own
+/// code without nesting tokio runtimes - a dedicated OS thread with its own
 /// current-thread runtime ([`crate::llm::SyncChatCompleter`]), mirroring
 /// [`crate::embeddings::SyncEmbedder`].
 #[cfg(feature = "embeddings-proxy")]

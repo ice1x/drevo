@@ -3,8 +3,8 @@
 through the Cypher API.
 
 The embedded handle stores jobs but runs no scheduler and has no chat
-endpoint, so a submitted job stays queued: these tests check what is stored
-— a faker-written book cut into passages with exact character offsets — and
+endpoint, so a submitted job stays queued: these tests check what is stored -
+a faker-written book cut into passages with exact character offsets - and
 how the procedures steer a job. Running jobs is tested in Rust
 (`tests/ingest_jobs_tests.rs`) against a scripted chat upstream.
 """

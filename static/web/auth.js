@@ -1,4 +1,4 @@
-// drevo browser — pure helpers for signing in: which screen to show after
+// drevo browser - pure helpers for signing in: which screen to show after
 // GET /auth/me, the message for a refused sign-in, and the request for a
 // password change. DOM-free so they can be unit-tested under `node --test`
 // (see auth.test.js).
@@ -18,7 +18,7 @@
 
   // The screen for a GET /auth/me reply: "sign-in" (401), "change-password"
   // (signed in, but the password must be changed first) or "app". A server
-  // that needs no login — or predates /auth/me — goes straight to the app.
+  // that needs no login - or predates /auth/me - goes straight to the app.
   //
   //   authView(200, {user: "ann", passwordChangeRequired: false})
   //     → {view: "app", user: "ann"}

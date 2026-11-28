@@ -1,4 +1,4 @@
-//! End-to-end Cypher `UNION` / `UNION ALL` tests — Phase 10 follow-up task `00136`.
+//! End-to-end Cypher `UNION` / `UNION ALL` tests - Phase 10 follow-up task `00136`.
 //!
 //! `UNION` combines the result rows of two or more single-queries into a
 //! single result set. `UNION ALL` concatenates every arm's rows in arm
@@ -141,7 +141,7 @@ fn union_with_mismatched_column_names_is_an_error() {
 #[test]
 fn union_with_swapped_column_order_is_an_error() {
     let db = db();
-    // Same names, different order — Neo4j rejects this.
+    // Same names, different order - Neo4j rejects this.
     let err = run_err("RETURN 1 AS a, 2 AS b UNION RETURN 3 AS b, 4 AS a", &db);
     assert!(matches!(err, ExecError::UnionMismatch { .. }));
 }
@@ -183,7 +183,7 @@ fn unsupported_inside_a_union_arm_still_surfaces() {
     assert!(matches!(err, ExecError::Unsupported { .. }));
 }
 
-// ===== Regression — single-arm queries unaffected ===========================
+// ===== Regression - single-arm queries unaffected ===========================
 
 #[test]
 fn single_query_without_union_is_unchanged() {

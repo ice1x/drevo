@@ -6,12 +6,12 @@
 //! guarantee in a realistic workflow from the target domains (bug tracker, IT
 //! task manager, ERP, CBT journal):
 //!
-//! * **Read Committed** — a dashboard re-reads and sees committed updates
+//! * **Read Committed** - a dashboard re-reads and sees committed updates
 //!   between statements, but never a dirty (uncommitted) write.
-//! * **Snapshot Isolation** — a long-running report reads a stable view even
+//! * **Snapshot Isolation** - a long-running report reads a stable view even
 //!   as writers move on (repeatable reads), but the write-skew anomaly is
 //!   permitted.
-//! * **Serializable** — the same write-skew schedule is refused, keeping a
+//! * **Serializable** - the same write-skew schedule is refused, keeping a
 //!   cross-row invariant intact; disjoint transactions still commit; and a
 //!   contended workload driven through [`run_transaction`] converges.
 //!
@@ -47,7 +47,7 @@ fn seed<V: Clone>(store: &VersionedStore<String, V>, key: &str, value: V) {
 
 /// IT task-manager dashboard: a board polls a ticket's status repeatedly. Under
 /// Read Committed each poll re-snapshots, so once an agent commits a status
-/// change the dashboard sees it — but it never observes an in-flight edit.
+/// change the dashboard sees it - but it never observes an in-flight edit.
 #[test]
 fn read_committed_dashboard_sees_committed_not_dirty() {
     let store = fresh::<String>();
@@ -86,7 +86,7 @@ fn read_committed_dashboard_sees_committed_not_dirty() {
 /// ERP month-end report: a long-running reader tallies inventory while sales
 /// terminals keep selling. Under Snapshot Isolation the report sees one
 /// consistent point-in-time view for its whole life, even as committed writes
-/// pile up — exactly the repeatable-read guarantee a report needs.
+/// pile up - exactly the repeatable-read guarantee a report needs.
 #[test]
 fn snapshot_isolation_report_sees_stable_view() {
     let store = fresh::<i64>();
@@ -123,7 +123,7 @@ fn snapshot_isolation_report_sees_stable_view() {
 
 /// The anomaly Snapshot Isolation famously *permits*: write-skew. Two
 /// transactions read an overlapping set and write disjoint keys, so there is no
-/// write-write conflict — both commit, even though their combined effect was
+/// write-write conflict - both commit, even though their combined effect was
 /// never possible under any serial order. This documents the gap that
 /// Serializable closes.
 #[test]
@@ -228,7 +228,7 @@ fn serializable_disjoint_journal_entries_both_commit() {
 
 /// Serializable read-modify-write under contention, via the retry loop: a
 /// bug-tracker "open bug count" maintained by many concurrent triagers. Every
-/// increment must land — retries re-derive each change against the winner.
+/// increment must land - retries re-derive each change against the winner.
 #[test]
 fn serializable_contended_counter_converges_via_retry() {
     let store = fresh::<i64>();
@@ -266,7 +266,7 @@ fn serializable_contended_counter_converges_via_retry() {
 }
 
 /// A many-threaded read storm against a snapshot-isolated store must never tear
-/// or deadlock while writers commit concurrently — the mixed-level workload the
+/// or deadlock while writers commit concurrently - the mixed-level workload the
 /// phase targets.
 #[test]
 fn mixed_level_read_storm_never_tears() {
@@ -318,7 +318,7 @@ proptest! {
 
     /// N serializable read-modify-write increments through `run_transaction`,
     /// spread across a variable number of threads, always converge to exactly
-    /// N — no lost updates, no spurious aborts that drop work.
+    /// N - no lost updates, no spurious aborts that drop work.
     #[test]
     fn serializable_increments_converge_to_exact_sum(
         threads in 1usize..=6,

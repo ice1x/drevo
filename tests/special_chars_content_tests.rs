@@ -125,7 +125,7 @@ fn unicode_whitespace_in_content_round_trips() {
 
 #[test]
 fn megabyte_title_and_body_round_trip() {
-    // 1 MiB of repeated multibyte text — exercises large-value storage paths
+    // 1 MiB of repeated multibyte text - exercises large-value storage paths
     // that the FTS panic-guard test (100K chars, tokenizer-only) does not.
     let big = "λ ".repeat(512 * 1024); // ~1.5 MiB UTF-8
     round_trip_text(&big);

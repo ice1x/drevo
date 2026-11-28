@@ -1,5 +1,5 @@
 //! Integration tests for the Bolt session layer over the **durable native**
-//! store of record (epic #444 — KV retirement, PR-e1).
+//! store of record (epic #444 - KV retirement, PR-e1).
 //!
 //! The Bolt protocol state machine, the synchronous session driver, and the
 //! authentication handshake are all engine-agnostic: they were historically
@@ -8,7 +8,7 @@
 //! ([`Session::new_durable`], [`Session::with_auth_durable`],
 //! [`run_session_sync_durable`], [`run_session_sync_with_auth_durable`]), so the
 //! capability is preserved and covered on the engine the shipping server
-//! actually runs — the prerequisite for retiring the KV Bolt path.
+//! actually runs - the prerequisite for retiring the KV Bolt path.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -341,7 +341,7 @@ fn catalog_session_routes_autocommit_writes_to_the_named_database() {
     });
     assert_eq!(s.state(), State::Ready);
 
-    // The row physically lives in database `b`, not the default — proving the
+    // The row physically lives in database `b`, not the default - proving the
     // Bolt `db` selector routed through the shared catalog.
     let in_b = b.list_nodes_by_kind("Note", 10, 0);
     assert_eq!(in_b.len(), 1, "the write must land in database `b`");

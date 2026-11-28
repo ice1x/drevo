@@ -1,4 +1,4 @@
-//! End-to-end tests for #262 — `drevo.semantic.reindex`, the resumable
+//! End-to-end tests for #262 - `drevo.semantic.reindex`, the resumable
 //! backfill for nodes that already existed when an `Auto` target was
 //! registered.
 //!
@@ -14,7 +14,7 @@
 //! - the backfill is batched (`batch_size` + `remaining`) and idempotent
 //!   (re-running embeds nothing new);
 //! - the reported counts let a client confirm completion;
-//! - it respects the skip rules — `Manual` target is a no-op, an unregistered
+//! - it respects the skip rules - `Manual` target is a no-op, an unregistered
 //!   target errors, nodes without text are skipped.
 
 #![cfg(feature = "embeddings-proxy")]

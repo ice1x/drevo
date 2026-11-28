@@ -3,7 +3,7 @@
 //! Keyword extraction ([`crate::fts::keywords`]) drops these high-frequency
 //! function words *before* IDF ranking so that grammatical glue ("the", "of",
 //! "and") never surfaces as a "salient" term. BM25 IDF alone would already
-//! down-weight ubiquitous words, but only relative to the indexed corpus —
+//! down-weight ubiquitous words, but only relative to the indexed corpus -
 //! a brand-new or tiny corpus has unreliable document frequencies, so an
 //! explicit stoplist keeps the output sensible from the very first document.
 //!
@@ -14,7 +14,7 @@
 //! so an out-of-order edit fails loudly rather than silently breaking
 //! membership tests.
 
-/// The sorted English stopword list. MUST stay alphabetically sorted —
+/// The sorted English stopword list. MUST stay alphabetically sorted -
 /// [`is_stopword`] relies on binary search, and `stopwords_list_is_sorted`
 /// guards the invariant.
 const STOPWORDS: &[&str] = &[

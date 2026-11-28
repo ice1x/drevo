@@ -1,7 +1,7 @@
 //! Authentication: users with Argon2id password hashes, and session tokens.
 //!
-//! A client presents [`Credentials`] — a username and password, or a session
-//! token — and a [`UserStore`] answers with the username they prove, or an
+//! A client presents [`Credentials`] - a username and password, or a session
+//! token - and a [`UserStore`] answers with the username they prove, or an
 //! [`AuthFailure`] saying why not.
 //!
 //! - Passwords are stored as Argon2id PHC strings (`$argon2id$…`) with a
@@ -138,7 +138,7 @@ impl Credentials {
     }
 }
 
-/// Decode standard base64 (`A–Z a–z 0–9 + /`), with or without `=` padding.
+/// Decode standard base64 (`A-Z a-z 0-9 + /`), with or without `=` padding.
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     fn value(c: u8) -> Option<u32> {
         match c {
@@ -182,7 +182,7 @@ pub enum AuthFailure {
     /// A scheme other than `basic` or `bearer`.
     #[error("unsupported auth scheme: {0}")]
     UnsupportedScheme(String),
-    /// An unknown user or a wrong password — deliberately the same failure.
+    /// An unknown user or a wrong password - deliberately the same failure.
     #[error("invalid principal or credentials")]
     InvalidCredentials,
     /// A token that was never issued or has been revoked.

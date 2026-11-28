@@ -1,10 +1,10 @@
-//! Cypher lexer — integration tests.
+//! Cypher lexer - integration tests.
 //!
 //! Exercises the lexer on realistic, full-query Cypher snippets drawn
 //! from each of the five drevo scenarios (CBT journal, story editor,
 //! task manager, ERP, bug tracker). The goal here is *not* to re-test
-//! every token kind in isolation — that is what the inline unit-test
-//! module in `src/cypher/lexer.rs` does — but to confirm that the
+//! every token kind in isolation - that is what the inline unit-test
+//! module in `src/cypher/lexer.rs` does - but to confirm that the
 //! lexer composes correctly when feeding it whole queries the parser
 //! (task `00062`) will eventually have to handle.
 //!
@@ -110,7 +110,7 @@ fn story_editor_variable_length_path() {
 
 #[test]
 fn story_editor_unicode_characters_in_strings() {
-    // CJK characters in strings — important because drevo's FTS layer
+    // CJK characters in strings - important because drevo's FTS layer
     // supports CJK and Cypher will be the query layer over the FTS.
     let src = r#"CREATE (c:Character {name: '李白', era: 'Tang dynasty'})"#;
     let tokens = kinds(src);
@@ -350,7 +350,7 @@ fn error_unexpected_char_carries_position() {
 
 #[test]
 fn is_null_lexes_as_two_tokens() {
-    // Lexer must NOT collapse `IS NULL` into a single token — that
+    // Lexer must NOT collapse `IS NULL` into a single token - that
     // composition is the parser's job.
     let src = "WHERE n.foo IS NULL";
     let tokens = kinds(src);
@@ -388,7 +388,7 @@ fn is_not_null_lexes_as_three_tokens() {
 #[test]
 fn return_star_lexes_as_star_token() {
     // `RETURN *` is a common projection; the lexer should emit it as
-    // RETURN, Star — not as a single composite token.
+    // RETURN, Star - not as a single composite token.
     let src = "MATCH (n) RETURN *";
     let tokens = kinds(src);
     assert_eq!(tokens.last(), Some(&TokenKind::Star));
@@ -474,7 +474,7 @@ fn undirected_edge_pattern_lexes_as_two_minus_tokens() {
 
 #[test]
 fn label_disjunction_in_pattern() {
-    // (n:Foo|Bar) — node matching either label.
+    // (n:Foo|Bar) - node matching either label.
     let src = "(n:Foo|Bar)";
     let tokens = kinds(src);
     assert_eq!(

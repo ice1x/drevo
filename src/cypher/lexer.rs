@@ -1,4 +1,4 @@
-//! Cypher lexer — converts a Cypher source string into a stream of
+//! Cypher lexer - converts a Cypher source string into a stream of
 //! `Token`s for the parser.
 //!
 //! The lexer is the entry point of Phase 10 (task `00061`). It recognises
@@ -26,11 +26,11 @@
 //!   `(`, `)`, `[`, `]`, `{`, `}`, `,`, `;`.
 //! - **Parameters**: `$name` (identifier-style) or `$0` (numeric).
 //! - **Comments**: `// ...\n` line comments and `/* ... */` block
-//!   comments. Comments are *skipped* — they never appear as tokens.
+//!   comments. Comments are *skipped* - they never appear as tokens.
 //!
 //! The lexer never panics. Every error is returned via `LexError` with
 //! a `Span` indicating the offending byte range. Position tracking is
-//! 1-based line and 1-based column (character — not byte — column),
+//! 1-based line and 1-based column (character - not byte - column),
 //! matching how editors render error markers.
 //!
 //! Downstream consumers (`00062` parser onwards) get a `Vec<Token>` from
@@ -45,7 +45,7 @@ use std::fmt;
 /// diagnostics).
 ///
 /// `column` counts Unicode scalar values, not bytes, so a multi-byte
-/// character occupies a single column — consistent with how editors and
+/// character occupies a single column - consistent with how editors and
 /// LSP clients report positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
@@ -99,10 +99,10 @@ pub enum TokenKind {
     /// Integer literal: `42`, `0`, `0xff`, `0o17`. Parsed into `i64`.
     Integer(i64),
     /// Floating-point literal: `1.5`, `1.5e10`, `.5`, `5.`. Parsed into
-    /// `f64` (`NaN` / `Inf` are never produced — the lexer rejects them
+    /// `f64` (`NaN` / `Inf` are never produced - the lexer rejects them
     /// upstream).
     Float(f64),
-    /// String literal — single- or double-quoted in source, escape
+    /// String literal - single- or double-quoted in source, escape
     /// sequences resolved.
     String(String),
     /// The `TRUE` keyword.
@@ -114,7 +114,7 @@ pub enum TokenKind {
 
     // ---- Identifiers and parameters --------------------------------
     /// Plain identifier (`foo`, `name`) or backtick-quoted identifier
-    /// (`` `foo bar` ``). The contained string is the *resolved* name —
+    /// (`` `foo bar` ``). The contained string is the *resolved* name -
     /// backticks and their escapes have been stripped.
     Identifier(String),
     /// `$name` or `$0` parameter reference. The contained string is the
@@ -192,9 +192,9 @@ pub enum TokenKind {
     /// `IS`. The grammar parses `IS NULL` / `IS NOT NULL` as separate
     /// token sequences.
     Is,
-    /// `STARTS` — paired with `WITH` by the grammar.
+    /// `STARTS` - paired with `WITH` by the grammar.
     Starts,
-    /// `ENDS` — paired with `WITH` by the grammar.
+    /// `ENDS` - paired with `WITH` by the grammar.
     Ends,
     /// `CONTAINS`.
     Contains,
@@ -217,7 +217,7 @@ pub enum TokenKind {
     /// `=`. In Cypher, `=` is both equality (in `WHERE`) and assignment
     /// (in `SET`). The parser disambiguates by context.
     Eq,
-    /// `<>` — not-equals.
+    /// `<>` - not-equals.
     Ne,
     /// `<`.
     Lt,
@@ -227,7 +227,7 @@ pub enum TokenKind {
     Gt,
     /// `>=`.
     Ge,
-    /// `=~` — regex match.
+    /// `=~` - regex match.
     RegexMatch,
     /// `||` - concatenation of two strings or two lists.
     Concat,
@@ -247,25 +247,25 @@ pub enum TokenKind {
     Percent,
     /// `^`.
     Caret,
-    /// `!` — label-expression negation (#572).
+    /// `!` - label-expression negation (#572).
     Bang,
-    /// `&` — label-expression conjunction (#572).
+    /// `&` - label-expression conjunction (#572).
     Ampersand,
 
     // ---- Property access / ranges ----------------------------------
-    /// `.` — property access.
+    /// `.` - property access.
     Dot,
-    /// `..` — range, e.g. in variable-length paths `[*1..3]`.
+    /// `..` - range, e.g. in variable-length paths `[*1..3]`.
     DotDot,
 
     // ---- Pattern syntax --------------------------------------------
-    /// `->` — directed-edge arrow.
+    /// `->` - directed-edge arrow.
     Arrow,
-    /// `<-` — directed-edge arrow (left).
+    /// `<-` - directed-edge arrow (left).
     LArrow,
-    /// `|` — relationship-type alternation.
+    /// `|` - relationship-type alternation.
     Pipe,
-    /// `:` — label / type separator.
+    /// `:` - label / type separator.
     Colon,
 
     // ---- Brackets and punctuation ----------------------------------
@@ -297,7 +297,7 @@ impl TokenKind {
     /// boolean / null literals).
     ///
     /// Useful for diagnostics: a parser that allows a keyword to act as
-    /// an identifier (the Cypher spec allows this in some positions —
+    /// an identifier (the Cypher spec allows this in some positions -
     /// see task `00062`) can check this flag to flag the case.
     pub fn is_keyword(&self) -> bool {
         matches!(
@@ -464,7 +464,7 @@ impl fmt::Display for TokenKind {
     }
 }
 
-/// A lexical error — produced when [`tokenize`] encounters source that is
+/// A lexical error - produced when [`tokenize`] encounters source that is
 /// not a valid Cypher token.
 ///
 /// Each variant carries the [`Span`] of the offending input so callers can
@@ -504,7 +504,7 @@ pub enum LexError {
         span: Span,
     },
 
-    /// A `\u{XXXX}` Unicode escape did not parse — either the braces are
+    /// A `\u{XXXX}` Unicode escape did not parse - either the braces are
     /// missing, the hex digits are missing, or the code point is not a
     /// valid Unicode scalar value.
     #[error("invalid unicode escape at line {}, column {}", .span.line, .span.column)]
@@ -594,7 +594,7 @@ pub fn tokenize(source: &str) -> LexResult<Vec<Token>> {
 
 /// Hand-rolled, character-at-a-time lexer.
 ///
-/// Implementation detail — exposed only via the free-function [`tokenize`].
+/// Implementation detail - exposed only via the free-function [`tokenize`].
 struct Lexer<'src> {
     source: &'src str,
     /// Byte cursor into `source`.
@@ -1039,8 +1039,8 @@ impl<'src> Lexer<'src> {
         esc_col: u32,
     ) -> LexResult<char> {
         // Two accepted forms:
-        //   \uXXXX          — exactly 4 hex digits (Java/Cypher classic)
-        //   \u{XXXX}        — braces with 1..=6 hex digits (Rust-style)
+        //   \uXXXX          - exactly 4 hex digits (Java/Cypher classic)
+        //   \u{XXXX}        - braces with 1..=6 hex digits (Rust-style)
         if self.peek() == Some('{') {
             self.advance();
             let digits_start = self.cursor;
@@ -1163,10 +1163,10 @@ impl<'src> Lexer<'src> {
 
         // Fractional part: `.digit*`. A bare trailing `.` (e.g. `5.`) is
         // accepted as a float. A `..` after a digit (`1..3`) must NOT be
-        // consumed — it is the range operator.
+        // consumed - it is the range operator.
         if self.peek() == Some('.') && self.peek2() != Some('.') {
             // Don't consume if `.` is followed by an identifier-start
-            // (property access like `n.foo`) — but `read_number` is only
+            // (property access like `n.foo`) - but `read_number` is only
             // entered from a digit start, so `.` after the integer is
             // unambiguously a fractional point unless `..` (range).
             self.advance();
@@ -1211,7 +1211,7 @@ impl<'src> Lexer<'src> {
                 }
             }
             if self.cursor == exp_start {
-                // No digits in exponent — roll back.
+                // No digits in exponent - roll back.
                 self.cursor = save;
                 self.line = save_line;
                 self.column = save_col;
@@ -1652,7 +1652,7 @@ mod tests {
 
     #[test]
     fn number_followed_by_range_operator() {
-        // 1..3 must be Integer(1), DotDot, Integer(3) — NOT Float(1.)
+        // 1..3 must be Integer(1), DotDot, Integer(3) - NOT Float(1.)
         // followed by Dot, Integer(3).
         assert_eq!(
             kinds("1..3"),
@@ -1795,7 +1795,7 @@ mod tests {
 
     #[test]
     fn comment_line_until_eof() {
-        // No trailing newline — the comment still ends at EOF.
+        // No trailing newline - the comment still ends at EOF.
         assert_eq!(kinds("MATCH // tail"), vec![TokenKind::Match]);
     }
 

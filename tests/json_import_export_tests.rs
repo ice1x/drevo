@@ -1,31 +1,31 @@
-//! Phase 9 task `00055` — JSON import / export integration tests.
+//! Phase 9 task `00055` - JSON import / export integration tests.
 //!
 //! These tests cover the `NativeService::export_json` / `import_json`
 //! round-trip contract (the `drevo-json-v1` dump format):
 //!
-//! 1. **Empty graph round-trip** — exporting an empty database and importing
+//! 1. **Empty graph round-trip** - exporting an empty database and importing
 //!    the result yields an empty database.
-//! 2. **Single-node round-trip** — a single node with rich properties survives
+//! 2. **Single-node round-trip** - a single node with rich properties survives
 //!    `export → import` byte-for-byte (id, uuid, timestamps, kind, body,
 //!    body_html, JSON-typed properties).
-//! 3. **Full graph round-trip** — a multi-kind graph (5+ nodes, mixed edges
+//! 3. **Full graph round-trip** - a multi-kind graph (5+ nodes, mixed edges
 //!    with weights and properties) survives a round-trip on the native engine.
-//! 4. **Indexes rebuilt on import** — after `import_json`, every public lookup
+//! 4. **Indexes rebuilt on import** - after `import_json`, every public lookup
 //!    (`get_node_by_uuid`, `get_node_by_title`, `list_nodes_by_kind`,
 //!    `edges_of`, `search_fts`, `list_recent`) returns results consistent with
 //!    a freshly-built graph, and adjacency stays mirrored (asserted through the
-//!    public API — the native engine has no KV-style `verify_invariants`).
-//! 5. **ID-counter restore** — after `import_json`, creating a new node / edge
+//!    public API - the native engine has no KV-style `verify_invariants`).
+//! 5. **ID-counter restore** - after `import_json`, creating a new node / edge
 //!    yields an id strictly greater than every imported id (no collisions).
 //!    This protects MVCC from "id reuse after backup-restore" anomalies.
-//! 6. **File round-trip** — `export_json` written to and read back from a file
+//! 6. **File round-trip** - `export_json` written to and read back from a file
 //!    under `tempfile::TempDir` round-trips.
-//! 7. **Format header** — exports include `format: "drevo-json-v1"`. Import
+//! 7. **Format header** - exports include `format: "drevo-json-v1"`. Import
 //!    rejects payloads with an unknown / missing format string with a typed
 //!    error.
-//! 8. **Malformed JSON** — `import_json("not json")` returns
+//! 8. **Malformed JSON** - `import_json("not json")` returns
 //!    [`DrevoError::Io`] (the `serde_json` failure is mapped through `Io`).
-//! 9. **Idempotent re-import into populated DB** — importing the same dump
+//! 9. **Idempotent re-import into populated DB** - importing the same dump
 //!    twice into the same DB does NOT duplicate nodes / edges (the second
 //!    import skips IDs that already exist with byte-identical content); an id
 //!    collision with different content is rejected as [`DrevoError::Io`].
@@ -289,8 +289,8 @@ fn import_rebuilds_updated_index() {
 #[test]
 fn import_preserves_invariants() {
     // The native engine has no KV-style `verify_invariants` (which scanned the
-    // redb key layout); the equivalent contract — adjacency consistency after
-    // an index rebuild — is asserted through the public API. Every edge in the
+    // redb key layout); the equivalent contract - adjacency consistency after
+    // an index rebuild - is asserted through the public API. Every edge in the
     // sample graph must resolve to present endpoints and appear in both
     // endpoints' adjacency, and every node must be retrievable.
     let src = NativeService::in_memory();
@@ -343,7 +343,7 @@ fn import_restores_id_counters_above_imported_ids() {
     dst.import_json(&dump).unwrap();
 
     // The id counters are clamped above every imported id, so the next created
-    // node / edge lands beyond the max imported id — no reuse after restore.
+    // node / edge lands beyond the max imported id - no reuse after restore.
     let next_node = dst
         .create_node(new_node("note", "After restore"))
         .unwrap()
@@ -397,7 +397,7 @@ fn import_rejects_unknown_format() {
     let bad = r#"{"format":"unknown-v999","nodes":[],"edges":[]}"#;
     let err = dst.import_json(bad).unwrap_err();
     match err {
-        DrevoError::Io(_) => { /* ok — UnsupportedFormat is surfaced as Io */ }
+        DrevoError::Io(_) => { /* ok - UnsupportedFormat is surfaced as Io */ }
         other => panic!("expected Io(UnsupportedFormat), got {other:?}"),
     }
 }

@@ -1,4 +1,4 @@
-//! End-to-end Cypher trigonometric & logarithmic math-function tests — Phase 10
+//! End-to-end Cypher trigonometric & logarithmic math-function tests - Phase 10
 //! follow-up task `00156`.
 //!
 //! Task `00138` shipped the numeric scalar family (`abs` / `ceil` / `floor` /
@@ -97,7 +97,7 @@ fn exp_log_log10_round_trip() {
 #[test]
 fn log_domain_edges_follow_ieee() {
     let db = db();
-    // log of a negative is NaN, log(0) is -Infinity — Neo4j returns the float,
+    // log of a negative is NaN, log(0) is -Infinity - Neo4j returns the float,
     // never an error.
     assert!(one_float("RETURN log(-1) AS v", &db).is_nan());
     assert_eq!(one_float("RETURN log(0) AS v", &db), f64::NEG_INFINITY);
@@ -270,7 +270,7 @@ fn story_editor_great_circle_haversine_distance() {
 #[test]
 fn task_manager_exponential_backoff_schedule() {
     // IT task manager: a retry's delay grows exponentially with the attempt
-    // number — delay = exp(attempt).
+    // number - delay = exp(attempt).
     let db = db();
     exec("CREATE (:Retry {attempt: 0})", &db);
     exec("CREATE (:Retry {attempt: 2})", &db);

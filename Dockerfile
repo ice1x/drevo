@@ -1,4 +1,4 @@
-# Stage 1: Builder — compile the server binary in a full Rust toolchain.
+# Stage 1: Builder - compile the server binary in a full Rust toolchain.
 # Pinned to 1.88: the workspace's `time` dependency raised its MSRV to 1.88,
 # so the previous rust:1.85 base failed the release build (task 00163).
 FROM rust:1.88-slim-bookworm AS builder
@@ -11,15 +11,15 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock* build.rs version_resolve.rs cbindgen.toml ./
 COPY src/ src/
 # Phase 7 slice 1 promoted the storage-agnostic core into a `drevo-core`
-# workspace member that `drevo` depends on (`pub use drevo_core::model`), so —
-# unlike `drevo-py` below, which is copied only so the workspace manifest parses
-# — its source is genuinely compiled into `drevo-server`. Copy the whole crate.
+# workspace member that `drevo` depends on (`pub use drevo_core::model`), so -
+# unlike `drevo-py` below, which is copied only so the workspace manifest parses -
+# its source is genuinely compiled into `drevo-server`. Copy the whole crate.
 # `drevo-auth` (users, passwords, roles) is compiled in the same way.
 # Locked by `tests/dockerfile_tests.rs::dockerfile_copies_every_workspace_member_dir`.
 COPY drevo-core/ drevo-core/
 COPY drevo-auth/ drevo-auth/
 # Cargo parses every `[[bench]]` / `[[bin]]` / `[[test]]` declaration in
-# Cargo.toml even when we ask it to build a single bin — the file must
+# Cargo.toml even when we ask it to build a single bin - the file must
 # exist or the manifest fails to parse with:
 #   error: can't find `<name>` bench at `benches/<name>.rs`
 # Copying the bench sources costs ~tens of KB and is exercised purely
@@ -28,12 +28,12 @@ COPY drevo-auth/ drevo-auth/
 COPY benches/ benches/
 # Phase 16 task 00115 promoted the repo to a Cargo workspace with
 # `drevo-py` as the second member. Cargo refuses to load *any* workspace
-# manifest if a declared member's Cargo.toml is missing — even when the
+# manifest if a declared member's Cargo.toml is missing - even when the
 # target being built (`--bin drevo-server`) does not depend on the
 # member. Without this COPY, `cargo build` fails inside the container
 # with:
 #   error: failed to load manifest for workspace member `/build/drevo-py`
-# The `drevo-py` source itself is never compiled in this stage —
+# The `drevo-py` source itself is never compiled in this stage -
 # `cargo build --bin drevo-server` filters the dep graph to the server
 # binary, so pyo3 / pythonize do not enter the build. The COPY is
 # strictly for manifest parsing.
@@ -47,11 +47,11 @@ COPY drevo-py/ drevo-py/
 COPY static/ static/
 
 # Build only the server binary in release mode.
-# cbindgen feature is excluded — no C header needed in the container.
+# cbindgen feature is excluded - no C header needed in the container.
 #
 # The compiled Cargo feature set is a build ARG. The deploy image ships the
 # FULL server, INCLUDING `embeddings-proxy`, so the OpenAI-compatible
-# `/v1/embeddings` endpoint (issue #217) is available out of the box — there is
+# `/v1/embeddings` endpoint (issue #217) is available out of the box - there is
 # no point shipping a deploy image without its functionality. It stays
 # runtime-gated (answers 503 until `DREVO_EMBEDDINGS_UPSTREAM` is configured), so
 # nothing is forced on and the "opt-in at runtime" contract holds. The extra
@@ -82,7 +82,7 @@ ARG CARGO_FEATURES="http,embeddings-proxy,format-cbor,format-msgpack,wal-zstd,gr
 ARG DREVO_VERSION=""
 ENV DREVO_VERSION=${DREVO_VERSION}
 # Build metadata surfaced by `CALL drevo.info()` (issue #303). `.git` is excluded
-# from the build context, so — like the version — the release flow passes these
+# from the build context, so - like the version - the release flow passes these
 # as build-args (`scripts/release.sh`); empty defaults resolve to `null` in
 # `drevo.info()`.
 ARG DREVO_GIT_SHA=""
@@ -92,7 +92,7 @@ ENV DREVO_BUILD_DATE=${DREVO_BUILD_DATE}
 RUN cargo build --release --bin drevo-server \
         --no-default-features --features "${CARGO_FEATURES}"
 
-# Stage 2: Runtime — minimal Debian image with just the binary
+# Stage 2: Runtime - minimal Debian image with just the binary
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -1,8 +1,8 @@
 //! Procedures and schema commands inside an explicit transaction (#610).
 //!
-//! A statement in an explicit transaction — Bolt `BEGIN` … `COMMIT`, which is
+//! A statement in an explicit transaction - Bolt `BEGIN` … `COMMIT`, which is
 //! how the Neo4j drivers run `execute_read` / `execute_write`, or a drevo-py
-//! `Transaction` — runs on the transaction's snapshot with the server's
+//! `Transaction` - runs on the transaction's snapshot with the server's
 //! services attached:
 //! - full-text, vector and fuzzy search, `keywords()`, `SHOW INDEXES` and
 //!   `SHOW CONSTRAINTS` work, resolving hits against the snapshot;
@@ -46,7 +46,7 @@ fn strings(result: &ExecResult) -> Vec<String> {
         .collect()
 }
 
-/// Every string anywhere in the result — for `SHOW …` rows, where only the
+/// Every string anywhere in the result - for `SHOW …` rows, where only the
 /// presence of a name matters.
 fn mentions(result: &ExecResult, needle: &str) -> bool {
     result

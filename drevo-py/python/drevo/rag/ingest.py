@@ -1,4 +1,4 @@
-"""`ingest_documents` — batched node creation from a Document list.
+"""`ingest_documents` - batched node creation from a Document list.
 
 Pure-Python orchestration on top of `drevo.Drevo.create_node`. The
 algorithm is intentionally simple (one Document → one Node, no
@@ -17,7 +17,7 @@ from ._document import Document
 if TYPE_CHECKING:
     from .. import Drevo, NewNode, Node
 else:
-    # Runtime import — pulled from the parent package, which has set
+    # Runtime import - pulled from the parent package, which has set
     # up the cdylib + shim glue by the time `drevo.rag.ingest` loads.
     # `drevo.rag` is opt-in (not eagerly imported by drevo/__init__.py),
     # so this never produces a circular import.
@@ -34,7 +34,7 @@ class IngestSchema:
     `kind_from` / `title_from` look up a metadata key and use its value
     as the node's `kind` / `title`. `property_map` renames metadata
     keys before they land in `Node.properties`. `edge_specs` is reserved
-    for follow-up work — wiring inter-document edges from metadata —
+    for follow-up work - wiring inter-document edges from metadata -
     and is currently parsed but unused.
     """
 
@@ -102,7 +102,7 @@ def ingest_documents(
     The two paths serve different query surfaces, so both are kept.
 
     Returns the created Nodes in the same order as `docs`. No
-    deduplication — documents with the same truncated title become
+    deduplication - documents with the same truncated title become
     separate nodes; callers that need dedup check
     `get_node_by_title` first or pass a `schema.title_from` resolving to
     a unique field.
@@ -119,7 +119,7 @@ def ingest_documents(
         if len(embeddings) != len(docs):
             raise ValueError(
                 f"embedder returned {len(embeddings)} vectors for "
-                f"{len(docs)} documents — counts must match"
+                f"{len(docs)} documents - counts must match"
             )
 
     nodes: list[Node] = []

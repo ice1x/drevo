@@ -89,7 +89,7 @@ fn int(n: usize) -> Value {
 
 impl Executor<'_> {
     /// `CALL drevo.entity.candidates(label[, config]) YIELD a, b, nameScore,
-    /// vectorScore, score, reasons` — once per input row.
+    /// vectorScore, score, reasons` - once per input row.
     pub(super) fn run_entity_candidates(
         &mut self,
         c: &CallClause,
@@ -198,7 +198,7 @@ impl Executor<'_> {
         Ok(found.into_iter().map(|(_, _, _, row)| row).collect())
     }
 
-    /// `CALL drevo.entity.aliases(name) YIELD entity, aliases` — once per
+    /// `CALL drevo.entity.aliases(name) YIELD entity, aliases` - once per
     /// input row.
     pub(super) fn run_entity_aliases(
         &mut self,
@@ -304,7 +304,7 @@ impl Executor<'_> {
     }
 
     /// `CALL drevo.entity.merge(keepId, dropIds[, config]) YIELD kept,
-    /// merged, relationshipsMoved, propertiesMerged` — once per input row.
+    /// merged, relationshipsMoved, propertiesMerged` - once per input row.
     pub(super) fn run_entity_merge(&mut self, c: &CallClause, columns: &[&str]) -> ExecResultT<()> {
         self.run_per_row_mut(c, columns, &mut |exec, row| {
             let keep = exec.eval(&c.args[0], row)?;

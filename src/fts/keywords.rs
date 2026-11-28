@@ -3,11 +3,11 @@
 //! Picks the top-`k` most *salient* terms from a piece of text by combining
 //! three signals already shipped in the FTS layer:
 //!
-//! 1. **Word tokenization** ([`crate::fts::tokenizer::words`]) — lowercase
+//! 1. **Word tokenization** ([`crate::fts::tokenizer::words`]) - lowercase
 //!    word tokens, distinct from the character-trigram index tokenizer.
-//! 2. **Stopword removal** ([`crate::fts::stopwords`]) — drop English
+//! 2. **Stopword removal** ([`crate::fts::stopwords`]) - drop English
 //!    function words so grammatical glue never ranks.
-//! 3. **BM25 IDF salience** (`bm25_idf`, task `00131`) —
+//! 3. **BM25 IDF salience** (`bm25_idf`, task `00131`) -
 //!    weight each surviving term by how *rare* it is across the indexed
 //!    corpus. A term's document frequency is estimated from the existing
 //!    trigram posting lists (the docs containing all of the term's trigrams),
@@ -25,7 +25,7 @@
 //! downstream consumer once the executor's `UNWIND` clause lands.
 //!
 //! Determinism: ties (equal score) break alphabetically, so the output is
-//! stable across runs regardless of hash-map iteration order — the Cypher
+//! stable across runs regardless of hash-map iteration order - the Cypher
 //! e2e suite depends on stable `RETURN` output.
 
 use std::collections::HashMap;
@@ -38,7 +38,7 @@ use drevo_core::bm25::bm25_idf;
 
 /// Engine-agnostic keyword extraction (#447 native port): the tokenize →
 /// stopword → stem → BM25 tf·idf ranking, parameterised by the two corpus
-/// statistics an engine must supply — `n` (indexed document count) and `df`
+/// statistics an engine must supply - `n` (indexed document count) and `df`
 /// (documents containing all of a term's trigrams). The native path
 /// (`NativeFtsIndex::doc_count` / `trigram_df`) feeds these, so the ranking is
 /// engine-independent.
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn term_frequency_breaks_toward_repeated_terms() {
         // With an empty corpus every term shares the same IDF, so the more
-        // frequent term wins — tf·idf degrades to tf ranking.
+        // frequent term wins - tf·idf degrades to tf ranking.
         let kws = keywords(&[], "anxiety anxiety anxiety journaling", 1, false);
         assert_eq!(kws, vec!["anxiety"]);
     }

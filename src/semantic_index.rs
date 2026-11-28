@@ -1,11 +1,11 @@
 //! Semantic-index state machine (Phase 21, task `00218`… control plane).
 //!
-//! A per-`(label, embedding property)` state machine that governs whether — and
-//! how — nodes of a label are turned into vectors for semantic search. It is
+//! A per-`(label, embedding property)` state machine that governs whether - and
+//! how - nodes of a label are turned into vectors for semantic search. It is
 //! **off by default**: until an operator calls `enable`, nothing is embedded
 //! and no outbound embedding calls happen.
 //!
-//! This module is the pure, dependency-free **control plane** — the state, its
+//! This module is the pure, dependency-free **control plane** - the state, its
 //! legal transitions, and a registry of targets, all serialisable so a later
 //! slice can persist it in redb and drive it from `drevo.embeddings.*` Cypher
 //! procedures. It performs no embedding and touches no storage itself.
@@ -22,16 +22,16 @@
 //! `mode ∈ {Manual, Auto}` is an option of an *enabled* target, switchable live
 //! via `set_mode`:
 //!
-//! - [`IndexMode::Manual`](crate::semantic_index::IndexMode::Manual) — embeddings
+//! - [`IndexMode::Manual`](crate::semantic_index::IndexMode::Manual) - embeddings
 //!   are produced only by an explicit reindex; writes stay pure.
-//! - [`IndexMode::Auto`](crate::semantic_index::IndexMode::Auto) — a write that
+//! - [`IndexMode::Auto`](crate::semantic_index::IndexMode::Auto) - a write that
 //!   changes the embedded text additionally marks the node dirty for a
 //!   background worker (Phase 2). The control plane is identical; only the
 //!   write-path behaviour differs.
 //!
 //! # Data semantics (enforced by later slices, documented here)
 //!
-//! - `disable` is **control-plane only** — stored vectors are kept.
+//! - `disable` is **control-plane only** - stored vectors are kept.
 //! - `drop` is the **explicit, destructive** removal of a target's vectors.
 //! - A `SET` that changes the embedded text drops the now-stale vector and marks
 //!   the node dirty (hash-precise); an edit to unrelated properties costs
@@ -79,7 +79,7 @@ impl IndexMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexState {
-    /// Not indexing — nothing is embedded (the default for every target).
+    /// Not indexing - nothing is embedded (the default for every target).
     Disabled,
     /// Indexing is on; new embeddings are produced per the target's mode.
     Enabled,
@@ -162,18 +162,18 @@ pub enum IndexError {
 /// A registry of semantic-index targets, keyed by `(label, embedding property)`.
 ///
 /// This is the unit a later slice persists in redb and exposes through the
-/// `drevo.embeddings.*` procedures. Empty by default — the whole subsystem is
+/// `drevo.embeddings.*` procedures. Empty by default - the whole subsystem is
 /// off until something is `enable`d.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticIndexRegistry {
-    // A Vec (not a map) so the serialised form is a plain JSON array — a
+    // A Vec (not a map) so the serialised form is a plain JSON array - a
     // `(String, String)` map key would not round-trip through JSON. N is tiny
     // (a handful of targets), so linear lookup is fine.
     targets: Vec<SemanticIndex>,
 }
 
 impl SemanticIndexRegistry {
-    /// An empty registry (the default — nothing indexed).
+    /// An empty registry (the default - nothing indexed).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -191,7 +191,7 @@ impl SemanticIndexRegistry {
         self.position(label, property).map(|i| &self.targets[i])
     }
 
-    /// All targets, in insertion order — the source for `status()`.
+    /// All targets, in insertion order - the source for `status()`.
     #[must_use]
     pub fn list(&self) -> &[SemanticIndex] {
         &self.targets
@@ -334,7 +334,7 @@ impl SemanticIndexRegistry {
     }
 
     /// Remove a target from the registry entirely (the control-plane half of
-    /// the destructive `drop` — the caller removes the vectors separately).
+    /// the destructive `drop` - the caller removes the vectors separately).
     /// Allowed from any state.
     ///
     /// # Errors
@@ -415,7 +415,7 @@ mod tests {
             r.get("Entity", "embedding").unwrap().state,
             IndexState::Disabled
         );
-        // Still present (control-plane only) — re-enable updates config.
+        // Still present (control-plane only) - re-enable updates config.
         r.enable(
             "Entity",
             "title",

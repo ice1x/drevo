@@ -6,7 +6,7 @@
 //!
 //! The embedder is an in-process stub: text mentioning a cat points at
 //! `[1, 0, 0]`, text naming Zephyrine at `[0, 1, 0]`, anything else at
-//! `[0, 0, 1]` — so which documents each leg finds is fixed by the fixture.
+//! `[0, 0, 1]` - so which documents each leg finds is fixed by the fixture.
 
 #![cfg(feature = "http")]
 
@@ -53,11 +53,11 @@ fn invalid_call(db: &NativeService, source: &str) -> String {
 }
 
 /// Five documents:
-/// - `Zephyrine Quartermaine` — the exact name; its embedding points away
+/// - `Zephyrine Quartermaine` - the exact name; its embedding points away
 ///   from every query, so only BM25 finds it;
-/// - `notes on feline companions` — no shared text with "cat", but its
+/// - `notes on feline companions` - no shared text with "cat", but its
 ///   embedding is the cat direction, so only the vector leg finds it;
-/// - `Zephyrine travel log` — both legs find it for "Zephyrine";
+/// - `Zephyrine travel log` - both legs find it for "Zephyrine";
 /// - two fillers, in the "other" direction.
 fn library(db: &NativeService) {
     run(

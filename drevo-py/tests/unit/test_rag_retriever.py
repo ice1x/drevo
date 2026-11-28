@@ -45,7 +45,7 @@ def test_uuid_seed_dispatches_to_get_node_by_uuid(mock_drevo: MagicMock) -> None
 
 
 def test_bool_seed_raises_type_error(mock_drevo: MagicMock) -> None:
-    """`bool ⊂ int` in Python, but the contract says int means node id —
+    """`bool ⊂ int` in Python, but the contract says int means node id -
     the dispatch table must reject `True`/`False` explicitly.
     """
     with pytest.raises(TypeError):
@@ -95,7 +95,7 @@ def test_retrieve_uuid_seed_round_trips(
 
 
 def test_retrieve_with_embedding_dispatches_to_vector_search(mock_drevo: MagicMock) -> None:
-    """RFC §8.3 — vector seeds now resolve via `Drevo.vector_search`
+    """RFC §8.3 - vector seeds now resolve via `Drevo.vector_search`
     (Phase 12 task 00079). With no hits the context is empty and no
     expansion runs; the point is that the embedding + limit are forwarded
     to the bridge verbatim."""
@@ -109,7 +109,7 @@ def test_retrieve_missing_int_seed_returns_empty_seeds(
     drevo_db: drevo.Drevo,
 ) -> None:
     """A missing int seed surfaces as an empty `seeds` list, not as a
-    raise — the retriever is intentionally lenient because FTS misses
+    raise - the retriever is intentionally lenient because FTS misses
     also return `[]`.
     """
     ctx = Retriever(drevo_db, hops=1).retrieve(999_999)

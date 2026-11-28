@@ -96,7 +96,7 @@ paramstyle = "named"
 # ── Exceptions (PEP 249 hierarchy) ─────────────────────────────────────
 
 
-class Warning(Exception):  # noqa: A001 — the name is mandated by PEP 249
+class Warning(Exception):  # noqa: A001 - the name is mandated by PEP 249
     """Important warnings (PEP 249)."""
 
 
@@ -198,22 +198,22 @@ Time = _dt.time
 Timestamp = _dt.datetime
 
 
-def DateFromTicks(ticks: float) -> _dt.date:  # noqa: N802 — PEP 249 name
+def DateFromTicks(ticks: float) -> _dt.date:  # noqa: N802 - PEP 249 name
     """A date from seconds since the epoch (local time)."""
     return Date(*_time.localtime(ticks)[:3])
 
 
-def TimeFromTicks(ticks: float) -> _dt.time:  # noqa: N802 — PEP 249 name
+def TimeFromTicks(ticks: float) -> _dt.time:  # noqa: N802 - PEP 249 name
     """A time from seconds since the epoch (local time)."""
     return Time(*_time.localtime(ticks)[3:6])
 
 
-def TimestampFromTicks(ticks: float) -> _dt.datetime:  # noqa: N802 — PEP 249 name
+def TimestampFromTicks(ticks: float) -> _dt.datetime:  # noqa: N802 - PEP 249 name
     """A timestamp from seconds since the epoch (local time)."""
     return Timestamp(*_time.localtime(ticks)[:6])
 
 
-def Binary(value: Union[bytes, bytearray, memoryview]) -> bytes:  # noqa: N802 — PEP 249 name
+def Binary(value: Union[bytes, bytearray, memoryview]) -> bytes:  # noqa: N802 - PEP 249 name
     """A binary value. drevo has no byte strings, so passing one as a
     parameter raises `NotSupportedError`."""
     return bytes(value)
@@ -285,7 +285,7 @@ def connect(database: Union[str, "Drevo"] = ":memory:") -> "Connection":
         return Connection(Drevo.open(database), owns_handle=True)
     except Error:
         raise
-    except Exception as exc:  # noqa: BLE001 — mapped to the DB-API hierarchy
+    except Exception as exc:  # noqa: BLE001 - mapped to the DB-API hierarchy
         raise _translate(exc) from exc
 
 

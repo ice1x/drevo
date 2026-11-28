@@ -1,6 +1,6 @@
 //! `elementId(n)` / `elementId(r)`: the element id Bolt 5 drivers see on
 //! nodes and relationships (`node.element_id`), as a string. A client hands
-//! it back as a parameter — `MATCH (n) WHERE elementId(n) = $e` — and the
+//! it back as a parameter - `MATCH (n) WHERE elementId(n) = $e` - and the
 //! lookup is by id, as for `id(n) = $id`.
 //!
 //! The scenario is a bug tracker: a `Bug` reported by a `User`.

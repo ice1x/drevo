@@ -1,17 +1,17 @@
 //! Graph-RAG retrieval: a question in, the part of the graph that answers it
-//! out — as ranked rows (`drevo.rag.retrieve`) or as LLM-ready text within a
+//! out - as ranked rows (`drevo.rag.retrieve`) or as LLM-ready text within a
 //! token budget (`drevo.rag.context`, also `POST /rag/context`).
 //!
 //! The pipeline runs inside one statement:
 //!
-//! 1. **Seeds** — the hybrid BM25 + vector search of `drevo.search.hybrid`.
-//! 2. **Expand** — the breadth-first walk of `drevo.graph.expand` from the
+//! 1. **Seeds** - the hybrid BM25 + vector search of `drevo.search.hybrid`.
+//! 2. **Expand** - the breadth-first walk of `drevo.graph.expand` from the
 //!    seeds.
-//! 3. **Edges** — the relationships between the nodes found.
-//! 4. **Rank** — seeds first, then Personalized PageRank over just those
+//! 3. **Edges** - the relationships between the nodes found.
+//! 4. **Rank** - seeds first, then Personalized PageRank over just those
 //!    nodes and relationships ([`personalized_scores`](crate::rag::personalized_scores)), or distance, or the
 //!    walk's own order ([`order`](crate::rag::order)).
-//! 5. **Serialise** — [`serialize::render`](crate::rag::serialize::render) fills the budget best-ranked
+//! 5. **Serialise** - [`serialize::render`](crate::rag::serialize::render) fills the budget best-ranked
 //!    first.
 //!
 //! The stages after the graph reads are pure functions over a [`Subgraph`](crate::rag::Subgraph),
@@ -104,7 +104,7 @@ pub struct Subgraph {
     pub truncated: bool,
 }
 
-/// The weight of each of `rels` by id, from `weighted` — the
+/// The weight of each of `rels` by id, from `weighted` - the
 /// `(from, to, weight)` triples aligned with `rels`.
 pub(crate) fn rel_weights(
     rels: &[Arc<RelationshipValue>],
@@ -117,8 +117,8 @@ pub(crate) fn rel_weights(
 }
 
 /// `nodes` (seeds first, as the expansion returns them) in rank order: the
-/// seeds keep their search order and come first; the rest follow by `mode` —
-/// best PageRank score, nearest, or as given — ties broken by node id.
+/// seeds keep their search order and come first; the rest follow by `mode` -
+/// best PageRank score, nearest, or as given - ties broken by node id.
 #[must_use]
 pub fn order(nodes: Vec<RankedNode>, mode: RankMode) -> Vec<RankedNode> {
     let (mut ranked, mut rest): (Vec<RankedNode>, Vec<RankedNode>) =

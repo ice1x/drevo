@@ -9,15 +9,15 @@
 //! `Execute` answers with one `Header` (the column names), the rows in
 //! batches of 256, and one
 //! `Summary` (the write counters). Values keep their Cypher type; a list
-//! made only of floats — an embedding — travels as a packed `FloatList`.
+//! made only of floats - an embedding - travels as a packed `FloatList`.
 //! Errors end the call with a gRPC status: `INVALID_ARGUMENT` for a query
 //! that does not parse or fails, `NOT_FOUND` for an unknown database,
 //! `UNAVAILABLE` while writes are paused by a prepared two-phase commit,
 //! `UNIMPLEMENTED` for database administration (use HTTP or Bolt).
 //!
 //! When the server requires a login, `Execute` needs an `authorization`
-//! metadata entry — `Basic <base64 of user:password>` or `Bearer <session
-//! token>` — and answers `UNAUTHENTICATED` without a valid one. `Health`
+//! metadata entry - `Basic <base64 of user:password>` or `Bearer <session
+//! token>` - and answers `UNAUTHENTICATED` without a valid one. `Health`
 //! needs no login.
 
 #![cfg(feature = "grpc")]

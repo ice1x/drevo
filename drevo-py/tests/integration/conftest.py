@@ -1,6 +1,6 @@
 """Shared fixtures for the Phase 16 task `00119` integration-test suite.
 
-The integration tier always exercises the *disk* redb backend — that is
+The integration tier always exercises the *disk* redb backend - that is
 the boundary the suite was built to defend. Fixtures own the temp
 directory life-cycle so individual tests stay free of cleanup
 boilerplate.
@@ -47,7 +47,7 @@ def tmp_db_path() -> Iterator[str]:
 def disk_db(tmp_db_path: str) -> Iterator[drevo.Drevo]:
     """One-shot disk-backed `Drevo` handle.
 
-    For tests that don't care about reopen semantics — they just want
+    For tests that don't care about reopen semantics - they just want
     the real redb backend behind the public Python surface (no
     in-memory shortcut).
     """

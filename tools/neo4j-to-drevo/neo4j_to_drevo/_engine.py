@@ -3,7 +3,7 @@
 The engine consumes any `GraphSource` (a `nodes()` / `relationships()`
 iterator pair yielding `SourceNode` / `SourceRelationship` records) and
 loads it into a `drevo.Drevo` handle. It depends on `drevo` (it writes
-through the public bindings) but `drevo` knows nothing about this tool —
+through the public bindings) but `drevo` knows nothing about this tool -
 the dependency points one way only.
 
 Two structural mismatches between a labelled property graph (Neo4j) and
@@ -17,8 +17,8 @@ drevo are reconciled here:
   convention.
 * **Distinct titles.** The engine resolves a title from
   `config.title_properties` (first present wins) and, on any collision
-  within the run, disambiguates deterministically with the source id —
-  which is unique — so ten "Alice" nodes get ten distinguishable titles.
+  within the run, disambiguates deterministically with the source id -
+  which is unique - so ten "Alice" nodes get ten distinguishable titles.
   drevo allows repeated titles (issue #595), so this is for readability,
   not to avoid an error.
 """
@@ -43,7 +43,7 @@ class SourceNode:
     """A graph node as presented by a source (Neo4j et al.).
 
     `id` is the source's own stable identifier (Neo4j `element_id`); it is
-    used only to wire relationships and to disambiguate titles — it is not
+    used only to wire relationships and to disambiguate titles - it is not
     a drevo id. `labels` is the (possibly empty) ordered label set.
     """
 
@@ -89,7 +89,7 @@ class MigrationConfig:
     set into the single `kind` string. `labels_property` is the reserved
     key under which the full label list is preserved. `weight_property`
     supplies an edge's weight when present (else `default_weight`).
-    `on_error` is `"raise"` (default — fail loud on a dangling edge or a
+    `on_error` is `"raise"` (default - fail loud on a dangling edge or a
     title clash that survives disambiguation) or `"skip"` (record the
     problem in `report.errors` and continue).
     """
@@ -112,7 +112,7 @@ class MigrationReport:
     """Outcome of a migration run.
 
     `id_map` maps every successfully-migrated source id to its new drevo
-    node id — the same map the engine uses internally to wire edges, and
+    node id - the same map the engine uses internally to wire edges, and
     useful to a caller that wants to cross-reference afterwards.
     """
 
